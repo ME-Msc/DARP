@@ -1,0 +1,13 @@
+domain tiny_grid {
+  requirements = { reward-deterministic };
+  types { location : object; };
+  pvariables {
+    at(location) : { state-fluent, bool, default = false };
+    move-safe : { action-fluent, bool, default = false };
+    move-risky : { action-fluent, bool, default = false };
+  };
+  cpfs {
+    at'(?l) = at(?l);
+  };
+  reward = 0;
+}

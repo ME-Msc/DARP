@@ -24,87 +24,144 @@ DARP 第一版优先实现一条可运行、可读、可扩展的研究链路：
 
 ## 架构说明
 
-`search/` 和 `ilp/` 是两层不同职责：
+`rddl/`、`search/` 和 `ilp/` 是三层不同职责：
 
+- `rddl/` 是解析和编译入口，回答“如何把标准 RDDL 或 DARP-RDDL 扩展语法变成统一的中间表示”。
 - `search/` 是规划/搜索算法层，回答“如何探索 policy tree”。HILP、full ILP wrapper、online replanning 都属于这一层。
 - `ilp/` 是数学规划子问题层，回答“给定一个 ILP/p-ILP 模型如何求解”。internal、HiGHS、Gurobi 都是这一层的 backend。
 
 因此，HiGHS 和 Gurobi 不是 HILP 的替代算法，而是 HILP 在每一轮 p-ILP 中可以调用的底层求解器。
 
+### RDDLFrontend 协议
+
+`RDDLFrontend` 是 DARP 面向 parser 的统一协议，不是一个具体 parser。它规定任何解析器都要实现：
+
+- `name`：frontend 名称，例如 `pyrddlgym`、`pyrddl`、`darp`。
+- `supports_extended_syntax`：是否支持 DARP 扩展语法。
+- `parse(domain, instance) -> ParsedRDDL`：把 domain/instance 解析成统一容器。
+
+`ParsedRDDL` 是 compiler 看到的唯一输入形状，里面可以装 `ast`、`model`、`env` 和 metadata。这样后续可以先复用 `pyrddl`，也可以复用或继承 `pyRDDLGym` 的 parser；如果将来 DARP 自己实现 parser，只要仍然返回 `ParsedRDDL`，后面的 `compiler.py`、`core/`、`search/`、`ilp/` 都不需要跟着改。
+
+当前预留三种 frontend：
+
+- `pyrddlgym`：默认标准 RDDL frontend，适合复用 pyRDDLGym 的 parser/simulator 生态。
+- `pyrddl`：直接调用旧 `pyrddl.parser.RDDLParser`，适合作为 DARP 自研 parser 或 fork 的起点。
+- `darp`：DARP 自有基础 parser frontend，当前可解析 RDDL 的文件/块/语句结构，并为后续 DARP-RDDL 扩展语法预留入口。
+
+基础 parser 可以在命令行中直接验证解析结果，并输出 Graphviz DOT 格式的 AST：
+
+```bash
+python -m darp.rddl.basic_parser \
+  examples/rddl/tiny_grid_domain.rddl \
+  examples/rddl/tiny_grid_instance.rddl \
+  --dot
+```
+
+如需保存 DOT 文件：
+
+```bash
+python -m darp.rddl.basic_parser \
+  examples/rddl/tiny_grid_domain.rddl \
+  examples/rddl/tiny_grid_instance.rddl \
+  --dot-output tiny_grid_ast.dot
+```
+
 ## 文件和文件夹职责
 
-<!-- README.md：中文主文档，说明项目目标、论文对应关系、架构、路线图和运行方式。 -->
-<!-- README-EN.md：英文镜像文档，供团队其他成员阅读。 -->
-<!-- LICENSE：项目的 Apache-2.0 许可证文本。 -->
-<!-- .gitignore：忽略 Python 缓存、虚拟环境、构建产物和本地配置。 -->
-<!-- .codex：本地 Codex 工作配置占位文件。 -->
-<!-- pyproject.toml：Python 包元数据、依赖、CLI 入口和可选 backend extras。 -->
-<!-- requirements.txt：记录运行时核心依赖；当前核心只依赖 Python 标准库。 -->
-<!-- requirements-dev.txt：记录开发和测试依赖，例如 pytest。 -->
-<!-- examples/：保存最小 RDDL 示例和 duration 配置，用于 demo 和测试。 -->
-<!-- examples/rddl/：保存 RDDL domain 与 instance 文件。 -->
-<!-- examples/rddl/tiny_grid_domain.rddl：用于演示的 tiny grid RDDL domain 占位示例。 -->
-<!-- examples/rddl/tiny_grid_instance.rddl：用于演示的 tiny grid RDDL instance 占位示例。 -->
-<!-- examples/durations/：保存 durative action 的 sidecar 配置文件。 -->
-<!-- examples/durations/tiny_grid.yaml：定义 tiny grid 中动作持续时间的 sidecar 配置。 -->
-<!-- src/darp/：DARP 的主 Python 包。 -->
-<!-- src/darp/__init__.py：定义包版本和顶层导出。 -->
-<!-- src/darp/cli.py：命令行入口，提供 solve 和 evaluate 模式。 -->
-<!-- src/darp/rddl/：RDDL 加载与编译相关代码。 -->
-<!-- src/darp/rddl/__init__.py：标记 RDDL 子包并保留阶段 TODO。 -->
-<!-- src/darp/rddl/loader.py：通过 pyRDDLGym 加载 RDDL 文件或环境。 -->
-<!-- src/darp/rddl/compiler.py：将 pyRDDLGym 环境编译为 DARP 的 PlanningProblem。 -->
-<!-- src/darp/rddl/durations.py：读取 duration sidecar 配置。 -->
-<!-- src/darp/core/：与具体求解算法无关的规划数据结构。 -->
-<!-- src/darp/core/__init__.py：标记 core 子包并预留稳定 API 导出。 -->
-<!-- src/darp/core/types.py：集中定义状态、动作、观测和概率分布等类型别名。 -->
-<!-- src/darp/core/problem.py：定义 finite-horizon POMDP/(C)C-POMDP 问题接口。 -->
-<!-- src/darp/core/history.py：定义论文中的 observation history 和 action history。 -->
-<!-- src/darp/core/belief.py：实现 belief update、safe belief 和风险概率计算。 -->
-<!-- src/darp/core/duration.py：实现 fixed、expected/state-dependent 和 Gaussian percentile duration 模型。 -->
-<!-- src/darp/core/constraints.py：定义 expected-cost 与 chance-risk 约束。 -->
-<!-- src/darp/core/policy.py：表示求解结果、动作序列、policy tree 和 JSON 导出结构。 -->
-<!-- src/darp/search/：规划算法层，负责搜索和展开 policy space。 -->
-<!-- src/darp/search/__init__.py：标记 search 子包并预留算法注册信息。 -->
-<!-- src/darp/search/base.py：定义通用 Planner 接口。 -->
-<!-- src/darp/search/and_or_tree.py：定义共享的 AND-OR history tree 结构。 -->
-<!-- src/darp/search/expand.py：实现论文 Expand 步骤并计算 ILP 常量。 -->
-<!-- src/darp/search/preprocess.py：为 full ILP baseline 展开完整有限树。 -->
-<!-- src/darp/search/full_ilp.py：构建并求解完整 ILP，不使用 HILP frontier 剪枝。 -->
-<!-- src/darp/search/hilp.py：实现论文 Algorithm 3 的 HILP partial-ILP 启发式搜索。 -->
-<!-- src/darp/search/heuristics.py：提供 frontier utility/risk 启发式。 -->
-<!-- src/darp/search/online_replanner.py：封装 PROST 风格的 online replanning 循环。 -->
-<!-- src/darp/ilp/：ILP/p-ILP 模型表达与底层求解 backend。 -->
-<!-- src/darp/ilp/__init__.py：标记 ilp 子包并保留 backend 路线图 TODO。 -->
-<!-- src/darp/ilp/model.py：定义 solver-neutral 的变量、目标函数和线性约束。 -->
-<!-- src/darp/ilp/backend.py：定义 internal、HiGHS 和 Gurobi 共用的 backend 协议。 -->
-<!-- src/darp/ilp/internal.py：实现内置小规模 binary ILP 求解器，保证项目可独立运行。 -->
-<!-- src/darp/ilp/highs.py：封装可选 HiGHS backend。 -->
-<!-- src/darp/ilp/gurobi.py：封装可选 Gurobi backend。 -->
-<!-- src/darp/ilp/factory.py：根据 CLI/config 选择 ILP backend。 -->
-<!-- src/darp/sim/：本地和外部仿真交互接口。 -->
-<!-- src/darp/sim/__init__.py：标记 sim 子包并预留仿真器注册。 -->
-<!-- src/darp/sim/local.py：基于 PlanningProblem 的本地采样仿真器。 -->
-<!-- src/darp/sim/rddlsim_client.py：预留 rddlsim 风格外部 TCP 仿真器客户端。 -->
-<!-- src/darp/sim/protocol.py：定义仿真器交互协议。 -->
-<!-- src/darp/output/：求解结果和轨迹输出工具。 -->
-<!-- src/darp/output/__init__.py：标记 output 子包并预留 benchmark 输出工具。 -->
-<!-- src/darp/output/json_policy.py：将 policy/action sequence 写成 JSON。 -->
-<!-- src/darp/output/trace.py：记录 solve/evaluate 轨迹。 -->
-<!-- tests/：单元测试和端到端测试。 -->
-<!-- tests/test_history.py：测试 observation/action history 的拼接、父节点和深度。 -->
-<!-- tests/test_belief.py：测试 belief prediction、observation update 和风险概率。 -->
-<!-- tests/test_duration.py：测试 fixed 和 Gaussian duration 的 tau 计算。 -->
-<!-- tests/test_internal_backend.py：测试内置 binary ILP backend 的小模型求解。 -->
-<!-- tests/test_and_or_tree.py：测试 AND-OR tree 从根节点展开。 -->
-<!-- tests/test_preprocess_expand.py：测试 full-tree preprocessing 与 Expand 集成。 -->
-<!-- tests/test_hilp_tiny_grid.py：测试 HILP 与 full ILP 在 tiny grid 上一致。 -->
-<!-- tests/test_cli.py：测试 CLI solve 输出可解析 JSON。 -->
+```text
+DARP/
+├── README.md                       # 中文主文档，说明项目目标、论文对应关系、架构、路线图和运行方式。
+├── README-EN.md                    # 英文镜像文档，供团队其他成员阅读。
+├── LICENSE                         # 项目的 Apache-2.0 许可证文本。
+├── .gitignore                      # 忽略 Python 缓存、虚拟环境、构建产物和本地配置。
+├── .codex                          # 本地 Codex 工作配置占位文件。
+├── pyproject.toml                  # Python 包元数据、依赖、CLI 入口和可选 backend extras。
+├── requirements.txt                # 记录运行时核心依赖；当前核心只依赖 Python 标准库。
+├── requirements-dev.txt            # 记录开发和测试依赖，例如 pytest。
+│
+├── examples/                       # 保存最小 RDDL 示例和 duration 配置，用于 demo 和测试。
+│   ├── rddl/                       # 保存 RDDL domain 与 instance 文件。
+│   │   ├── tiny_grid_domain.rddl   # 用于演示的 tiny grid RDDL domain 占位示例。
+│   │   └── tiny_grid_instance.rddl # 用于演示的 tiny grid RDDL instance 占位示例。
+│   └── durations/                  # 保存 durative action 的 sidecar 配置文件。
+│       └── tiny_grid.yaml          # 定义 tiny grid 中动作持续时间的 sidecar 配置。
+│
+├── src/
+│   └── darp/                       # DARP 的主 Python 包。
+│       ├── __init__.py             # 定义包版本和顶层导出。
+│       ├── cli.py                  # 命令行入口，提供 solve 和 evaluate 模式。
+│       │
+│       ├── rddl/                   # RDDL parser frontend、加载与编译相关代码。
+│       │   ├── __init__.py         # 标记 RDDL 子包并保留 parser/编译阶段 TODO。
+│       │   ├── ast.py              # 定义基础 RDDL AST 节点和 Graphviz DOT 导出。
+│       │   ├── basic_parser.py     # 实现无第三方依赖的基础 RDDL 结构 parser 和命令行入口。
+│       │   ├── frontend.py         # 定义 RDDLFrontend 协议和 ParsedRDDL 统一容器。
+│       │   ├── pyrddlgym_frontend.py # 复用 pyRDDLGym 解析标准 RDDL 并可返回环境对象。
+│       │   ├── pyrddl_frontend.py  # 复用 pyrddl.parser.RDDLParser 直接生成 AST。
+│       │   ├── extended.py         # 使用 DARP 自有 parser，并预留未来 DARP-RDDL 扩展语法。
+│       │   ├── loader.py           # 根据 --rddl-frontend 选择具体 parser frontend。
+│       │   ├── compiler.py         # 将 ParsedRDDL 编译为 DARP 的 PlanningProblem。
+│       │   └── durations.py        # 读取 duration sidecar 配置。
+│       │
+│       ├── core/                   # 与具体求解算法无关的规划数据结构。
+│       │   ├── __init__.py         # 标记 core 子包并预留稳定 API 导出。
+│       │   ├── types.py            # 集中定义状态、动作、观测和概率分布等类型别名。
+│       │   ├── problem.py          # 定义 finite-horizon POMDP/(C)C-POMDP 问题接口。
+│       │   ├── history.py          # 定义论文中的 observation history 和 action history。
+│       │   ├── belief.py           # 实现 belief update、safe belief 和风险概率计算。
+│       │   ├── duration.py         # 实现 fixed、expected/state-dependent 和 Gaussian percentile duration 模型。
+│       │   ├── constraints.py      # 定义 expected-cost 与 chance-risk 约束。
+│       │   └── policy.py           # 表示求解结果、动作序列、policy tree 和 JSON 导出结构。
+│       │
+│       ├── search/                 # 规划算法层，负责搜索和展开 policy space。
+│       │   ├── __init__.py         # 标记 search 子包并预留算法注册信息。
+│       │   ├── base.py             # 定义通用 Planner 接口。
+│       │   ├── and_or_tree.py      # 定义共享的 AND-OR history tree 结构。
+│       │   ├── expand.py           # 实现论文 Expand 步骤并计算 ILP 常量。
+│       │   ├── preprocess.py       # 为 full ILP baseline 展开完整有限树。
+│       │   ├── full_ilp.py         # 构建并求解完整 ILP，不使用 HILP frontier 剪枝。
+│       │   ├── hilp.py             # 实现论文 Algorithm 3 的 HILP partial-ILP 启发式搜索。
+│       │   ├── heuristics.py       # 提供 frontier utility/risk 启发式。
+│       │   └── online_replanner.py # 封装 PROST 风格的 online replanning 循环。
+│       │
+│       ├── ilp/                    # ILP/p-ILP 模型表达与底层求解 backend。
+│       │   ├── __init__.py         # 标记 ilp 子包并保留 backend 路线图 TODO。
+│       │   ├── model.py            # 定义 solver-neutral 的变量、目标函数和线性约束。
+│       │   ├── backend.py          # 定义 internal、HiGHS 和 Gurobi 共用的 backend 协议。
+│       │   ├── internal.py         # 实现内置小规模 binary ILP 求解器，保证项目可独立运行。
+│       │   ├── highs.py            # 封装可选 HiGHS backend。
+│       │   ├── gurobi.py           # 封装可选 Gurobi backend。
+│       │   └── factory.py          # 根据 CLI/config 选择 ILP backend。
+│       │
+│       ├── sim/                    # 本地和外部仿真交互接口。
+│       │   ├── __init__.py         # 标记 sim 子包并预留仿真器注册。
+│       │   ├── local.py            # 基于 PlanningProblem 的本地采样仿真器。
+│       │   ├── rddlsim_client.py   # 预留 rddlsim 风格外部 TCP 仿真器客户端。
+│       │   └── protocol.py         # 定义仿真器交互协议。
+│       │
+│       └── output/                 # 求解结果和轨迹输出工具。
+│           ├── __init__.py         # 标记 output 子包并预留 benchmark 输出工具。
+│           ├── json_policy.py      # 将 policy/action sequence 写成 JSON。
+│           └── trace.py            # 记录 solve/evaluate 轨迹。
+│
+└── tests/                          # 单元测试和端到端测试。
+    ├── test_basic_rddl_parser.py   # 测试基础 RDDL parser 能生成 AST 和 DOT。
+    ├── test_history.py             # 测试 observation/action history 的拼接、父节点和深度。
+    ├── test_belief.py              # 测试 belief prediction、observation update 和风险概率。
+    ├── test_duration.py            # 测试 fixed 和 Gaussian duration 的 tau 计算。
+    ├── test_internal_backend.py    # 测试内置 binary ILP backend 的小模型求解。
+    ├── test_and_or_tree.py         # 测试 AND-OR tree 从根节点展开。
+    ├── test_preprocess_expand.py   # 测试 full-tree preprocessing 与 Expand 集成。
+    ├── test_hilp_tiny_grid.py      # 测试 HILP 与 full ILP 在 tiny grid 上一致。
+    └── test_cli.py                 # 测试 CLI solve 输出可解析 JSON。
+```
 
 ## 开发路线图
 
 - [x] Phase 1：项目脚手架、CLI、测试框架、示例文件
-- [ ] Phase 2：通过 pyRDDLGym 加载 RDDL
+- [x] Phase 2.1：实现基础 RDDL parser，并支持命令行解析成功提示和 AST DOT 输出
+- [ ] Phase 2.2：通过 RDDLFrontend 对齐 pyrddl/pyRDDLGym frontend
+- [ ] Phase 2.3：将 ParsedRDDL 编译为 PlanningProblem
 - [x] Phase 3：实现核心 POMDP/(C)C-POMDP 问题模型
 - [x] Phase 4：在 `and_or_tree.py` 中实现 AND-OR tree
 - [x] Phase 5：实现论文中的 `Expand` 与 preprocessing
@@ -141,6 +198,7 @@ python -m pip install -r requirements.txt
 
 ```bash
 python -m pip install -e ".[rddl]"
+python -m pip install -e ".[pyrddl]"
 python -m pip install -e ".[highs]"
 python -m pip install -e ".[gurobi]"
 ```
@@ -169,9 +227,20 @@ darp solve --algorithm hilp --solver internal --output policy.json
 python -m pytest
 ```
 
+验证基础 RDDL parser 并在终端显示 DOT AST：
+
+```bash
+python -m darp.rddl.basic_parser \
+  examples/rddl/tiny_grid_domain.rddl \
+  examples/rddl/tiny_grid_instance.rddl \
+  --dot
+```
+
 ## 当前限制与后续计划
 
-- 当前默认 tiny grid 使用内置 Python 问题模型；`pyRDDLGym` 加载器已预留，完整 RDDL-to-PlanningProblem 编译仍在 Phase 2。
+- 当前基础 parser 只解析 RDDL 的文件、块、赋值和语句结构，用于验证 AST 与 DOT 可视化；完整 RDDL 表达式语义仍在 Phase 2 后续步骤。
+- 当前默认 tiny grid 使用内置 Python 问题模型；`RDDLFrontend` 解析层已预留，完整 RDDL-to-PlanningProblem 编译仍在 Phase 2。
+- DARP-RDDL 扩展语法还未定义；当前建议先用 sidecar 配置表达 duration/risk/HILP 参数。
 - 内置 ILP backend 使用穷举式 binary search，只适合小规模问题和测试，不追求性能。
 - HiGHS/Gurobi backend 文件已预留并提供依赖检测，完整性能复现实验放在后续阶段。
 - Gaussian percentile duration 已有可运行近似实现，后续会继续补齐论文中的 smoothed belief 细节。
