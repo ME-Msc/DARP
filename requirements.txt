@@ -1,0 +1,2 @@
+# Runtime dependencies for the core DARP prototype.
+# The current runnable core uses only the Python standard library.
