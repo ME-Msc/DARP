@@ -1,6 +1,6 @@
 """Parser frontend protocol for standard and extended RDDL inputs."""
 
-# TODO(phase-2.4): Add typed AST accessors when compiler grounding expands
+# TODO(phase-4.1): Add typed AST accessors when compiler grounding expands
 # beyond the structural subset.
 # TODO(phase-8.2): Add DARP-specific AST nodes once extended RDDL syntax is defined.
 

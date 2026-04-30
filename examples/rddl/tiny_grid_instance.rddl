@@ -1,13 +1,53 @@
 non-fluents tiny_grid_nf {
   domain = tiny_grid;
-  objects { location : { start, safe, risk, goal }; };
+  non-fluents {
+    is-start(@c11);
+    is-risk(@c22);
+    is-goal(@c33);
+    next-north(@c11, @c11);
+    next-north(@c12, @c12);
+    next-north(@c13, @c13);
+    next-north(@c21, @c11);
+    next-north(@c22, @c12);
+    next-north(@c23, @c13);
+    next-north(@c31, @c21);
+    next-north(@c32, @c22);
+    next-north(@c33, @c23);
+    next-south(@c11, @c21);
+    next-south(@c12, @c22);
+    next-south(@c13, @c23);
+    next-south(@c21, @c31);
+    next-south(@c22, @c32);
+    next-south(@c23, @c33);
+    next-south(@c31, @c31);
+    next-south(@c32, @c32);
+    next-south(@c33, @c33);
+    next-west(@c11, @c11);
+    next-west(@c12, @c11);
+    next-west(@c13, @c12);
+    next-west(@c21, @c21);
+    next-west(@c22, @c21);
+    next-west(@c23, @c22);
+    next-west(@c31, @c31);
+    next-west(@c32, @c31);
+    next-west(@c33, @c32);
+    next-east(@c11, @c12);
+    next-east(@c12, @c13);
+    next-east(@c13, @c13);
+    next-east(@c21, @c22);
+    next-east(@c22, @c23);
+    next-east(@c23, @c23);
+    next-east(@c31, @c32);
+    next-east(@c32, @c33);
+    next-east(@c33, @c33);
+  };
 }
 
 instance tiny_grid_inst {
   domain = tiny_grid;
   non-fluents = tiny_grid_nf;
-  init-state { at(start); };
-  horizon = 2;
+  init-state { at(@c11); };
+  horizon = 8;
   discount = 1.0;
   max-nondef-actions = 1;
 }

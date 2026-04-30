@@ -1,20 +1,30 @@
 """Standalone HTML visualizer for the built-in RDDL AST."""
 
-# TODO(parser): Add source spans and expression-level nodes once the parser
-# supports full RDDL semantics.
+# TODO(phase-4.1): Show exact token spans for typed expression nodes when the
+# compiler moves to a factored RDDL AST.
 
 from __future__ import annotations
 
 import argparse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import html
 import json
 import re
+import threading
+import time
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
 
+from darp.core.problem import PlanningProblem
 from darp.rddl.ast import RDDLASTNode
 from darp.rddl.basic_parser import BasicRDDLParser
+from darp.rddl.compiler import RDDLCompiler
+from darp.rddl.lexicon import RDDL_KEYWORDS
+from darp.rddl.loader import RDDLLoader, available_frontends
+from darp.sim.local import LocalSimulator
 
 MIN_NODE_WIDTH = 154
 MIN_NODE_HEIGHT = 60
@@ -29,33 +39,10 @@ V_GAP = 92
 MARGIN_X = 36
 MARGIN_Y = 32
 
-RDDL_KEYWORDS = {
-    "action-fluent",
-    "bool",
-    "cpfs",
-    "default",
-    "derived-fluent",
-    "discount",
-    "domain",
-    "false",
-    "horizon",
-    "init-state",
-    "instance",
-    "interm-fluent",
-    "max-nondef-actions",
-    "non-fluent",
-    "object",
-    "objects",
-    "observ-fluent",
-    "pvariables",
-    "requirements",
-    "reward",
-    "reward-deterministic",
-    "state-fluent",
-    "true",
-    "types",
-}
-TOKEN_PATTERN = re.compile(r"\s+|\d+(?:\.\d+)?|[A-Za-z_?][A-Za-z0-9_?'-]*|[{}()[\]:=,;./]|.")
+TOKEN_PATTERN = re.compile(
+    r"\s+|==|!=|<=|>=|\d+(?:\.\d+)?|@[A-Za-z0-9_-]+|\?[A-Za-z0-9_-]+|"
+    r"[A-Za-z_][A-Za-z0-9_'\-]*|[{}()[\]:=,;./^|&!<>+]|."
+)
 
 
 @dataclass(frozen=True)
@@ -89,12 +76,27 @@ class _VisualNode:
     height: float
 
 
-def render_html(ast: RDDLASTNode, title: str = "RDDL AST") -> str:
+@dataclass(frozen=True)
+class _RuntimeMarkers:
+    """Store known semantic markers from non-fluent atoms. / 保存从 non-fluent atom 中识别出的语义标记。"""
+
+    starts: tuple[str, ...]
+    risks: tuple[str, ...]
+    goals: tuple[str, ...]
+
+
+def render_html(
+    ast: RDDLASTNode,
+    title: str = "RDDL AST",
+    runtime: dict[str, object] | None = None,
+) -> str:
     """Render an AST as a self-contained interactive HTML page. / 将 AST 渲染为独立交互式 HTML 页面。"""
 
-    data_json = _json_for_html(_build_visual_data(ast))
+    data_json = _json_for_html(_build_visual_data(ast, runtime=runtime))
     escaped_title = html.escape(title)
     summary = html.escape(ast.summary())
+    runtime_panel = _runtime_panel_html(runtime)
+    workspace_class = "workspace has-runtime" if runtime_panel else "workspace"
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -107,54 +109,65 @@ def render_html(ast: RDDLASTNode, title: str = "RDDL AST") -> str:
   <header>
     <h1>{escaped_title}</h1>
     <div class="summary">{summary}</div>
-    <div class="toolbar" role="toolbar" aria-label="AST controls">
-      <div class="toolbar-group">
-        <span class="group-label">Tree</span>
-        <button id="expand-all" type="button">Expand all</button>
-        <button id="collapse-all" type="button">Collapse all</button>
-      </div>
-      <div class="toolbar-group">
-        <span class="group-label">Depth</span>
-        <input id="depth-input" class="compact-input" type="number" min="0" step="1" value="2" aria-label="Expansion depth">
-        <button id="expand-depth" type="button">Open depth</button>
-      </div>
-      <div class="toolbar-group toolbar-search">
-        <span class="group-label">Search</span>
-        <input id="search-input" type="search" placeholder="Kind or label" aria-label="Search AST nodes">
-        <label class="search-toggle" title="Match case">
-          <input id="match-case" type="checkbox">
-          <span>Aa</span>
-        </label>
-        <label class="search-toggle" title="Match whole word">
-          <input id="whole-word" type="checkbox">
-          <span>Word</span>
-        </label>
-        <label class="search-toggle" title="Use regular expression">
-          <input id="use-regex" type="checkbox">
-          <span>Regex</span>
-        </label>
-        <button id="previous-match" type="button">Previous</button>
-        <button id="next-match" type="button">Next</button>
-        <button id="reveal-matches" type="button">Reveal paths</button>
-        <button id="clear-search" type="button">Clear</button>
-      </div>
-      <div class="toolbar-group">
-        <span class="group-label">Zoom</span>
-        <button id="zoom-out" type="button">-</button>
-        <button id="zoom-reset" type="button">100%</button>
-        <button id="zoom-in" type="button">+</button>
-      </div>
-    </div>
-    <div class="status-row">
-      <span id="visible-status"></span>
-      <span id="match-status"></span>
-      <span id="selected-status"></span>
-    </div>
   </header>
-  <main>
-    <div class="canvas" id="canvas">
-      <svg id="ast-svg" role="img" aria-label="{escaped_title}"></svg>
-    </div>
+  <main class="{workspace_class}">
+    <aside class="text-panel" aria-label="RDDL source text">
+      <div class="panel-heading">RDDL Source</div>
+      <div id="text-outline" class="text-outline"></div>
+    </aside>
+    <div id="split-resizer" class="split-resizer" role="separator" aria-label="Resize source and AST panes"></div>
+    <section class="graph-panel" aria-label="AST graph">
+      <div class="panel-heading">AST</div>
+      <div class="ast-tools">
+        <div class="toolbar" role="toolbar" aria-label="Source and AST controls">
+          <div class="toolbar-group">
+            <span class="group-label">Tree</span>
+            <button id="expand-all" type="button">Expand all</button>
+            <button id="collapse-all" type="button">Collapse all</button>
+          </div>
+          <div class="toolbar-group">
+            <span class="group-label">Depth</span>
+            <input id="depth-input" class="compact-input" type="number" min="0" step="1" value="2" aria-label="Expansion depth">
+            <button id="expand-depth" type="button">Open depth</button>
+          </div>
+          <div class="toolbar-group toolbar-search">
+            <span class="group-label">Search</span>
+            <input id="search-input" type="search" placeholder="Kind or label" aria-label="Search AST nodes">
+            <label class="search-toggle" title="Match case">
+              <input id="match-case" type="checkbox">
+              <span>Aa</span>
+            </label>
+            <label class="search-toggle" title="Match whole word">
+              <input id="whole-word" type="checkbox">
+              <span>Word</span>
+            </label>
+            <label class="search-toggle" title="Use regular expression">
+              <input id="use-regex" type="checkbox">
+              <span>Regex</span>
+            </label>
+            <button id="previous-match" type="button">Previous</button>
+            <button id="next-match" type="button">Next</button>
+            <button id="reveal-matches" type="button">Reveal paths</button>
+            <button id="clear-search" type="button">Clear</button>
+          </div>
+          <div class="toolbar-group">
+            <span class="group-label">Zoom</span>
+            <button id="zoom-out" type="button">-</button>
+            <button id="zoom-reset" type="button">100%</button>
+            <button id="zoom-in" type="button">+</button>
+          </div>
+        </div>
+        <div class="status-row">
+          <span id="visible-status"></span>
+          <span id="match-status"></span>
+          <span id="selected-status"></span>
+        </div>
+      </div>
+      <div class="canvas" id="canvas">
+        <svg id="ast-svg" role="img" aria-label="{escaped_title}"></svg>
+      </div>
+    </section>
+    {runtime_panel}
   </main>
   <script id="ast-data" type="application/json">{data_json}</script>
   <script>{_script()}</script>
@@ -163,22 +176,34 @@ def render_html(ast: RDDLASTNode, title: str = "RDDL AST") -> str:
 """
 
 
-def write_html(path: str | Path, ast: RDDLASTNode, title: str = "RDDL AST") -> Path:
-    """Write the rendered AST HTML to disk. / 将渲染后的 AST HTML 写入磁盘。"""
-    output = Path(path)
-    output.write_text(render_html(ast, title=title), encoding="utf-8")
-    return output
+def _runtime_panel_html(runtime: dict[str, object] | None) -> str:
+    """Return the runtime panel markup only for DARP internal simulation. / 仅为 DARP 内部仿真返回运行面板标记。"""
+    if not runtime or runtime.get("mode") != "internal":
+        return ""
+    return """
+    <div id="runtime-resizer" class="split-resizer runtime-resizer" role="separator" aria-label="Resize AST and runtime panes"></div>
+    <aside class="runtime-panel" aria-label="Execution state machine">
+      <div class="panel-heading">Execution State Machine</div>
+      <div id="runtime-root" class="runtime-root"></div>
+    </aside>
+    """
 
 
-def _build_visual_data(ast: RDDLASTNode) -> dict[str, object]:
+def _build_visual_data(
+    ast: RDDLASTNode, runtime: dict[str, object] | None = None
+) -> dict[str, object]:
     """Convert AST nodes into JSON-ready visual metadata. / 将 AST 节点转换为可写入 JSON 的可视化元数据。"""
     nodes: list[dict[str, object]] = []
+    files: list[dict[str, object]] = []
     max_depth = 0
 
-    def visit(node: RDDLASTNode, depth: int, parent_id: str | None) -> str:
+    def visit(
+        node: RDDLASTNode, depth: int, parent_id: str | None, source_file_id: str | None
+    ) -> str:
         """Append one visual node and visit its children. / 添加一个可视节点并递归访问子节点。"""
         nonlocal max_depth
         node_id = f"node{len(nodes)}"
+        current_source_file_id = node_id if node.kind == "file" else source_file_id
         visual = _make_visual_node(node, node_id)
         payload: dict[str, object] = {
             "id": node_id,
@@ -190,6 +215,9 @@ def _build_visual_data(ast: RDDLASTNode) -> dict[str, object]:
             "height": round(visual.height, 1),
             "depth": depth,
             "parent": parent_id,
+            "sourceFile": current_source_file_id,
+            "line": node.line,
+            "endLine": node.end_line if node.end_line is not None else node.line,
             "children": [],
             "lines": [
                 [{"text": token.text, "className": token.css_class} for token in line.tokens]
@@ -197,17 +225,20 @@ def _build_visual_data(ast: RDDLASTNode) -> dict[str, object]:
             ],
         }
         nodes.append(payload)
+        if node.kind == "file":
+            files.append(_file_payload(node_id, node.label))
         max_depth = max(max_depth, depth)
         children = payload["children"]
         assert isinstance(children, list)
         for child in node.children:
-            children.append(visit(child, depth + 1, node_id))
+            children.append(visit(child, depth + 1, node_id, current_source_file_id))
         return node_id
 
-    root_id = visit(ast, 0, None)
+    root_id = visit(ast, 0, None, None)
     return {
         "rootId": root_id,
         "nodes": nodes,
+        "files": files,
         "totalNodes": len(nodes),
         "maxDepth": max_depth,
         "layout": {
@@ -220,6 +251,25 @@ def _build_visual_data(ast: RDDLASTNode) -> dict[str, object]:
             "labelBaselineY": LABEL_BASELINE_Y,
             "lineHeight": LINE_HEIGHT,
         },
+        "runtime": runtime or {"enabled": False},
+    }
+
+
+def _file_payload(file_id: str, path: str) -> dict[str, object]:
+    """Build source text payload for one file node. / 为单个 file 节点构建源码文本载荷。"""
+    file_path = Path(path)
+    try:
+        source = file_path.read_text(encoding="utf-8")
+    except OSError:
+        source = ""
+    return {
+        "id": file_id,
+        "name": file_path.name or path,
+        "path": path,
+        "lines": [
+            [{"text": token.text, "className": token.css_class} for token in _tokenize(line)]
+            for line in source.splitlines()
+        ],
     }
 
 
@@ -233,6 +283,380 @@ def _json_for_html(payload: dict[str, object]) -> str:
     """Encode JSON safely for inline HTML. / 将 JSON 安全编码到内联 HTML 中。"""
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return encoded.replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
+
+
+class _RuntimeController:
+    """Own the local simulator state behind the browser API. / 持有浏览器 API 背后的本地 simulator 状态。"""
+
+    def __init__(self, problem: PlanningProblem, markers: _RuntimeMarkers) -> None:
+        """Create a controller and reset the simulator once. / 创建控制器并先重置一次 simulator。"""
+        self.problem = problem
+        self.markers = markers
+        self.simulator = LocalSimulator(problem, seed=7)
+        self.lock = threading.Lock()
+        self.trace: list[dict[str, object]] = []
+        self.last_action: str | None = None
+        self.previous_state: object | None = None
+        self.observation: object | None = None
+        self.reward = 0.0
+        self.done = False
+        self.reset()
+
+    def reset(self) -> dict[str, object]:
+        """Reset the simulation and return a browser snapshot. / 重置仿真并返回浏览器快照。"""
+        with self.lock:
+            self.observation = self.simulator.reset()
+            self.reward = 0.0
+            self.done = False
+            self.last_action = None
+            self.previous_state = None
+            self.trace = [
+                {
+                    "step": 0,
+                    "action": "reset",
+                    "state": self.simulator.state,
+                    "observation": self.observation,
+                    "reward": 0.0,
+                    "done": False,
+                }
+            ]
+            snapshot = self._snapshot_locked()
+            print(
+                "Runtime reset: "
+                f"state={snapshot['state']}, observation={snapshot['observation']}, "
+                f"planned_action={snapshot['planned_action']}",
+                flush=True,
+            )
+            return snapshot
+
+    def step(self) -> dict[str, object]:
+        """Select a DARP action, apply it, and return a snapshot. / 选择 DARP 动作、执行并返回快照。"""
+        with self.lock:
+            if self.done:
+                return self._snapshot_locked()
+            action = _select_action(self.problem, self.simulator.state, self.markers)
+            if action is None:
+                self.done = True
+                snapshot = self._snapshot_locked()
+                print(
+                    "Runtime step: no DARP action available; marking runtime done.",
+                    flush=True,
+                )
+                return snapshot
+            self.previous_state = self.simulator.state
+            self.observation, self.reward, self.done, info = self.simulator.step(action)
+            self.last_action = action
+            self.trace.append(
+                {
+                    "step": self.simulator.steps,
+                    "action": action,
+                    "previous_state": self.previous_state,
+                    "state": info["state"],
+                    "observation": self.observation,
+                    "reward": self.reward,
+                    "done": self.done,
+                }
+            )
+            snapshot = self._snapshot_locked()
+            print(
+                "Runtime step: "
+                f"action={action}, from={self.previous_state}, to={snapshot['state']}, "
+                f"observation={snapshot['observation']}, reward={snapshot['reward']}, "
+                f"done={snapshot['done']}",
+                flush=True,
+            )
+            return snapshot
+
+    def snapshot(self) -> dict[str, object]:
+        """Return the current browser snapshot. / 返回当前浏览器快照。"""
+        with self.lock:
+            return self._snapshot_locked()
+
+    def _snapshot_locked(self) -> dict[str, object]:
+        """Build a snapshot while the controller lock is held. / 在持锁状态下构建快照。"""
+        state = self.simulator.state
+        return {
+            "state": state,
+            "observation": self.observation,
+            "reward": self.reward,
+            "step": self.simulator.steps,
+            "done": self.done,
+            "last_action": self.last_action,
+            "previous_state": self.previous_state,
+            "initial_state": self.trace[0]["state"] if self.trace else None,
+            "initial_observation": self.trace[0]["observation"] if self.trace else None,
+            "planned_action": _select_action(self.problem, state, self.markers),
+            "trace": self.trace,
+        }
+
+
+def _runtime_payload(
+    problem: PlanningProblem,
+    markers: _RuntimeMarkers,
+    snapshot: dict[str, object],
+    *,
+    endpoint: str,
+) -> dict[str, object]:
+    """Build JSON data for the runtime panel. / 构建运行面板所需的 JSON 数据。"""
+    return {
+        "enabled": True,
+        "mode": "internal",
+        "simulator": "darp",
+        "endpoint": endpoint,
+        "snapshot": snapshot,
+        "problem": {
+            "name": problem.name,
+            "horizon": problem.max_depth,
+            "states": [str(state) for state in problem.states],
+            "actions": list(problem.actions),
+            "markers": {
+                "starts": list(markers.starts),
+                "risks": list(markers.risks),
+                "goals": list(markers.goals),
+            },
+            "layout": _runtime_layout(problem),
+            "transitions": [
+                {
+                    "from": str(source),
+                    "action": action,
+                    "to": str(target),
+                    "prob": probability,
+                    "reward": problem.reward(source, action),
+                }
+                for (source, action, target), probability in problem.transitions.items()
+                if probability > 1e-12
+            ],
+        },
+    }
+
+
+def _external_simulator_payload(simulator: str, loaded: object) -> dict[str, object]:
+    """Build runtime metadata for non-DARP simulators without drawing a state machine. / 为非 DARP simulator 构建不绘制状态机的运行元数据。"""
+    metadata = getattr(loaded, "metadata", {})
+    return {
+        "enabled": True,
+        "mode": "external",
+        "simulator": simulator,
+        "metadata": metadata,
+    }
+
+
+def _runtime_layout(problem: PlanningProblem) -> dict[str, object]:
+    """Infer a small display layout for runtime states. / 推断运行状态的小型显示布局。"""
+    grid_cells: dict[str, dict[str, int]] = {}
+    for state in problem.states:
+        match = re.fullmatch(r"c(\d+)(\d+)", str(state))
+        if match is None:
+            return {"kind": "state-machine"}
+        row = int(match.group(1))
+        col = int(match.group(2))
+        grid_cells[str(state)] = {"row": row, "col": col}
+    return {
+        "kind": "grid",
+        "rows": max(cell["row"] for cell in grid_cells.values()),
+        "cols": max(cell["col"] for cell in grid_cells.values()),
+        "cells": grid_cells,
+    }
+
+
+def _runtime_markers(ast: RDDLASTNode) -> _RuntimeMarkers:
+    """Extract start/risk/goal markers from known non-fluent atoms. / 从已知 non-fluent atom 中提取 start/risk/goal 标记。"""
+    starts: set[str] = set()
+    risks: set[str] = set()
+    goals: set[str] = set()
+    for node in _walk_ast(ast):
+        if node.kind != "statement":
+            continue
+        match = re.fullmatch(r"(is-start|is-risk|is-goal)\(@?([A-Za-z0-9_-]+)\)", node.label)
+        if match is None:
+            continue
+        marker, state = match.groups()
+        if marker == "is-start":
+            starts.add(state)
+        elif marker == "is-risk":
+            risks.add(state)
+        elif marker == "is-goal":
+            goals.add(state)
+    return _RuntimeMarkers(tuple(sorted(starts)), tuple(sorted(risks)), tuple(sorted(goals)))
+
+
+def _walk_ast(node: RDDLASTNode) -> list[RDDLASTNode]:
+    """Return a flat preorder list of AST nodes. / 返回 AST 节点的前序扁平列表。"""
+    result = [node]
+    for child in node.children:
+        result.extend(_walk_ast(child))
+    return result
+
+
+def _select_action(
+    problem: PlanningProblem, state: object | None, markers: _RuntimeMarkers
+) -> str | None:
+    """Select DARP's next temporary policy action. / 选择 DARP 临时策略的下一个动作。"""
+    if state is None:
+        return problem.actions[0] if problem.actions else None
+    goals = set(markers.goals)
+    risks = set(markers.risks)
+    if not goals:
+        return problem.actions[0] if problem.actions else None
+    if str(state) in goals:
+        return _hold_or_first_action(problem, state)
+    queue: list[tuple[object, list[str]]] = [(state, [])]
+    seen = {state}
+    while queue:
+        current, actions = queue.pop(0)
+        if str(current) in goals:
+            return actions[0] if actions else None
+        for action in problem.actions:
+            for target in problem.states:
+                if problem.transition_prob(current, action, target) <= 1e-12:
+                    continue
+                if target in seen or (str(target) in risks and str(target) not in goals):
+                    continue
+                seen.add(target)
+                queue.append((target, [*actions, action]))
+    return problem.actions[0] if problem.actions else None
+
+
+def _hold_or_first_action(problem: PlanningProblem, state: object) -> str | None:
+    """Prefer an action that keeps a goal state stable. / 优先选择能让 goal state 保持稳定的动作。"""
+    for action in problem.actions:
+        if problem.transition_prob(state, action, state) > 1e-12:
+            return action
+    return problem.actions[0] if problem.actions else None
+
+
+def _serve_runtime_visualizer(
+    *,
+    ast: RDDLASTNode,
+    problem: PlanningProblem,
+    markers: _RuntimeMarkers,
+    host: str,
+    port: int,
+    open_browser: bool = True,
+) -> int:
+    """Serve the interactive runtime visualizer over local HTTP. / 通过本地 HTTP 提供交互式运行可视化。"""
+    controller = _RuntimeController(problem, markers)
+
+    class Handler(BaseHTTPRequestHandler):
+        """Handle one visualizer HTTP request. / 处理一个 visualizer HTTP 请求。"""
+
+        def log_message(self, format: str, *args: Any) -> None:
+            """Silence default HTTP logs. / 静默默认 HTTP 日志。"""
+            return
+
+        def do_GET(self) -> None:
+            """Serve the HTML page or current runtime state. / 提供 HTML 页面或当前运行状态。"""
+            parsed = urlparse(self.path)
+            if parsed.path == "/api/state":
+                self._send_json(controller.snapshot())
+                return
+            if parsed.path not in {"/", "/index.html"}:
+                self.send_error(404)
+                return
+            payload = _runtime_payload(problem, markers, controller.snapshot(), endpoint="/api")
+            page = render_html(ast, title="RDDL AST + Runtime", runtime=payload)
+            self._send_bytes(page.encode("utf-8"), "text/html; charset=utf-8")
+
+        def do_POST(self) -> None:
+            """Apply runtime commands from the browser. / 执行浏览器发来的运行命令。"""
+            parsed = urlparse(self.path)
+            if parsed.path == "/api/reset":
+                self._send_json(controller.reset())
+                return
+            if parsed.path == "/api/step":
+                content_length = int(self.headers.get("Content-Length", "0") or "0")
+                if content_length:
+                    self.rfile.read(content_length)
+                self._send_json(controller.step())
+                return
+            self.send_error(404)
+
+        def _send_json(self, payload: dict[str, object]) -> None:
+            """Send a JSON response. / 发送 JSON 响应。"""
+            self._send_bytes(json.dumps(payload, default=str).encode("utf-8"), "application/json")
+
+        def _send_bytes(self, payload: bytes, content_type: str) -> None:
+            """Send bytes with a content type. / 按指定 content type 发送字节。"""
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer((host, port), Handler)
+    actual_host, actual_port = server.server_address
+    display_host = "127.0.0.1" if actual_host in {"", "0.0.0.0"} else actual_host
+    url = f"http://{display_host}:{actual_port}/"
+    thread = threading.Thread(target=server.serve_forever, name="darp-visualizer-http", daemon=True)
+    thread.start()
+    print(f"Interactive RDDL visualizer running at {url}", flush=True)
+    print("Press Ctrl+C to stop the visualizer server.", flush=True)
+    if open_browser:
+        webbrowser.open(url)
+    try:
+        while thread.is_alive():
+            time.sleep(0.25)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.shutdown()
+        thread.join(timeout=2.0)
+        server.server_close()
+    return 0
+
+
+def _serve_html_visualizer(
+    *,
+    ast: RDDLASTNode,
+    title: str,
+    runtime: dict[str, object] | None,
+    host: str,
+    port: int,
+    open_browser: bool = True,
+) -> int:
+    """Serve a live HTML visualizer without writing a static file. / 提供不写静态文件的实时 HTML 可视化服务。"""
+
+    class Handler(BaseHTTPRequestHandler):
+        """Handle one non-interactive visualizer HTTP request. / 处理一个非交互式 visualizer HTTP 请求。"""
+
+        def log_message(self, format: str, *args: Any) -> None:
+            """Silence default HTTP logs. / 静默默认 HTTP 日志。"""
+            return
+
+        def do_GET(self) -> None:
+            """Serve the current HTML page. / 提供当前 HTML 页面。"""
+            parsed = urlparse(self.path)
+            if parsed.path not in {"/", "/index.html"}:
+                self.send_error(404)
+                return
+            page = render_html(ast, title=title, runtime=runtime)
+            payload = page.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer((host, port), Handler)
+    actual_host, actual_port = server.server_address
+    display_host = "127.0.0.1" if actual_host in {"", "0.0.0.0"} else actual_host
+    url = f"http://{display_host}:{actual_port}/"
+    thread = threading.Thread(target=server.serve_forever, name="darp-visualizer-http", daemon=True)
+    thread.start()
+    print(f"Interactive RDDL visualizer running at {url}", flush=True)
+    print("Press Ctrl+C to stop the visualizer server.", flush=True)
+    if open_browser:
+        webbrowser.open(url)
+    try:
+        while thread.is_alive():
+            time.sleep(0.25)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.shutdown()
+        thread.join(timeout=2.0)
+        server.server_close()
+    return 0
 
 
 def _styles() -> str:
@@ -273,7 +697,7 @@ def _styles() -> str:
       color: var(--ink);
     }
     header {
-      padding: 18px 28px 14px;
+      padding: 14px 28px 12px;
       border-bottom: 1px solid #d7e1ea;
       background: rgba(255, 255, 255, 0.96);
       position: sticky;
@@ -289,14 +713,20 @@ def _styles() -> str:
     .summary {
       color: var(--muted);
       font-size: 13px;
-      margin-bottom: 12px;
+      margin-bottom: 0;
+    }
+    .ast-tools {
+      flex: 0 0 auto;
+      padding: 10px 10px 8px;
+      border-bottom: 1px solid #d7e1ea;
+      background: #ffffff;
     }
     .toolbar {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       gap: 10px;
-      margin-bottom: 10px;
+      margin-bottom: 8px;
     }
     .toolbar-group {
       display: inline-flex;
@@ -402,21 +832,428 @@ def _styles() -> str:
       color: #475569;
       font-size: 12px;
     }
-    main {
-      padding: 24px;
+    main.workspace {
+      display: grid;
+      grid-template-columns:
+        minmax(280px, var(--source-width, 28vw))
+        10px
+        minmax(360px, 1fr);
+      gap: 8px;
+      padding: 18px;
+      align-items: stretch;
+    }
+    main.workspace.has-runtime {
+      grid-template-columns:
+        minmax(280px, var(--source-width, 28vw))
+        10px
+        minmax(360px, 1fr)
+        10px
+        minmax(300px, var(--runtime-width, 28vw));
+    }
+    .split-resizer {
+      position: relative;
+      min-height: calc(100vh - 132px);
+      max-height: calc(100vh - 132px);
+      border-radius: 8px;
+      cursor: col-resize;
+    }
+    .split-resizer::before {
+      content: "";
+      position: absolute;
+      top: 8px;
+      bottom: 8px;
+      left: 4px;
+      width: 2px;
+      border-radius: 2px;
+      background: #bfd0de;
+    }
+    .split-resizer:hover::before,
+    .split-resizer.resizer-active::before {
+      background: #0284c7;
+      box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.14);
+    }
+    .text-panel,
+    .graph-panel,
+    .runtime-panel {
+      min-height: calc(100vh - 132px);
+      max-height: calc(100vh - 132px);
+      border: 1px solid #d7e1ea;
+      border-radius: 8px;
+      background: #ffffff;
+      box-shadow: 0 14px 28px rgba(42, 62, 82, 0.10);
+      overflow: hidden;
+    }
+    .text-panel {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .graph-panel,
+    .runtime-panel {
+      display: flex;
+      flex-direction: column;
+    }
+    .panel-heading {
+      flex: 0 0 auto;
+      padding: 11px 14px;
+      border-bottom: 1px solid #d7e1ea;
+      background: #f8fbfd;
+      color: #274158;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .text-outline {
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      padding: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.45;
+      min-height: 0;
+    }
+    .source-block {
+      display: flex;
+      flex: 1 1 0;
+      flex-direction: column;
+      min-height: 118px;
+      border: 1px solid #d7e1ea;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #ffffff;
+    }
+    .source-header {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 2px;
+      padding: 9px 11px;
+      border-bottom: 1px solid #d7e1ea;
+      background: #f8fbfd;
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+    .source-name {
+      color: #172534;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .source-path {
+      color: #617488;
+      font-size: 11px;
+      overflow-wrap: anywhere;
+    }
+    .source-body {
+      flex: 1 1 auto;
+      min-height: 0;
       overflow: auto;
+      padding: 6px 0;
+    }
+    .source-resizer {
+      position: relative;
+      flex: 0 0 12px;
+      cursor: row-resize;
+    }
+    .source-resizer::before {
+      content: "";
+      position: absolute;
+      top: 5px;
+      left: 12px;
+      right: 12px;
+      height: 2px;
+      border-radius: 2px;
+      background: #bfd0de;
+    }
+    .source-resizer:hover::before,
+    .source-resizer.resizer-active::before {
+      background: #0284c7;
+      box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.14);
+    }
+    .source-line {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr);
+      align-items: start;
+      width: 100%;
+      height: auto;
+      min-height: 24px;
+      margin: 0;
+      padding: 0;
+      border: 1px solid transparent;
+      border-radius: 0;
+      background: transparent;
+      color: #172534;
+      text-align: left;
+      font: inherit;
+      cursor: pointer;
+      transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+    }
+    .source-line:hover {
+      border-color: #bfd0de;
+      background: #f8fbfd;
+    }
+    .source-line.source-match {
+      border-color: rgba(245, 158, 11, 0.72);
+      background: #fff7ed;
+    }
+    .source-line.source-active-match {
+      border-color: rgba(239, 68, 68, 0.86);
+      background: #fef2f2;
+      box-shadow: inset 4px 0 0 rgba(239, 68, 68, 0.86);
+    }
+    .source-line.source-selected {
+      border-color: rgba(2, 132, 199, 0.9);
+      background: #e8f4ff;
+      box-shadow: inset 4px 0 0 rgba(2, 132, 199, 0.9);
+      opacity: 1;
+    }
+    .source-gutter {
+      position: relative;
+      min-height: 24px;
+      padding: 3px 9px 3px 0;
+      border-right: 1px solid #d7e1ea;
+      color: #7b8da0;
+      text-align: right;
+      user-select: none;
+    }
+    .source-gutter::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: -1px;
+      right: -1px;
+      width: 1px;
+      background: #d7e1ea;
+    }
+    .source-code {
+      min-height: 24px;
+      padding: 3px 10px;
+      white-space: pre;
+      overflow-x: auto;
+    }
+    .graph-panel {
+      overflow: hidden;
+      min-width: 0;
     }
     .canvas {
+      flex: 1 1 auto;
       width: max-content;
       min-width: 100%;
       padding: 12px;
+      overflow: auto;
+    }
+    .runtime-panel {
+      min-width: 0;
+      overflow: hidden;
+    }
+    .runtime-root {
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
+      padding: 12px;
+      gap: 10px;
+    }
+    .runtime-message {
+      padding: 12px;
+      border: 1px solid #d7e1ea;
+      border-radius: 8px;
+      background: #f8fbfd;
+      color: #52677c;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .runtime-controls {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) repeat(6, auto);
+      gap: 8px;
+      align-items: center;
+    }
+    .runtime-planned-action {
+      min-width: 0;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid #bfd0de;
+      border-radius: 6px;
+      padding: 0 9px;
+      background: #ffffff;
+      color: #172534;
+      font: inherit;
+      font-size: 13px;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .runtime-planned-action strong {
+      color: #52677c;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .runtime-status {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .runtime-info {
+      display: grid;
+      gap: 4px;
+      padding: 9px 10px;
+      border: 1px solid #d7e1ea;
+      border-radius: 8px;
+      background: #ffffff;
+      color: #274158;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .runtime-chip {
+      padding: 8px 10px;
+      border: 1px solid #d7e1ea;
+      border-radius: 8px;
+      background: #f8fbfd;
+      color: #274158;
+      font-size: 12px;
+      min-width: 0;
+    }
+    .runtime-chip strong {
+      display: block;
+      margin-bottom: 2px;
+      color: #617488;
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .runtime-stage {
+      flex: 1 1 auto;
+      min-height: 250px;
+      position: relative;
+      border: 1px solid #d7e1ea;
+      border-radius: 8px;
+      background: #ffffff;
+      overflow: auto;
+    }
+    .runtime-svg {
+      display: block;
+      min-width: 0;
+      min-height: 0;
+      background: #ffffff;
+      touch-action: none;
+    }
+    .runtime-node-group {
+      cursor: grab;
+      touch-action: none;
+    }
+    .runtime-edge-drag-area {
+      fill: none;
+      stroke: transparent;
+      stroke-width: 18;
+      cursor: grab;
+      pointer-events: stroke;
+      touch-action: none;
+    }
+    .runtime-edge-label-group {
+      cursor: grab;
+      touch-action: none;
+    }
+    .runtime-node-group:active,
+    .runtime-edge-label-group:active,
+    .runtime-edge-drag-area:active {
+      cursor: grabbing;
+    }
+    .runtime-cell {
+      fill: #f8fbfd;
+      stroke: #bfd0de;
+      stroke-width: 1.2;
+    }
+    .runtime-cell.current {
+      fill: #e8f4ff;
+      stroke: #0284c7;
+      stroke-width: 2.4;
+    }
+    .runtime-cell.start {
+      fill: #e9f8ef;
+    }
+    .runtime-cell.risk {
+      fill: #fef2f2;
+      stroke: #ef4444;
+    }
+    .runtime-cell.goal {
+      fill: #fff7ed;
+      stroke: #f59e0b;
+    }
+    .runtime-cell-label {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 8px;
+      font-weight: 700;
+      fill: #172534;
+      pointer-events: none;
+    }
+    .runtime-marker-label {
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      font-size: 6px;
+      font-weight: 800;
+      fill: #475569;
+      pointer-events: none;
+      text-transform: uppercase;
+    }
+    .runtime-token {
+      fill: #0284c7;
+      stroke: #ffffff;
+      stroke-width: 1.5;
+      filter: drop-shadow(0 4px 8px rgba(2, 132, 199, 0.30));
+    }
+    .runtime-edge {
+      fill: none;
+      stroke: #8ca4ba;
+      stroke-width: 1.3;
+      opacity: 0.62;
+    }
+    .runtime-edge.active {
+      stroke: #0284c7;
+      stroke-width: 2.6;
+      opacity: 1;
+    }
+    .runtime-edge-label-bg {
+      fill: #ffffff;
+      stroke: #d7e1ea;
+      stroke-width: 1;
+      opacity: 0.94;
+    }
+    .runtime-edge-label {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 5.2px;
+      font-weight: 700;
+      fill: #274158;
+      pointer-events: none;
+    }
+    .runtime-node {
+      fill: #f8fbfd;
+      stroke: #8ca4ba;
+      stroke-width: 1.5;
+    }
+    .runtime-node.current {
+      fill: #e8f4ff;
+      stroke: #0284c7;
+      stroke-width: 3;
+    }
+    .runtime-trace {
+      max-height: 120px;
+      overflow: auto;
+      border: 1px solid #d7e1ea;
+      border-radius: 8px;
+      background: #f8fbfd;
+      padding: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      color: #274158;
     }
     svg {
       display: block;
       background: #ffffff;
-      border: 1px solid #d7e1ea;
-      border-radius: 8px;
-      box-shadow: 0 14px 28px rgba(42, 62, 82, 0.10);
     }
     .edge {
       fill: none;
@@ -425,7 +1262,7 @@ def _styles() -> str:
       stroke-linecap: round;
     }
     .node {
-      cursor: default;
+      cursor: pointer;
     }
     .node-card {
       fill: var(--panel);
@@ -511,15 +1348,15 @@ def _styles() -> str:
       fill: #274158;
       pointer-events: none;
     }
-    .tok-keyword { fill: var(--keyword); font-weight: 700; }
-    .tok-symbol { fill: var(--symbol); }
-    .tok-number { fill: var(--number); }
-    .tok-literal { fill: var(--literal); font-weight: 700; }
-    .tok-parameter { fill: var(--parameter); }
-    .tok-operator { fill: var(--operator); font-weight: 700; }
-    .tok-punct { fill: #64748b; }
-    .tok-path { fill: #334155; }
-    .tok-space { fill: currentColor; }
+    .tok-keyword { fill: var(--keyword); color: var(--keyword); font-weight: 700; }
+    .tok-symbol { fill: var(--symbol); color: var(--symbol); }
+    .tok-number { fill: var(--number); color: var(--number); }
+    .tok-literal { fill: var(--literal); color: var(--literal); font-weight: 700; }
+    .tok-parameter { fill: var(--parameter); color: var(--parameter); }
+    .tok-operator { fill: var(--operator); color: var(--operator); font-weight: 700; }
+    .tok-punct { fill: #64748b; color: #64748b; }
+    .tok-path { fill: #334155; color: #334155; }
+    .tok-space { fill: currentColor; color: inherit; }
     .node-rddl .node-card { fill: var(--rddl); }
     .node-file .node-card { fill: var(--file); }
     .node-domain .node-card { fill: var(--domain); }
@@ -532,6 +1369,38 @@ def _styles() -> str:
       35% { opacity: 1; }
       100% { opacity: 0.55; }
     }
+    @media (max-width: 900px) {
+      main.workspace {
+        grid-template-columns: 1fr;
+      }
+      .split-resizer {
+        display: none;
+      }
+      .text-panel,
+      .graph-panel,
+      .runtime-panel {
+        max-height: none;
+      }
+      .text-panel {
+        min-height: 260px;
+        max-height: 360px;
+      }
+      .runtime-panel {
+        min-height: 360px;
+      }
+    }
+    body.is-resizing {
+      cursor: col-resize;
+      user-select: none;
+    }
+    body.is-resizing-vertical {
+      cursor: row-resize;
+      user-select: none;
+    }
+    body.is-dragging-runtime {
+      cursor: grabbing;
+      user-select: none;
+    }
     """
 
 
@@ -541,7 +1410,12 @@ def _script() -> str:
     (() => {
       const SVG_NS = "http://www.w3.org/2000/svg";
       const data = JSON.parse(document.getElementById("ast-data").textContent);
+      const workspace = document.querySelector("main.workspace");
       const svg = document.getElementById("ast-svg");
+      const outline = document.getElementById("text-outline");
+      const splitResizer = document.getElementById("split-resizer");
+      const runtimeResizer = document.getElementById("runtime-resizer");
+      const runtimeRoot = document.getElementById("runtime-root");
       const depthInput = document.getElementById("depth-input");
       const searchInput = document.getElementById("search-input");
       const matchCaseInput = document.getElementById("match-case");
@@ -559,6 +1433,12 @@ def _script() -> str:
       let focusPulseId = null;
       let searchError = "";
       let zoom = 1;
+      let runtimeState = data.runtime && data.runtime.snapshot ? data.runtime.snapshot : null;
+      let runtimeGraphZoom = 1;
+      let runtimeResizeObserver = null;
+      const runtimeDraggedPositions = new Map();
+      const runtimeDraggedEdges = new Map();
+      const runtimeDraggedLabels = new Map();
 
       depthInput.max = String(data.maxDepth);
       depthInput.value = String(Math.min(2, data.maxDepth));
@@ -569,6 +1449,233 @@ def _script() -> str:
           element.setAttribute(key, String(value));
         }
         return element;
+      }
+
+      function makeSpan(className, text) {
+        const span = document.createElement("span");
+        span.className = className;
+        span.textContent = text;
+        return span;
+      }
+
+      function appendHighlightedLine(container, line) {
+        for (const token of line) {
+          container.appendChild(makeSpan(token.className, token.text));
+        }
+      }
+
+      function renderTextOutline() {
+        outline.replaceChildren();
+        data.files.forEach((file, fileIndex) => {
+          const block = document.createElement("section");
+          block.className = "source-block";
+          block.id = `source-block-${file.id}`;
+          block.dataset.fileId = file.id;
+
+          const header = document.createElement("div");
+          header.className = "source-header";
+          header.appendChild(makeSpan("source-name", file.name));
+          header.appendChild(makeSpan("source-path", file.path));
+          block.appendChild(header);
+
+          const body = document.createElement("div");
+          body.className = "source-body";
+          file.lines.forEach((line, index) => {
+            const lineNumber = index + 1;
+            const row = document.createElement("button");
+            row.type = "button";
+            row.id = `source-line-${file.id}-${lineNumber}`;
+            row.className = "source-line";
+            row.dataset.fileId = file.id;
+            row.dataset.line = String(lineNumber);
+
+            const gutter = document.createElement("span");
+            gutter.className = "source-gutter";
+            gutter.textContent = String(lineNumber).padStart(2, " ");
+            row.appendChild(gutter);
+
+            const code = document.createElement("span");
+            code.className = "source-code";
+            appendHighlightedLine(code, line);
+            row.appendChild(code);
+
+            row.addEventListener("click", () => {
+              const node = bestNodeForLine(file.id, lineNumber);
+              if (node) {
+                selectNode(node.id, { revealGraph: true, scrollGraph: true, scrollText: false, pulse: true });
+              }
+            });
+            body.appendChild(row);
+          });
+          block.appendChild(body);
+          outline.appendChild(block);
+          if (fileIndex < data.files.length - 1) {
+            const resizer = document.createElement("div");
+            resizer.className = "source-resizer";
+            resizer.setAttribute("role", "separator");
+            resizer.setAttribute("aria-label", "Resize source file panes");
+            outline.appendChild(resizer);
+          }
+        });
+        setupSourceResizers();
+      }
+
+      function updateTextOutline(visibleIds) {
+        const activeMatchId = activeMatchIndex >= 0 ? matchIds[activeMatchIndex] : null;
+        const selected = selectedId ? nodes.get(selectedId) : null;
+        const selectedFile = selected ? selected.sourceFile : null;
+        const selectedStart = selected && selected.line ? selected.line : null;
+        const selectedEnd = selected && selected.endLine ? selected.endLine : selectedStart;
+        const matchLines = new Set();
+        for (const id of matchIds) {
+          const node = nodes.get(id);
+          if (!node || !node.sourceFile || !node.line) {
+            continue;
+          }
+          for (let line = node.line; line <= (node.endLine || node.line); line += 1) {
+            matchLines.add(`${node.sourceFile}:${line}`);
+          }
+        }
+        const active = activeMatchId ? nodes.get(activeMatchId) : null;
+        for (const file of data.files) {
+          file.lines.forEach((_line, index) => {
+            const lineNumber = index + 1;
+            const row = document.getElementById(`source-line-${file.id}-${lineNumber}`);
+            if (!row) {
+              return;
+            }
+            const isSelected = selectedFile === file.id
+              && selectedStart !== null
+              && lineNumber >= selectedStart
+              && lineNumber <= selectedEnd;
+            const isActive = active
+              && active.sourceFile === file.id
+              && lineNumber >= active.line
+              && lineNumber <= (active.endLine || active.line);
+            row.classList.toggle("source-selected", isSelected);
+            row.classList.toggle("source-match", matchLines.has(`${file.id}:${lineNumber}`));
+            row.classList.toggle("source-active-match", Boolean(isActive));
+          });
+        }
+      }
+
+      function bestNodeForLine(fileId, lineNumber) {
+        const candidates = data.nodes.filter((node) => {
+          if (node.sourceFile !== fileId || !node.line) {
+            return false;
+          }
+          const endLine = node.endLine || node.line;
+          return lineNumber >= node.line && lineNumber <= endLine;
+        });
+        if (candidates.length === 0) {
+          return null;
+        }
+        candidates.sort((left, right) => {
+          const leftSpan = (left.endLine || left.line) - left.line;
+          const rightSpan = (right.endLine || right.line) - right.line;
+          return leftSpan - rightSpan || right.depth - left.depth;
+        });
+        return candidates[0];
+      }
+
+      function clamp(value, min, max) {
+        return Math.min(max, Math.max(min, value));
+      }
+
+      function setupSourceResizers() {
+        for (const resizer of outline.querySelectorAll(".source-resizer")) {
+          resizer.addEventListener("pointerdown", (event) => {
+            event.preventDefault();
+            const previous = resizer.previousElementSibling;
+            const next = resizer.nextElementSibling;
+            if (!previous || !next) {
+              return;
+            }
+            const startY = event.clientY;
+            const previousStart = previous.getBoundingClientRect().height;
+            const nextStart = next.getBoundingClientRect().height;
+            const total = previousStart + nextStart;
+            const minHeight = 112;
+            resizer.classList.add("resizer-active");
+            document.body.classList.add("is-resizing-vertical");
+
+            const onMove = (moveEvent) => {
+              const delta = moveEvent.clientY - startY;
+              const previousHeight = clamp(previousStart + delta, minHeight, total - minHeight);
+              const nextHeight = total - previousHeight;
+              previous.style.flex = `0 0 ${previousHeight}px`;
+              next.style.flex = `0 0 ${nextHeight}px`;
+            };
+            const onUp = () => {
+              resizer.classList.remove("resizer-active");
+              document.body.classList.remove("is-resizing-vertical");
+              window.removeEventListener("pointermove", onMove);
+              window.removeEventListener("pointerup", onUp);
+            };
+            window.addEventListener("pointermove", onMove);
+            window.addEventListener("pointerup", onUp, { once: true });
+          });
+        }
+      }
+
+      function setupSplitResizer() {
+        splitResizer.addEventListener("pointerdown", (event) => {
+          event.preventDefault();
+          const startX = event.clientX;
+          const sourcePanel = document.querySelector(".text-panel");
+          const sourceStart = sourcePanel.getBoundingClientRect().width;
+          const workspaceWidth = workspace.getBoundingClientRect().width;
+          const minSource = 280;
+          const minGraph = 320;
+          const runtimePanel = document.querySelector(".runtime-panel");
+          const runtimeWidth = runtimePanel ? runtimePanel.getBoundingClientRect().width : 0;
+          splitResizer.classList.add("resizer-active");
+          document.body.classList.add("is-resizing");
+
+          const onMove = (moveEvent) => {
+            const delta = moveEvent.clientX - startX;
+            const reservedWidth = runtimePanel ? runtimeWidth + 28 : 14;
+            const width = clamp(sourceStart + delta, minSource, workspaceWidth - minGraph - reservedWidth);
+            workspace.style.setProperty("--source-width", `${width}px`);
+          };
+          const onUp = () => {
+            splitResizer.classList.remove("resizer-active");
+            document.body.classList.remove("is-resizing");
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
+          };
+          window.addEventListener("pointermove", onMove);
+          window.addEventListener("pointerup", onUp, { once: true });
+        });
+        if (!runtimeResizer) {
+          return;
+        }
+        runtimeResizer.addEventListener("pointerdown", (event) => {
+          event.preventDefault();
+          const startX = event.clientX;
+          const runtimePanel = document.querySelector(".runtime-panel");
+          const runtimeStart = runtimePanel.getBoundingClientRect().width;
+          const workspaceWidth = workspace.getBoundingClientRect().width;
+          const sourceWidth = document.querySelector(".text-panel").getBoundingClientRect().width;
+          const minRuntime = 280;
+          const minGraph = 320;
+          runtimeResizer.classList.add("resizer-active");
+          document.body.classList.add("is-resizing");
+
+          const onMove = (moveEvent) => {
+            const delta = moveEvent.clientX - startX;
+            const width = clamp(runtimeStart - delta, minRuntime, workspaceWidth - sourceWidth - minGraph - 28);
+            workspace.style.setProperty("--runtime-width", `${width}px`);
+          };
+          const onUp = () => {
+            runtimeResizer.classList.remove("resizer-active");
+            document.body.classList.remove("is-resizing");
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
+          };
+          window.addEventListener("pointermove", onMove);
+          window.addEventListener("pointerup", onUp, { once: true });
+        });
       }
 
       function escapeRegExp(value) {
@@ -724,6 +1831,7 @@ def _script() -> str:
         }
         svg.appendChild(nodeLayer);
         updateStatus(visibleIds);
+        updateTextOutline(visibleIds);
       }
 
       function renderNode(node, placement) {
@@ -843,8 +1951,7 @@ def _script() -> str:
         }
 
         group.addEventListener("click", () => {
-          selectedId = node.id;
-          render();
+          selectNode(node.id, { revealGraph: false, scrollGraph: false, scrollText: true, pulse: false });
         });
         group.addEventListener("dblclick", () => {
           if (node.children.length > 0) {
@@ -864,6 +1971,31 @@ def _script() -> str:
         focusPulseId = id;
         render();
         scrollNodeIntoView(id);
+        scrollTextIntoView(id);
+        clearFocusPulse(id);
+      }
+
+      function selectNode(id, options = {}) {
+        selectedId = id;
+        if (options.revealGraph) {
+          revealNode(id);
+        }
+        if (options.pulse) {
+          focusPulseId = id;
+        }
+        render();
+        if (options.scrollGraph !== false) {
+          scrollNodeIntoView(id);
+        }
+        if (options.scrollText !== false) {
+          scrollTextIntoView(id);
+        }
+        if (options.pulse) {
+          clearFocusPulse(id);
+        }
+      }
+
+      function clearFocusPulse(id) {
         window.setTimeout(() => {
           if (focusPulseId === id) {
             focusPulseId = null;
@@ -930,6 +2062,7 @@ def _script() -> str:
         }
         const id = matchIds[activeMatchIndex];
         scrollNodeIntoView(id);
+        scrollTextIntoView(id);
       }
 
       function scrollNodeIntoView(id) {
@@ -941,10 +2074,722 @@ def _script() -> str:
         });
       }
 
+      function scrollTextIntoView(id) {
+        window.requestAnimationFrame(() => {
+          const node = nodes.get(id);
+          const target = node && node.sourceFile && node.line
+            ? document.getElementById(`source-line-${node.sourceFile}-${node.line}`)
+            : null;
+          if (target && target.scrollIntoView) {
+            target.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+          }
+        });
+      }
+
       function setZoom(nextZoom) {
         zoom = Math.min(1.8, Math.max(0.35, nextZoom));
         document.getElementById("zoom-reset").textContent = `${Math.round(zoom * 100)}%`;
         render();
+      }
+
+      function runtimeEnabled() {
+        return data.runtime && data.runtime.enabled && data.runtime.problem;
+      }
+
+      function renderRuntime() {
+        if (!runtimeRoot) {
+          return;
+        }
+        if (runtimeResizeObserver) {
+          runtimeResizeObserver.disconnect();
+          runtimeResizeObserver = null;
+        }
+        runtimeRoot.replaceChildren();
+        if (!runtimeEnabled()) {
+          const message = document.createElement("div");
+          message.className = "runtime-message";
+          message.textContent = "Runtime simulator is disabled. Start this visualizer with --with-simulator to advance DARP-selected actions.";
+          runtimeRoot.appendChild(message);
+          return;
+        }
+
+        const controls = document.createElement("div");
+        controls.className = "runtime-controls";
+        const plannedAction = document.createElement("div");
+        plannedAction.className = "runtime-planned-action";
+        const plannedLabel = document.createElement("strong");
+        plannedLabel.textContent = "DARP action";
+        plannedAction.appendChild(plannedLabel);
+        plannedAction.appendChild(document.createTextNode(runtimeState && runtimeState.planned_action ? runtimeState.planned_action : "none"));
+        controls.appendChild(plannedAction);
+
+        const stepButton = document.createElement("button");
+        stepButton.type = "button";
+        stepButton.textContent = "Next step";
+        stepButton.disabled = runtimeState && runtimeState.done;
+        stepButton.addEventListener("click", () => stepRuntime());
+        controls.appendChild(stepButton);
+
+        const resetButton = document.createElement("button");
+        resetButton.type = "button";
+        resetButton.textContent = "Reset";
+        resetButton.addEventListener("click", resetRuntime);
+        controls.appendChild(resetButton);
+
+        const runtimeZoomOut = document.createElement("button");
+        runtimeZoomOut.type = "button";
+        runtimeZoomOut.textContent = "-";
+        runtimeZoomOut.title = "Zoom out state machine";
+        runtimeZoomOut.addEventListener("click", () => setRuntimeZoom(runtimeGraphZoom - 0.1));
+        controls.appendChild(runtimeZoomOut);
+
+        const runtimeZoomReset = document.createElement("button");
+        runtimeZoomReset.type = "button";
+        runtimeZoomReset.id = "runtime-zoom-reset";
+        runtimeZoomReset.textContent = `${Math.round(runtimeGraphZoom * 100)}%`;
+        runtimeZoomReset.title = "Reset state machine zoom";
+        runtimeZoomReset.addEventListener("click", () => setRuntimeZoom(1));
+        controls.appendChild(runtimeZoomReset);
+
+        const runtimeZoomIn = document.createElement("button");
+        runtimeZoomIn.type = "button";
+        runtimeZoomIn.textContent = "+";
+        runtimeZoomIn.title = "Zoom in state machine";
+        runtimeZoomIn.addEventListener("click", () => setRuntimeZoom(runtimeGraphZoom + 0.1));
+        controls.appendChild(runtimeZoomIn);
+
+        const runtimeAutoLayout = document.createElement("button");
+        runtimeAutoLayout.type = "button";
+        runtimeAutoLayout.textContent = "Auto";
+        runtimeAutoLayout.title = "Reset dragged node, edge, and label positions";
+        runtimeAutoLayout.addEventListener("click", () => {
+          runtimeDraggedPositions.clear();
+          runtimeDraggedEdges.clear();
+          runtimeDraggedLabels.clear();
+          setRuntimeZoom(1);
+        });
+        controls.appendChild(runtimeAutoLayout);
+        runtimeRoot.appendChild(controls);
+
+        const info = document.createElement("div");
+        info.className = "runtime-info";
+        info.appendChild(runtimeInfoLine("Initialization", runtimeState ? `${runtimeState.initial_state} / obs ${runtimeState.initial_observation}` : "-"));
+        info.appendChild(runtimeInfoLine("Last action", runtimeState && runtimeState.last_action ? runtimeState.last_action : "none"));
+        info.appendChild(runtimeInfoLine("DARP planned action", runtimeState && runtimeState.planned_action ? runtimeState.planned_action : "none"));
+        info.appendChild(runtimeInfoLine("Available actions", data.runtime.problem.actions.join(", ")));
+        runtimeRoot.appendChild(info);
+
+        const status = document.createElement("div");
+        status.className = "runtime-status";
+        status.appendChild(runtimeChip("State", runtimeState ? runtimeState.state : "not reset"));
+        status.appendChild(runtimeChip("Observation", runtimeState ? runtimeState.observation : "-"));
+        status.appendChild(runtimeChip("Reward", runtimeState ? String(runtimeState.reward) : "0"));
+        status.appendChild(runtimeChip("Step", runtimeState ? `${runtimeState.step}/${data.runtime.problem.horizon}` : "0"));
+        runtimeRoot.appendChild(status);
+
+        const stage = document.createElement("div");
+        stage.className = "runtime-stage";
+        runtimeRoot.appendChild(stage);
+        renderRuntimeGraph(stage);
+        if (window.ResizeObserver) {
+          runtimeResizeObserver = new ResizeObserver(() => renderRuntimeGraph(stage));
+          runtimeResizeObserver.observe(stage);
+        }
+
+        const trace = document.createElement("div");
+        trace.className = "runtime-trace";
+        const rows = runtimeState && runtimeState.trace ? runtimeState.trace.slice(-8) : [];
+        trace.textContent = rows.length
+          ? rows.map((row) => `t=${row.step} ${row.action} -> ${row.state} r=${row.reward}`).join("\n")
+          : "No executed steps yet.";
+        runtimeRoot.appendChild(trace);
+      }
+
+      function runtimeChip(label, value) {
+        const chip = document.createElement("div");
+        chip.className = "runtime-chip";
+        const strong = document.createElement("strong");
+        strong.textContent = label;
+        chip.appendChild(strong);
+        chip.appendChild(document.createTextNode(value === null || value === undefined ? "-" : String(value)));
+        return chip;
+      }
+
+      function runtimeInfoLine(label, value) {
+        const row = document.createElement("div");
+        const strong = document.createElement("strong");
+        strong.textContent = `${label}: `;
+        row.appendChild(strong);
+        row.appendChild(document.createTextNode(value === null || value === undefined ? "-" : String(value)));
+        return row;
+      }
+
+      function setRuntimeZoom(nextZoom) {
+        runtimeGraphZoom = clamp(nextZoom, 0.45, 2.5);
+        const zoomLabel = document.getElementById("runtime-zoom-reset");
+        if (zoomLabel) {
+          zoomLabel.textContent = `${Math.round(runtimeGraphZoom * 100)}%`;
+        }
+        const stage = document.querySelector(".runtime-stage");
+        if (stage) {
+          renderRuntimeGraph(stage);
+        }
+      }
+
+      function renderRuntimeGraph(stage) {
+        if (!runtimeEnabled() || !stage) {
+          return;
+        }
+        const bounds = stage.getBoundingClientRect();
+        const width = Math.max(320, Math.floor(bounds.width - 2));
+        const height = Math.max(260, Math.floor(bounds.height - 2));
+        stage.replaceChildren(renderStateMachineSvg(data.runtime.problem, width, height, stage));
+      }
+
+      function renderStateMachineSvg(problem, width, height, stage) {
+        const nodeRadius = clamp(Math.min(width, height) / 28, 12, 24);
+        const labelFontSize = clamp(nodeRadius * 0.74, 10.5, 18);
+        const layout = runtimePositions(problem, nodeRadius, width, height);
+        const positions = layout.positions;
+        const displayWidth = Math.max(1, Math.round(layout.width * runtimeGraphZoom));
+        const displayHeight = Math.max(1, Math.round(layout.height * runtimeGraphZoom));
+        const svgElement = makeSvg("svg", {
+          class: "runtime-svg",
+          viewBox: `0 0 ${layout.width} ${layout.height}`,
+          width: displayWidth,
+          height: displayHeight,
+        });
+        svgElement.style.width = `${displayWidth}px`;
+        svgElement.style.height = `${displayHeight}px`;
+        svgElement.appendChild(runtimeArrowDefs());
+        const markers = problem.markers || { starts: [], risks: [], goals: [] };
+        const groups = groupedTransitions(problem);
+        const laneSpacing = Math.max(nodeRadius * 3.2, Math.min(layout.width, layout.height) * 0.055, 46);
+
+        groups.forEach((group) => {
+          const from = positions.get(group.from);
+          const to = positions.get(group.to);
+          if (!from || !to) {
+            return;
+          }
+          const isActive = group.items.some((transition) => isActiveTransition(transition));
+          if (group.from === group.to) {
+            const laneOffset = Number(group.laneOffset || 0);
+            const side = laneOffset < 0 ? -1 : 1;
+            const laneSize = Math.abs(laneOffset) + 1;
+            const loopSpread = Math.max(laneSpacing * (0.8 + laneSize * 0.38), nodeRadius * 2.8);
+            const loopLift = Math.max(laneSpacing * (0.7 + laneSize * 0.32), nodeRadius * 2.4);
+            const defaultControl = { x: from.x + side * loopSpread, y: from.y - loopLift };
+            const control = runtimePointWithDrag(runtimeDraggedEdges, group.id, defaultControl.x, defaultControl.y, layout.width, layout.height);
+            const pathData = `M ${from.x.toFixed(1)} ${(from.y - nodeRadius).toFixed(1)} C ${control.x.toFixed(1)} ${(control.y - nodeRadius).toFixed(1)}, ${(control.x + side * loopSpread).toFixed(1)} ${control.y.toFixed(1)}, ${(from.x + side * nodeRadius).toFixed(1)} ${(from.y - nodeRadius * 0.25).toFixed(1)}`;
+            const edgePath = makeSvg("path", {
+              class: isActive ? "runtime-edge active" : "runtime-edge",
+              d: pathData,
+              "marker-end": isActive ? "url(#runtime-arrow-active)" : "url(#runtime-arrow)",
+            });
+            svgElement.appendChild(edgePath);
+            const labelDefaultX = clamp(control.x + side * nodeRadius, 36, layout.width - 36);
+            const labelDefaultY = clamp(control.y - nodeRadius * 0.65, 20, layout.height - 20);
+            const labelPosition = runtimePointWithDrag(runtimeDraggedLabels, group.id, labelDefaultX, labelDefaultY, layout.width, layout.height);
+            const dragPath = makeSvg("path", {
+              class: "runtime-edge-drag-area",
+              d: pathData,
+            });
+            dragPath.addEventListener("pointerdown", (event) => {
+              startRuntimeLinkedElementDrag(
+                event,
+                svgElement,
+                stage,
+                runtimeDraggedEdges,
+                group.id,
+                control,
+                runtimeDraggedLabels,
+                labelPosition,
+              );
+            });
+            svgElement.appendChild(dragPath);
+            appendRuntimeEdgeLabel(
+              svgElement,
+              labelPosition.x,
+              labelPosition.y,
+              transitionGroupLabel(group),
+              labelFontSize,
+              (event) => startRuntimeLinkedElementDrag(
+                event,
+                svgElement,
+                stage,
+                runtimeDraggedLabels,
+                group.id,
+                labelPosition,
+                runtimeDraggedEdges,
+                control,
+              ),
+            );
+            return;
+          }
+          const dx = to.x - from.x;
+          const dy = to.y - from.y;
+          const length = Math.max(1, Math.hypot(dx, dy));
+          const ux = dx / length;
+          const uy = dy / length;
+          const perpendicularX = -uy;
+          const perpendicularY = ux;
+          const offset = Number(group.laneOffset || 0) * laneSpacing;
+          const startX = from.x + ux * nodeRadius;
+          const startY = from.y + uy * nodeRadius;
+          const endX = to.x - ux * (nodeRadius + 8);
+          const endY = to.y - uy * (nodeRadius + 8);
+          const defaultControlX = (startX + endX) / 2 + perpendicularX * offset;
+          const defaultControlY = (startY + endY) / 2 + perpendicularY * offset;
+          const control = runtimePointWithDrag(runtimeDraggedEdges, group.id, defaultControlX, defaultControlY, layout.width, layout.height);
+          const pathData = `M ${startX.toFixed(1)} ${startY.toFixed(1)} Q ${control.x.toFixed(1)} ${control.y.toFixed(1)} ${endX.toFixed(1)} ${endY.toFixed(1)}`;
+          const edgePath = makeSvg("path", {
+            class: isActive ? "runtime-edge active" : "runtime-edge",
+            d: pathData,
+            "marker-end": isActive ? "url(#runtime-arrow-active)" : "url(#runtime-arrow)",
+          });
+          svgElement.appendChild(edgePath);
+          const labelDefaultX = clamp(control.x + perpendicularX * nodeRadius * 0.65, 34, layout.width - 34);
+          const labelDefaultY = clamp(control.y + perpendicularY * nodeRadius * 0.65, 18, layout.height - 18);
+          const labelPosition = runtimePointWithDrag(runtimeDraggedLabels, group.id, labelDefaultX, labelDefaultY, layout.width, layout.height);
+          const dragPath = makeSvg("path", {
+            class: "runtime-edge-drag-area",
+            d: pathData,
+          });
+          dragPath.addEventListener("pointerdown", (event) => {
+            startRuntimeLinkedElementDrag(
+              event,
+              svgElement,
+              stage,
+              runtimeDraggedEdges,
+              group.id,
+              control,
+              runtimeDraggedLabels,
+              labelPosition,
+            );
+          });
+          svgElement.appendChild(dragPath);
+          appendRuntimeEdgeLabel(
+            svgElement,
+            labelPosition.x,
+            labelPosition.y,
+            transitionGroupLabel(group),
+            labelFontSize,
+            (event) => startRuntimeLinkedElementDrag(
+              event,
+              svgElement,
+              stage,
+              runtimeDraggedLabels,
+              group.id,
+              labelPosition,
+              runtimeDraggedEdges,
+              control,
+            ),
+          );
+        });
+
+        for (const state of problem.states) {
+          const position = positions.get(state);
+          if (!position) {
+            continue;
+          }
+          const classes = ["runtime-cell"];
+          if (runtimeState && runtimeState.state === state) {
+            classes.push("current");
+          }
+          if (markers.starts.includes(state)) {
+            classes.push("start");
+          }
+          if (markers.risks.includes(state)) {
+            classes.push("risk");
+          }
+          if (markers.goals.includes(state)) {
+            classes.push("goal");
+          }
+          const group = makeSvg("g", {
+            class: "runtime-node-group",
+            transform: `translate(${position.x.toFixed(1)} ${position.y.toFixed(1)})`,
+          });
+          group.appendChild(makeSvg("circle", {
+            class: classes.join(" "),
+            cx: 0,
+            cy: 0,
+            r: nodeRadius,
+          }));
+          const label = makeSvg("text", {
+            class: "runtime-cell-label",
+            x: 0,
+            y: nodeRadius * 0.28,
+            style: `font-size: ${clamp(nodeRadius * 0.66, 8, 15)}px;`,
+            "text-anchor": "middle",
+          });
+          label.textContent = state;
+          group.appendChild(label);
+          const markerLabel = markerText(markers, state);
+          if (markerLabel) {
+            const marker = makeSvg("text", {
+              class: "runtime-marker-label",
+              x: 0,
+              y: nodeRadius + Math.max(11, nodeRadius * 0.75),
+              style: `font-size: ${clamp(nodeRadius * 0.38, 6, 10)}px;`,
+              "text-anchor": "middle",
+            });
+            marker.textContent = markerLabel;
+            group.appendChild(marker);
+          }
+          if (runtimeState && runtimeState.state === state) {
+            group.appendChild(makeSvg("circle", {
+              class: "runtime-token",
+              cx: nodeRadius * 0.58,
+              cy: -nodeRadius * 0.58,
+              r: Math.max(4, nodeRadius * 0.28),
+            }));
+          }
+          group.addEventListener("pointerdown", (event) => {
+            startRuntimeNodeDrag(event, svgElement, stage, state, position, nodeRadius);
+          });
+          svgElement.appendChild(group);
+        }
+        return svgElement;
+      }
+
+      function runtimeArrowDefs() {
+        const defs = makeSvg("defs");
+        const marker = makeSvg("marker", {
+          id: "runtime-arrow",
+          markerWidth: 8,
+          markerHeight: 8,
+          refX: 7,
+          refY: 4,
+          orient: "auto",
+          markerUnits: "strokeWidth",
+        });
+        marker.appendChild(makeSvg("path", {
+          d: "M 0 0 L 8 4 L 0 8 z",
+          fill: "#8ca4ba",
+        }));
+        const activeMarker = makeSvg("marker", {
+          id: "runtime-arrow-active",
+          markerWidth: 8,
+          markerHeight: 8,
+          refX: 7,
+          refY: 4,
+          orient: "auto",
+          markerUnits: "strokeWidth",
+        });
+        activeMarker.appendChild(makeSvg("path", {
+          d: "M 0 0 L 8 4 L 0 8 z",
+          fill: "#0284c7",
+        }));
+        defs.appendChild(marker);
+        defs.appendChild(activeMarker);
+        return defs;
+      }
+
+      function runtimePositions(problem, nodeRadius, width, height) {
+        const positions = new Map();
+        if (problem.layout && problem.layout.kind === "grid") {
+          const rows = problem.layout.rows;
+          const cols = problem.layout.cols;
+          const marginX = Math.max(54, nodeRadius * 4.5);
+          const marginY = Math.max(48, nodeRadius * 4.2);
+          const usableWidth = Math.max(1, width - marginX * 2);
+          const usableHeight = Math.max(1, height - marginY * 2);
+          for (const state of problem.states) {
+            const cellInfo = problem.layout.cells[state];
+            if (!cellInfo) {
+              continue;
+            }
+            const x = cols <= 1
+              ? width / 2
+              : marginX + ((cellInfo.col - 1) / (cols - 1)) * usableWidth;
+            const y = rows <= 1
+              ? height / 2
+              : marginY + ((cellInfo.row - 1) / (rows - 1)) * usableHeight;
+            positions.set(state, runtimePositionWithDrag(state, x, y, width, height, nodeRadius));
+          }
+          return { positions, width, height };
+        }
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const radius = Math.max(1, Math.min(width, height) / 2 - Math.max(66, nodeRadius * 4));
+        problem.states.forEach((state, index) => {
+          const angle = -Math.PI / 2 + (2 * Math.PI * index) / Math.max(1, problem.states.length);
+          positions.set(
+            state,
+            runtimePositionWithDrag(
+              state,
+              centerX + radius * Math.cos(angle),
+              centerY + radius * Math.sin(angle),
+              width,
+              height,
+              nodeRadius,
+            ),
+          );
+        });
+        return { positions, width, height };
+      }
+
+      function runtimePositionWithDrag(state, x, y, width, height, nodeRadius) {
+        const dragged = runtimeDraggedPositions.get(state);
+        if (!dragged) {
+          return { x, y };
+        }
+        return {
+          x: clamp(dragged.x * width, nodeRadius + 10, width - nodeRadius - 10),
+          y: clamp(dragged.y * height, nodeRadius + 10, height - nodeRadius - 10),
+        };
+      }
+
+      function runtimePointWithDrag(store, key, x, y, width, height) {
+        const dragged = store.get(key);
+        if (!dragged) {
+          return { x, y };
+        }
+        return {
+          x: clamp(dragged.x * width, 8, width - 8),
+          y: clamp(dragged.y * height, 8, height - 8),
+        };
+      }
+
+      function groupedTransitions(problem) {
+        const groups = [];
+        for (const transition of problem.transitions) {
+          if (transition.prob <= 0) {
+            continue;
+          }
+          groups.push({
+            id: `${transition.from}\u0000${transition.action}\u0000${transition.to}\u0000${groups.length}`,
+            from: transition.from,
+            to: transition.to,
+            action: transition.action,
+            items: [transition],
+            laneOffset: 0,
+          });
+        }
+        const buckets = new Map();
+        for (const group of groups) {
+          const key = group.from === group.to
+            ? `self\u0000${group.from}`
+            : [String(group.from), String(group.to)].sort().join("\u0000");
+          if (!buckets.has(key)) {
+            buckets.set(key, []);
+          }
+          buckets.get(key).push(group);
+        }
+        for (const bucket of buckets.values()) {
+          bucket.sort((left, right) => {
+            if (left.from !== right.from) {
+              return String(left.from).localeCompare(String(right.from));
+            }
+            if (left.to !== right.to) {
+              return String(left.to).localeCompare(String(right.to));
+            }
+            return String(left.action).localeCompare(String(right.action));
+          });
+          const center = (bucket.length - 1) / 2;
+          bucket.forEach((group, index) => {
+            group.laneOffset = index - center;
+          });
+        }
+        return groups;
+      }
+
+      function transitionGroupLabel(group) {
+        return group.items
+          .map((transition) => `${shortAction(transition.action)}:${formatProbability(transition.prob)}`);
+      }
+
+      function isActiveTransition(transition) {
+        return runtimeState
+          && runtimeState.last_action === transition.action
+          && runtimeState.previous_state === transition.from
+          && runtimeState.state === transition.to;
+      }
+
+      function appendRuntimeEdgeLabel(svgElement, x, y, labelLines, fontSize = 6, onDragStart = null) {
+        const lines = Array.isArray(labelLines) ? labelLines : [String(labelLines)];
+        const maxLength = Math.max(...lines.map((line) => line.length));
+        const lineHeight = fontSize + 3;
+        const width = Math.max(44, maxLength * fontSize * 0.66 + 14);
+        const height = Math.max(fontSize + 12, lines.length * lineHeight + 8);
+        const group = makeSvg("g", { class: "runtime-edge-label-group" });
+        if (onDragStart) {
+          group.addEventListener("pointerdown", onDragStart);
+        }
+        group.appendChild(makeSvg("rect", {
+          class: "runtime-edge-label-bg",
+          x: x - width / 2,
+          y: y - height / 2,
+          width,
+          height,
+          rx: 3,
+        }));
+        const label = makeSvg("text", {
+          class: "runtime-edge-label",
+          x,
+          y: y - ((lines.length - 1) * lineHeight) / 2 + fontSize * 0.34,
+          style: `font-size: ${fontSize}px;`,
+          "text-anchor": "middle",
+        });
+        lines.forEach((line, index) => {
+          const tspan = makeSvg("tspan", {
+            x,
+            dy: index === 0 ? 0 : lineHeight,
+          });
+          tspan.textContent = line;
+          label.appendChild(tspan);
+        });
+        group.appendChild(label);
+        svgElement.appendChild(group);
+      }
+
+      function startRuntimeNodeDrag(event, svgElement, stage, state, position, nodeRadius) {
+        event.preventDefault();
+        event.stopPropagation();
+        const startPoint = runtimeSvgPoint(svgElement, event);
+        const offsetX = position.x - startPoint.x;
+        const offsetY = position.y - startPoint.y;
+        document.body.classList.add("is-dragging-runtime");
+
+        const onMove = (moveEvent) => {
+          const activeSvg = stage.querySelector("svg.runtime-svg") || svgElement;
+          const point = runtimeSvgPoint(activeSvg, moveEvent);
+          const width = Number(activeSvg.viewBox.baseVal.width) || activeSvg.getBoundingClientRect().width;
+          const height = Number(activeSvg.viewBox.baseVal.height) || activeSvg.getBoundingClientRect().height;
+          const nextX = clamp(point.x + offsetX, nodeRadius + 10, width - nodeRadius - 10);
+          const nextY = clamp(point.y + offsetY, nodeRadius + 10, height - nodeRadius - 10);
+          runtimeDraggedPositions.set(state, {
+            x: nextX / width,
+            y: nextY / height,
+          });
+          renderRuntimeGraph(stage);
+        };
+        const onUp = () => {
+          document.body.classList.remove("is-dragging-runtime");
+          window.removeEventListener("pointermove", onMove);
+          window.removeEventListener("pointerup", onUp);
+        };
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp, { once: true });
+      }
+
+      function startRuntimeLinkedElementDrag(
+        event,
+        svgElement,
+        stage,
+        store,
+        key,
+        position,
+        linkedStore = null,
+        linkedPosition = null,
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        const startPoint = runtimeSvgPoint(svgElement, event);
+        const offsetX = position.x - startPoint.x;
+        const offsetY = position.y - startPoint.y;
+        const startPosition = { x: position.x, y: position.y };
+        const startLinkedPosition = linkedPosition ? { x: linkedPosition.x, y: linkedPosition.y } : null;
+        document.body.classList.add("is-dragging-runtime");
+
+        const onMove = (moveEvent) => {
+          const activeSvg = stage.querySelector("svg.runtime-svg") || svgElement;
+          const point = runtimeSvgPoint(activeSvg, moveEvent);
+          const width = Number(activeSvg.viewBox.baseVal.width) || activeSvg.getBoundingClientRect().width;
+          const height = Number(activeSvg.viewBox.baseVal.height) || activeSvg.getBoundingClientRect().height;
+          const nextX = clamp(point.x + offsetX, 8, width - 8);
+          const nextY = clamp(point.y + offsetY, 8, height - 8);
+          store.set(key, {
+            x: nextX / width,
+            y: nextY / height,
+          });
+          if (linkedStore && startLinkedPosition) {
+            linkedStore.set(key, {
+              x: clamp(startLinkedPosition.x + nextX - startPosition.x, 8, width - 8) / width,
+              y: clamp(startLinkedPosition.y + nextY - startPosition.y, 8, height - 8) / height,
+            });
+          }
+          renderRuntimeGraph(stage);
+        };
+        const onUp = () => {
+          document.body.classList.remove("is-dragging-runtime");
+          window.removeEventListener("pointermove", onMove);
+          window.removeEventListener("pointerup", onUp);
+        };
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp, { once: true });
+      }
+
+      function runtimeSvgPoint(svgElement, event) {
+        const matrix = svgElement.getScreenCTM();
+        if (!matrix) {
+          return { x: event.offsetX, y: event.offsetY };
+        }
+        const point = svgElement.createSVGPoint();
+        point.x = event.clientX;
+        point.y = event.clientY;
+        return point.matrixTransform(matrix.inverse());
+      }
+
+      function shortAction(action) {
+        return String(action).replace(/^move[-_]?/, "");
+      }
+
+      function formatProbability(value) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+          return String(value);
+        }
+        return numeric.toFixed(3).replace(/\.?0+$/, "");
+      }
+
+      function markerText(markers, state) {
+        if (markers.goals.includes(state)) {
+          return "goal";
+        }
+        if (markers.risks.includes(state)) {
+          return "risk";
+        }
+        if (markers.starts.includes(state)) {
+          return "start";
+        }
+        return "";
+      }
+
+      async function refreshRuntime() {
+        if (!runtimeEnabled()) {
+          renderRuntime();
+          return;
+        }
+        try {
+          const response = await fetch(`${data.runtime.endpoint}/state`);
+          runtimeState = await response.json();
+        } catch (error) {
+          runtimeState = {
+            state: "connection error",
+            observation: error.message,
+            reward: 0,
+            step: 0,
+            done: true,
+            trace: [],
+          };
+        }
+        renderRuntime();
+      }
+
+      async function stepRuntime() {
+        const response = await fetch(`${data.runtime.endpoint}/step`, {
+          method: "POST",
+        });
+        runtimeState = await response.json();
+        renderRuntime();
+      }
+
+      async function resetRuntime() {
+        const response = await fetch(`${data.runtime.endpoint}/reset`, { method: "POST" });
+        runtimeState = await response.json();
+        renderRuntime();
       }
 
       document.getElementById("expand-all").addEventListener("click", () => {
@@ -1002,12 +2847,16 @@ def _script() -> str:
         }
       });
 
+      renderTextOutline();
+      setupSplitResizer();
+
       if (data.totalNodes <= 60) {
         expandAll();
       } else {
         expandToDepth(2);
       }
       render();
+      refreshRuntime();
     })();
     """
 
@@ -1122,22 +2971,86 @@ def _safe_class(value: str) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the command-line parser for HTML visualization. / 构建用于 HTML 可视化的命令行 parser。"""
-    parser = argparse.ArgumentParser(description="Render RDDL AST as a standalone HTML tree.")
-    parser.add_argument("paths", nargs="+", help="RDDL domain/instance files to visualize")
-    parser.add_argument("--output", default="rddl_ast.html", help="HTML output path")
-    parser.add_argument("--open", action="store_true", help="open the generated HTML in a browser")
+    parser = argparse.ArgumentParser(description="Serve RDDL AST as an interactive HTML visualizer.")
+    parser.add_argument("domain", help="RDDL domain file to visualize")
+    parser.add_argument("instance", help="RDDL instance file to visualize")
+    parser.add_argument(
+        "--with-simulator",
+        nargs="?",
+        const="darp",
+        choices=("darp", "rddlgym", "pyrddlgym"),
+        help="enable a simulator; omit the value for DARP internal simulator or pass rddlgym",
+    )
+    parser.add_argument("--no-open", action="store_true", help="serve without opening a browser")
+    parser.add_argument(
+        "--frontend",
+        default="darp",
+        choices=available_frontends(),
+        help="frontend used for compilation in simulator mode",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="host for simulator mode")
+    parser.add_argument("--port", type=int, default=0, help="port for simulator mode; 0 picks a free port")
     return parser
+
+
+def serve_visualizer(
+    *,
+    domain: str | Path,
+    instance: str | Path,
+    simulator: str | None,
+    frontend: str,
+    host: str,
+    port: int,
+    open_browser: bool,
+) -> int:
+    """Serve the RDDL visualizer from the top-level DARP CLI. / 从 DARP 顶层 CLI 启动 RDDL 可视化服务。"""
+    ast = BasicRDDLParser().parse_files(domain, instance)
+    if simulator == "darp":
+        loaded = RDDLLoader(frontend).load(domain, instance)
+        problem = RDDLCompiler().compile(loaded)
+        markers = _runtime_markers(ast)
+        return _serve_runtime_visualizer(
+            ast=ast,
+            problem=problem,
+            markers=markers,
+            host=host,
+            port=port,
+            open_browser=open_browser,
+        )
+    if simulator in {"rddlgym", "pyrddlgym"}:
+        loaded = RDDLLoader("pyrddlgym").load(domain, instance)
+        runtime = _external_simulator_payload("rddlgym", loaded)
+        print("pyRDDLGym simulator loaded; DARP state-machine panel is hidden.", flush=True)
+        return _serve_html_visualizer(
+            ast=ast,
+            title="RDDL AST + pyRDDLGym",
+            runtime=runtime,
+            host=host,
+            port=port,
+            open_browser=open_browser,
+        )
+    return _serve_html_visualizer(
+        ast=ast,
+        title="RDDL AST",
+        runtime=None,
+        host=host,
+        port=port,
+        open_browser=open_browser,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     """Run the standalone visualizer command. / 运行独立可视化命令。"""
     args = build_parser().parse_args(argv)
-    ast = BasicRDDLParser().parse_files(*args.paths)
-    output = write_html(args.output, ast, title="RDDL AST")
-    print(f"RDDL AST visualizer written to {output}")
-    if args.open:
-        webbrowser.open(output.resolve().as_uri())
-    return 0
+    return serve_visualizer(
+        domain=args.domain,
+        instance=args.instance,
+        simulator=args.with_simulator,
+        frontend=args.frontend,
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_open,
+    )
 
 
 if __name__ == "__main__":

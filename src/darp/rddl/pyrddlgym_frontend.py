@@ -1,6 +1,6 @@
 """pyRDDLGym parser/simulator frontend for standard RDDL."""
 
-# TODO(phase-2.4): Inspect pyRDDLGym 2.x model fields and map them into DARP's
+# TODO(phase-4.1): Inspect pyRDDLGym 2.x model fields and map them into DARP's
 # PlanningProblem compiler IR.
 # TODO(phase-8.2): If pyRDDLGym exposes stable parser classes, evaluate subclassing
 # them for DARP-RDDL extensions instead of treating the package as a black box.

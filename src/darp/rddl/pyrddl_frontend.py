@@ -1,8 +1,8 @@
 """pyrddl frontend for direct RDDL AST parsing."""
 
-# TODO(parser): Validate pyrddl combined domain/instance parsing against larger
+# TODO(phase-9.2): Validate pyrddl combined domain/instance parsing against larger
 # benchmark suites.
-# TODO(parser): Use this frontend as the first candidate for a DARP-owned parser
+# TODO(phase-8.2): Use this frontend as the first candidate for a DARP-owned parser
 # fork if extended syntax cannot be layered cleanly on pyRDDLGym.
 
 from __future__ import annotations

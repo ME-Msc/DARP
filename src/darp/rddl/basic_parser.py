@@ -1,18 +1,18 @@
-"""A dependency-free, structural RDDL parser with HTML AST output."""
+"""A dependency-free, structural RDDL parser."""
 
-# TODO(parser): This parser intentionally recognizes structural RDDL blocks
-# rather than the full expression grammar. Extend it before using it as the
-# production compiler input.
-# TODO(parser): Add DARP-RDDL extension keywords after the syntax is designed.
+# TODO(phase-4.1): Add typed production AST nodes when factored RDDL grounding
+# replaces the current compact compiler input.
+# TODO(phase-8.2): Add DARP-RDDL extension keywords after the syntax is designed.
 
 from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-import webbrowser
 
 from darp.rddl.ast import RDDLASTNode
+from darp.rddl.expressions import RDDLExpressionError, parse_expression_ast
+from darp.rddl.lexicon import RDDL_PUNCTUATION, RDDL_TOP_LEVEL_BLOCKS, RDDL_TWO_CHAR_OPERATORS
 
 
 class RDDLParseError(ValueError):
@@ -43,26 +43,33 @@ class BasicRDDLParser:
         """Parse RDDL text from one source into a file node. / 将单个来源的 RDDL 文本解析为 file 节点。"""
         tokens = _tokenize(text)
         stream = _TokenStream(tokens, source)
-        root = RDDLASTNode("file", source)
+        root = RDDLASTNode("file", source, line=1, column=1, end_line=max(1, text.count("\n") + 1))
         while not stream.done:
             root.add(self._parse_top_level(stream))
         return root
 
     def _parse_top_level(self, stream: "_TokenStream") -> RDDLASTNode:
         """Parse a top-level domain or instance block. / 解析顶层 domain 或 instance 块。"""
-        kind = stream.expect_identifier().value
+        kind_token = stream.expect_identifier()
+        kind = kind_token.value
+        if kind not in RDDL_TOP_LEVEL_BLOCKS:
+            raise stream.error(f"Expected top-level RDDL block, found {kind!r}.", kind_token)
         name = stream.expect_identifier().value
         stream.expect("{")
-        return self._parse_block(stream, kind=kind, label=name)
+        return self._parse_block(stream, kind=kind, label=name, start_token=kind_token)
 
-    def _parse_block(self, stream: "_TokenStream", kind: str, label: str) -> RDDLASTNode:
+    def _parse_block(
+        self, stream: "_TokenStream", kind: str, label: str, start_token: Token
+    ) -> RDDLASTNode:
         """Parse a braced block and its child statements. / 解析花括号块及其内部语句。"""
-        node = RDDLASTNode(kind, label)
+        node = RDDLASTNode(kind, label, line=start_token.line, column=start_token.column)
         while not stream.peek_is("}"):
             if stream.done:
                 raise stream.error("Unexpected end of input while parsing block.")
             node.add(self._parse_statement(stream))
-        stream.expect("}")
+        end_token = stream.expect("}")
+        node.end_line = end_token.line
+        node.end_column = end_token.column
         stream.consume_if(";")
         return node
 
@@ -71,19 +78,38 @@ class BasicRDDLParser:
         first = stream.expect_any()
         if stream.peek_is("{"):
             stream.expect("{")
-            return self._parse_block(stream, kind="block", label=first.value)
+            return self._parse_block(stream, kind="block", label=first.value, start_token=first)
         if stream.consume_if("="):
-            expr = self._collect_until_statement_end(stream)
-            return RDDLASTNode("assignment", f"{first.value} = {expr}")
-        expr = self._collect_until_statement_end(stream, initial=[first.value])
-        return RDDLASTNode("statement", expr)
+            expr, end_token = self._collect_until_statement_end(stream)
+            node = RDDLASTNode(
+                "assignment",
+                f"{first.value} = {expr}",
+                line=first.line,
+                column=first.column,
+                end_line=end_token.line if end_token else first.line,
+                end_column=end_token.column if end_token else first.column,
+            )
+            _add_expression_child(node, expr)
+            return node
+        expr, end_token = self._collect_until_statement_end(stream, initial=[first.value])
+        node = RDDLASTNode(
+            "statement",
+            expr,
+            line=first.line,
+            column=first.column,
+            end_line=end_token.line if end_token else first.line,
+            end_column=end_token.column if end_token else first.column,
+        )
+        _add_expression_child_from_statement(node, expr)
+        return node
 
     def _collect_until_statement_end(
         self, stream: "_TokenStream", initial: list[str] | None = None
-    ) -> str:
+    ) -> tuple[str, Token | None]:
         """Collect tokens until a top-level semicolon or closing brace. / 收集 token 直到顶层分号或右花括号。"""
         parts = list(initial or [])
         depth = 0
+        last_token: Token | None = None
         while not stream.done:
             token = stream.expect_any()
             if token.value in {"{", "(", "["}:
@@ -94,9 +120,11 @@ class BasicRDDLParser:
                     break
                 depth = max(0, depth - 1)
             if token.value == ";" and depth == 0:
+                last_token = token
                 break
             parts.append(token.value)
-        return _join_tokens(parts)
+            last_token = token
+        return _join_tokens(parts), last_token
 
 
 class _TokenStream:
@@ -164,7 +192,7 @@ def _tokenize(text: str) -> list[Token]:
     line = 1
     column = 1
     i = 0
-    punctuation = set("{}()[];,=:")
+    punctuation = set(RDDL_PUNCTUATION)
     while i < len(text):
         char = text[i]
         if char == "\n":
@@ -185,6 +213,11 @@ def _tokenize(text: str) -> list[Token]:
             while i < len(text) and text[i] != "\n":
                 i += 1
                 column += 1
+            continue
+        if i + 1 < len(text) and text[i : i + 2] in RDDL_TWO_CHAR_OPERATORS:
+            tokens.append(Token(text[i : i + 2], line, column))
+            i += 2
+            column += 2
             continue
         if char in punctuation:
             tokens.append(Token(char, line, column))
@@ -220,16 +253,37 @@ def _join_tokens(parts: list[str]) -> str:
     return text
 
 
+def _add_expression_child(node: RDDLASTNode, expression: str) -> None:
+    """Attach a parsed expression child when this RDDL subset supports it. / 在当前 RDDL 子集支持时附加表达式子节点。"""
+    try:
+        child = parse_expression_ast(expression)
+    except RDDLExpressionError:
+        return
+    _stamp_expression_tree(child, node)
+    node.add(child)
+
+
+def _add_expression_child_from_statement(node: RDDLASTNode, statement: str) -> None:
+    """Attach expression children for CPF-style statements. / 为 CPF 风格 statement 附加表达式子节点。"""
+    _left, separator, expression = statement.partition("=")
+    if separator:
+        _add_expression_child(node, expression.strip())
+
+
+def _stamp_expression_tree(child: RDDLASTNode, parent: RDDLASTNode) -> None:
+    """Reuse the parent source span for expression-level children. / 为表达式级子节点复用父节点源码范围。"""
+    child.line = parent.line
+    child.column = parent.column
+    child.end_line = parent.end_line
+    child.end_column = parent.end_column
+    for grandchild in child.children:
+        _stamp_expression_tree(grandchild, parent)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the command-line parser for AST inspection. / 构建用于 AST 检查的命令行 parser。"""
     parser = argparse.ArgumentParser(description="Parse RDDL files and inspect their AST.")
     parser.add_argument("paths", nargs="+", help="RDDL domain/instance files to parse")
-    parser.add_argument("--html-output", help="write a standalone graphical HTML AST visualizer")
-    parser.add_argument(
-        "--open",
-        action="store_true",
-        help="open the generated HTML visualizer; implies --html-output rddl_ast.html if omitted",
-    )
     return parser
 
 
@@ -238,16 +292,6 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     ast = BasicRDDLParser().parse_files(*args.paths)
     print(f"RDDL parse succeeded: {ast.summary()}")
-    html_output = args.html_output
-    if args.open and not html_output:
-        html_output = "rddl_ast.html"
-    if html_output:
-        from darp.rddl.visualizer import write_html
-
-        output = write_html(html_output, ast, title="RDDL AST")
-        print(f"HTML AST visualizer written to {output}")
-        if args.open:
-            webbrowser.open(output.resolve().as_uri())
     return 0
 
 

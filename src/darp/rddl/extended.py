@@ -1,8 +1,8 @@
 """DARP-owned parser frontend for future extended RDDL syntax."""
 
-# TODO(parser): Define the concrete DARP-RDDL grammar extensions for durative
+# TODO(phase-8.1): Define the concrete DARP-RDDL grammar extensions for durative
 # actions, risk constraints, and HILP annotations.
-# TODO(parser): Decide whether this frontend subclasses a pyRDDLGym parser,
+# TODO(phase-8.2): Decide whether this frontend subclasses a pyRDDLGym parser,
 # wraps pyrddl, or uses a DARP-owned grammar implementation.
 
 from __future__ import annotations

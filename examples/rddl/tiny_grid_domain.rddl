@@ -1,13 +1,39 @@
 domain tiny_grid {
   requirements = { reward-deterministic };
-  types { location : object; };
+  types { location : { @c11, @c12, @c13, @c21, @c22, @c23, @c31, @c32, @c33 }; };
   pvariables {
+    is-start(location) : { non-fluent, bool, default = false };
+    is-risk(location) : { non-fluent, bool, default = false };
+    is-goal(location) : { non-fluent, bool, default = false };
+    next-north(location, location) : { non-fluent, bool, default = false };
+    next-south(location, location) : { non-fluent, bool, default = false };
+    next-west(location, location) : { non-fluent, bool, default = false };
+    next-east(location, location) : { non-fluent, bool, default = false };
     at(location) : { state-fluent, bool, default = false };
-    move-safe : { action-fluent, bool, default = false };
-    move-risky : { action-fluent, bool, default = false };
+    move-east : { action-fluent, bool, default = false };
+    move-south : { action-fluent, bool, default = false };
+    move-west : { action-fluent, bool, default = false };
+    move-north : { action-fluent, bool, default = false };
   };
   cpfs {
-    at'(?l) = at(?l);
+    at'(?l) =
+      if (move-north) then
+        exists_{?c : location} [at(?c) ^ next-north(?c, ?l)]
+      else if (move-south) then
+        exists_{?c : location} [at(?c) ^ next-south(?c, ?l)]
+      else if (move-west) then
+        exists_{?c : location} [at(?c) ^ next-west(?c, ?l)]
+      else if (move-east) then
+        exists_{?c : location} [at(?c) ^ next-east(?c, ?l)]
+      else at(?l);
   };
-  reward = 0;
+  reward =
+    if ((move-south ^ at(@c12)) |
+        (move-east ^ at(@c21)) |
+        (move-west ^ at(@c23)) |
+        (move-north ^ at(@c32))) then -10
+    else if ((move-east ^ at(@c32)) |
+             (move-south ^ at(@c23)) |
+             at(@c33)) then 20
+    else -1;
 }

@@ -1,7 +1,5 @@
 """Tests for compiling ParsedRDDL into PlanningProblem."""
 
-# TODO(phase-2.4): Add semantic CPF/reward grounding tests once the compiler supports them.
-
 import pytest
 
 from darp.core.problem import PlanningProblem
@@ -11,26 +9,26 @@ from darp.rddl.loader import RDDLLoader
 
 DOMAIN = "examples/rddl/tiny_grid_domain.rddl"
 INSTANCE = "examples/rddl/tiny_grid_instance.rddl"
+GRID_STATES = ("c11", "c12", "c13", "c21", "c22", "c23", "c31", "c32", "c33")
+GRID_ACTIONS = ("move-east", "move-south", "move-west", "move-north")
 
 
 def test_compiler_builds_planning_problem_from_darp_ast():
-    """Check structural RDDL compilation. / 检查结构化 RDDL 编译。"""
+    """Check RDDL compilation contract. / 检查 RDDL 编译契约。"""
     loaded = RDDLLoader("darp").load(DOMAIN, INSTANCE)
     problem = RDDLCompiler().compile(loaded)
 
     assert isinstance(problem, PlanningProblem)
     assert problem.name == "tiny_grid_inst"
-    assert problem.states == ("start", "safe", "risk", "goal")
-    assert problem.actions == ("move-safe", "move-risky")
+    assert problem.states == GRID_STATES
+    assert problem.actions == GRID_ACTIONS
     assert problem.observations == problem.states
-    assert problem.initial_belief == {"start": 1.0, "safe": 0.0, "risk": 0.0, "goal": 0.0}
-    assert problem.horizon == 2.0
+    assert problem.initial_belief == {state: (1.0 if state == "c11" else 0.0) for state in GRID_STATES}
+    assert problem.horizon == 8.0
+    assert problem.max_depth == 8
     assert problem.discount == 1.0
-    assert problem.transition_prob("start", "move-safe", "start") == 1.0
-    assert problem.transition_prob("start", "move-safe", "safe") == 0.0
-    assert problem.observation_prob("start", "start", "move-safe") == 1.0
-    assert problem.reward("risk", "move-risky") == 0.0
-    assert problem.metadata["compiler_mode"] == "structural-identity"
+    assert problem.observation_prob("c11", "c11", "move-east") == 1.0
+    assert problem.metadata["compiler_mode"] == "grounded-rddl-expressions"
 
 
 @pytest.mark.parametrize("frontend", ["darp", "pyrddl", "pyrddlgym"])
@@ -44,8 +42,8 @@ def test_compiler_accepts_all_available_frontends(frontend):
     loaded = RDDLLoader(frontend).load(DOMAIN, INSTANCE)
     problem = RDDLCompiler().compile(loaded)
 
-    assert problem.states == ("start", "safe", "risk", "goal")
-    assert problem.actions == ("move-safe", "move-risky")
+    assert problem.states == GRID_STATES
+    assert problem.actions == GRID_ACTIONS
     assert problem.metadata["frontend"] == frontend
 
 
@@ -64,4 +62,4 @@ def test_compiler_cli_prints_problem_summary(capsys):
 
     assert exit_code == 0
     assert '"name": "tiny_grid_inst"' in captured.out
-    assert '"compiler_mode": "structural-identity"' in captured.out
+    assert '"compiler_mode": "grounded-rddl-expressions"' in captured.out

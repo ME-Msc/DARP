@@ -14,6 +14,9 @@ authors = [
 ]
 dependencies = []
 
+[project.scripts]
+darp = "darp.__main__:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
 rddl = ["pyRDDLGym>=2.0"]

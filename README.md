@@ -1,125 +1,211 @@
 # DARP
 
-Durative Action RDDL Planner 是一个面向研究原型的 Python 项目，目标是从 RDDL 问题出发，构建论文《Heuristic Search in Dual Space for Constrained Fixed-Horizon POMDPs with Durative Actions》中使用的 finite-horizon (C)C-POMDP + durative action 模型，并提供 full ILP 与 HILP 两类策略搜索入口。
+Durative Action RDDL Planner 是一个 Python 研究原型，用于把 RDDL 问题解析、编译为 finite-horizon POMDP / C-POMDP / CC-POMDP 风格的规划模型，并逐步实现论文《Heuristic Search in Dual Space for Constrained Fixed-Horizon POMDPs with Durative Actions》中的 full ILP 与 HILP 搜索流程。
 
-## 项目目标
+当前代码重点是标准 RDDL 输入管线、DARP 内部小规模 simulator，以及可交互 HTML visualizer。后续会继续补齐 PROST-like 在线执行、AND-OR tree、full ILP、HILP、HiGHS/Gurobi backend 和 durative action 接口。
 
-DARP 第一版优先实现一条可运行、可读、可扩展的研究链路：
+## 功能状态
 
-- 使用 Python 表达 POMDP / C-POMDP / CC-POMDP、belief、history、duration 和 policy tree。
-- 使用 AND-OR history tree 表达论文中的 `O~` observation histories 与 `A~` action histories。
-- 实现论文中的 `Expand`、full ILP baseline 和 HILP partial-ILP search。
-- 默认使用项目内置的小规模 ILP backend 独立运行，后续可选接入 HiGHS 和 Gurobi。
-- 支持 offline policy tree 输出，并预留 online replanning 接口。
+- 解析标准 RDDL domain/instance 文件，并生成 DARP 自有 `RDDLASTNode` AST。
+- 通过 `RDDLFrontend` 统一 `darp`、`pyrddl`、`pyrddlgym` 三类 frontend。
+- 将当前支持范围内的 RDDL CPF/reward 表达式 grounding 为最小 `PlanningProblem`。
+- 使用 DARP 内部 simulator 执行小规模显式 transition/observation/reward 表。
+- 通过顶层 `darp --visualizer` 启动实时 HTML，可查看源码、AST，并可选显示由 DARP 选择动作、内部 simulator 推进状态的执行状态机。
 
-## 论文算法对应关系
-
-- `core/history.py` 对应论文中的 action-observation history `q`。
-- `search/and_or_tree.py` 对应论文图 1 和图 2 的 AND-OR tree。
-- `search/expand.py` 对应论文 Algorithm 2 `Expand`，负责计算 `u_q`、`r_q`、`rho(q)`、belief 与 `tau(q)`。
-- `search/preprocess.py` 对应 full ILP 需要的完整 preprocessing。
-- `search/full_ilp.py` 构建并求解完整 ILP。
-- `search/hilp.py` 对应论文 Algorithm 3 `HILP`，逐步扩展 frontier 并反复求解 p-ILP。
-- `ilp/` 只负责表达和求解 ILP/p-ILP 子问题。
-
-## 架构说明
-
-`rddl/`、`search/` 和 `ilp/` 是三层不同职责：
-
-- `rddl/` 是解析和编译入口，回答“如何把标准 RDDL 或 DARP-RDDL 扩展语法变成统一的中间表示”。
-- `search/` 是规划/搜索算法层，回答“如何探索 policy tree”。HILP、full ILP wrapper、online replanning 都属于这一层。
-- `ilp/` 是数学规划子问题层，回答“给定一个 ILP/p-ILP 模型如何求解”。internal、HiGHS、Gurobi 都是这一层的 backend。
-
-因此，HiGHS 和 Gurobi 不是 HILP 的替代算法，而是 HILP 在每一轮 p-ILP 中可以调用的底层求解器。
-
-### RDDLFrontend 协议
-
-`RDDLFrontend` 是 DARP 面向 parser 的统一协议，不是一个具体 parser。它规定任何解析器都要实现：
-
-- `name`：frontend 名称，例如 `pyrddlgym`、`pyrddl`、`darp`。
-- `supports_extended_syntax`：是否支持 DARP 扩展语法。
-- `parse(domain, instance) -> ParsedRDDL`：把 domain/instance 解析成统一容器。
-
-`ParsedRDDL` 是 compiler 看到的唯一输入形状，其中 `ast` 固定为 DARP 自己的 `RDDLASTNode`，第三方 parser 的原生 AST 放在 `native_ast`，pyRDDLGym 的可执行对象放在 `model/env`，其他信息放在 metadata。这样后续可以先复用 `pyrddl`，也可以复用或继承 `pyRDDLGym` 的 parser；如果将来 DARP 自己实现 parser，只要仍然返回 `ParsedRDDL`，后面的 `compiler.py`、`core/`、`search/`、`ilp/` 都不需要跟着改。
-
-当前预留三种 frontend：
-
-- `pyrddlgym`：默认标准 RDDL frontend，适合复用 pyRDDLGym 的 parser/simulator 生态。
-- `pyrddl`：直接调用旧 `pyrddl.parser.RDDLParser`，适合作为 DARP 自研 parser 或 fork 的起点。
-- `darp`：DARP 自有基础 parser frontend，当前可解析 RDDL 的文件/块/语句结构，并为后续 DARP-RDDL 扩展语法预留入口。
-
-基础 parser 可以在命令行中直接验证解析结果：
+## 安装
 
 ```bash
-python -m darp.rddl.basic_parser \
-  examples/rddl/tiny_grid_domain.rddl \
-  examples/rddl/tiny_grid_instance.rddl \
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --no-build-isolation --no-deps -e .
+python -m pip install -r requirements-dev.txt
 ```
 
-如需图形化查看 AST，可以生成一个带语法高亮、节点折叠、按层级展开、精确搜索和缩放功能的独立 HTML visualizer；HTML 页面控件默认使用英文，方便国际团队协作：
+如果系统 Python 缺少 `ensurepip`，可以改用：
 
 ```bash
-python -m darp.rddl.basic_parser \
-  examples/rddl/tiny_grid_domain.rddl \
-  examples/rddl/tiny_grid_instance.rddl \
-  --html-output tiny_grid_ast.html
+virtualenv --clear .venv
+source .venv/bin/activate
+python -m pip install --no-build-isolation --no-deps -e .
+python -m pip install -r requirements-dev.txt
 ```
 
-也可以使用独立 visualizer 模块：
+可选依赖：
 
 ```bash
-python -m darp.rddl.visualizer \
-  examples/rddl/tiny_grid_domain.rddl \
-  examples/rddl/tiny_grid_instance.rddl \
-  --output tiny_grid_ast.html
+python -m pip install -e ".[rddl]"      # pyRDDLGym
+python -m pip install -e ".[pyrddl]"    # pyrddl
+python -m pip install -e ".[highs]"     # future HiGHS backend
+python -m pip install -e ".[gurobi]"    # future Gurobi backend
 ```
 
-## 文件和文件夹职责
+## 命令行
+
+安装为 editable package 后可以使用：
+
+```bash
+darp -h
+```
+
+也可以不依赖 console script，直接使用：
+
+```bash
+python -m darp -h
+```
+
+当前顶层入口的核心形式是：
+
+```bash
+darp --visualizer --domain DOMAIN.rddl --instance INSTANCE.rddl [options]
+```
+
+参数说明：
+
+| 参数 | 必需 | 说明 |
+| --- | --- | --- |
+| `--visualizer` | 是 | 启动实时 HTML visualizer。 |
+| `--domain PATH` | 是 | RDDL domain 文件路径。 |
+| `--instance PATH` | 是 | RDDL instance 文件路径。 |
+| `--with-simulator [darp\|rddlgym\|pyrddlgym]` | 否 | 启用 simulator；不写值时默认 `darp`，显示 DARP 内部状态机；指定 `rddlgym`/`pyrddlgym` 时加载 pyRDDLGym，但不显示 DARP 内部状态机。 |
+| `--frontend {darp,pyrddl,pyrddlgym}` | 否 | DARP 内部 simulator 编译 RDDL 时使用的 frontend，默认 `darp`。 |
+| `--host HOST` | 否 | visualizer HTTP host，默认 `127.0.0.1`。 |
+| `--port PORT` | 否 | visualizer HTTP port，默认 `0`，表示自动选择空闲端口。 |
+| `--no-open` | 否 | 只启动服务，不自动打开浏览器。 |
+| `-h`, `--help` | 否 | 显示帮助信息。 |
+
+## 使用示例
+
+只查看源码和 AST：
+
+```bash
+darp \
+  --visualizer \
+  --domain examples/rddl/tiny_grid_domain.rddl \
+  --instance examples/rddl/tiny_grid_instance.rddl
+```
+
+启动 DARP 内部 simulator；右侧 HTML 面板只推进环境，action 由 DARP 后端选择：
+
+```bash
+darp \
+  --visualizer \
+  --domain examples/rddl/tiny_grid_domain.rddl \
+  --instance examples/rddl/tiny_grid_instance.rddl \
+  --with-simulator
+```
+
+指定 frontend 编译 RDDL，再使用 DARP 内部 simulator：
+
+```bash
+darp \
+  --visualizer \
+  --domain examples/rddl/tiny_grid_domain.rddl \
+  --instance examples/rddl/tiny_grid_instance.rddl \
+  --frontend darp \
+  --with-simulator darp
+```
+
+加载 pyRDDLGym simulator，但隐藏 DARP 内部状态机：
+
+```bash
+darp \
+  --visualizer \
+  --domain examples/rddl/tiny_grid_domain.rddl \
+  --instance examples/rddl/tiny_grid_instance.rddl \
+  --with-simulator rddlgym
+```
+
+在固定端口启动，不自动打开浏览器：
+
+```bash
+darp \
+  --visualizer \
+  --domain examples/rddl/tiny_grid_domain.rddl \
+  --instance examples/rddl/tiny_grid_instance.rddl \
+  --with-simulator \
+  --host 127.0.0.1 \
+  --port 8080 \
+  --no-open
+```
+
+## 架构
+
+- `rddl/`：RDDL parser frontend、加载、AST、表达式 grounding 与 `PlanningProblem` 编译。
+- `core/`：当前阶段所需的最小规划问题、类型和 duration 数据结构。
+- `sim/`：DARP 内部 simulator，以及后续外部 simulator 适配层。
+- `search/`：后续实现 AND-OR tree、Expand、full ILP 与 HILP 搜索算法。
+- `ilp/`：后续实现 internal、HiGHS、Gurobi 等 ILP backend。
+
+`search/` 和 `ilp/` 的区别是：`search/` 负责“如何搜索 policy tree”，`ilp/` 负责“如何求解搜索过程中构造出的 ILP/p-ILP 子问题”。HiGHS/Gurobi 是底层 ILP backend，不是 HILP 的替代算法。
+
+## RDDLFrontend
+
+`RDDLFrontend` 是 DARP 面向 parser 的统一协议。每个 frontend 都返回 `ParsedRDDL`：
+
+- `ast`：DARP 自己的 `RDDLASTNode`，供 compiler 和 visualizer 使用。
+- `native_ast`：第三方 parser 的原生 AST，可用于调试或后续继承。
+- `env/model`：pyRDDLGym 等 frontend 的可执行对象。
+- `metadata`：frontend、版本和解析信息。
+
+当前可选 frontend：
+
+- `darp`：DARP 自有基础 parser，当前默认用于本项目内部链路。
+- `pyrddl`：复用 `pyrddl.parser.RDDLParser`。
+- `pyrddlgym`：复用 pyRDDLGym 的 parser/simulator 生态。
+
+## 项目结构
 
 ```text
 DARP/
-├── README.md                       # 中文主文档，说明项目目标、论文对应关系、架构、路线图和运行方式。
-├── README-EN.md                    # 英文镜像文档，供团队其他成员阅读。
-├── LICENSE                         # 项目的 Apache-2.0 许可证文本。
-├── .gitignore                      # 忽略 Python 缓存、虚拟环境、构建产物和本地配置。
-├── pyproject.toml                  # Python 包元数据、依赖和可选 backend extras。
-├── requirements.txt                # 记录运行时核心依赖；当前核心只依赖 Python 标准库。
-├── requirements-dev.txt            # 记录开发和测试依赖，例如 pytest。
+├── README.md                         # 中文主文档，面向开发和维护。
+├── README-EN.md                      # 英文镜像文档，面向国际团队协作。
+├── pyproject.toml                    # Python 包元数据、console script 和可选依赖。
+├── requirements.txt                  # 运行时依赖记录；当前核心尽量保持轻量。
+├── requirements-dev.txt              # 开发和测试依赖记录。
 │
-├── examples/                       # 保存最小 RDDL 示例，用于 demo 和测试。
-│   ├── rddl/                       # 保存 RDDL domain 与 instance 文件。
-│   │   ├── tiny_grid_domain.rddl   # 用于演示的 tiny grid RDDL domain 占位示例。
-│   │   └── tiny_grid_instance.rddl # 用于演示的 tiny grid RDDL instance 占位示例。
+├── examples/                         # 示例输入目录。
+│   └── rddl/                         # RDDL 示例文件。
+│       ├── tiny_grid_domain.rddl     # 3x3 tiny-grid domain，包含 CPF/reward 动态。
+│       └── tiny_grid_instance.rddl   # 3x3 tiny-grid instance，包含对象和 horizon 等配置。
 │
 ├── src/
-│   └── darp/                       # DARP 的主 Python 包。
-│       ├── __init__.py             # 定义包版本和顶层导出。
+│   └── darp/                         # DARP Python 包主体。
+│       ├── __init__.py               # 包版本和顶层元信息。
+│       ├── __main__.py               # `darp` 顶层命令入口，负责解析 `--visualizer` 等参数。
 │       │
-│       ├── rddl/                   # RDDL parser frontend、加载与编译相关代码。
-│       │   ├── __init__.py         # 标记 RDDL 子包并保留 parser/编译阶段 TODO。
-│       │   ├── ast.py              # 定义基础 RDDL AST 节点结构。
-│       │   ├── basic_parser.py     # 实现无第三方依赖的基础 RDDL 结构 parser 和命令行入口。
-│       │   ├── visualizer.py       # 将基础 AST 渲染为带语法高亮、折叠、精确搜索和缩放功能的独立 HTML 图形化树。
-│       │   ├── frontend.py         # 定义 RDDLFrontend 协议和 ParsedRDDL 统一容器。
-│       │   ├── pyrddlgym_frontend.py # 复用 pyRDDLGym 解析标准 RDDL，并返回 DARP AST 与环境对象。
-│       │   ├── pyrddl_frontend.py  # 复用 pyrddl.parser.RDDLParser，并保留 DARP AST 与原生 AST。
-│       │   ├── extended.py         # 使用 DARP 自有 parser，并预留未来 DARP-RDDL 扩展语法。
-│       │   ├── compiler.py         # 将 ParsedRDDL 的 DARP AST 结构化编译为最小 PlanningProblem。
-│       │   └── loader.py           # 根据 frontend 名称选择具体 parser frontend。
+│       ├── core/                     # 当前阶段的最小规划模型。
+│       │   ├── __init__.py           # core 子包入口。
+│       │   ├── types.py              # state、action、observation、transition 等共享类型别名。
+│       │   ├── duration.py           # 动作时长接口和固定时长模型。
+│       │   └── problem.py            # `PlanningProblem` 数据结构和 tiny-grid 内置模型。
 │       │
-│       ├── core/                   # Phase 2.3 所需的最小规划问题数据结构。
-│       │   ├── __init__.py         # 标记 core 子包并保留公开 API TODO。
-│       │   ├── types.py            # 定义 state、action、observation、transition 等共享类型别名。
-│       │   ├── duration.py         # 定义 PlanningProblem 当前需要的动作时长接口和固定时长模型。
-│       │   └── problem.py          # 定义 PlanningProblem，并提供 tiny grid 内置问题。
+│       ├── rddl/                     # RDDL 解析、加载、编译和可视化。
+│       │   ├── __init__.py           # rddl 子包入口。
+│       │   ├── ast.py                # DARP 自有 `RDDLASTNode` AST 节点。
+│       │   ├── basic_parser.py       # 无第三方依赖的基础 RDDL 结构 parser。
+│       │   ├── lexicon.py            # RDDL 关键字、块名和词法符号定义。
+│       │   ├── expressions.py        # 标准 RDDL 表达式解析与求值，用于 grounding。
+│       │   ├── frontend.py           # `RDDLFrontend` 协议和 `ParsedRDDL` 容器。
+│       │   ├── extended.py           # DARP 自有 frontend，并预留未来扩展语法。
+│       │   ├── pyrddl_frontend.py    # `pyrddl` frontend 适配。
+│       │   ├── pyrddlgym_frontend.py # `pyRDDLGym` frontend 适配。
+│       │   ├── loader.py             # 根据 frontend 名称加载 RDDL。
+│       │   ├── compiler.py           # 将 `ParsedRDDL` 编译为 `PlanningProblem`。
+│       │   └── visualizer.py         # 实时 HTML visualizer 和内部 simulator 状态机面板。
+│       │
+│       └── sim/                      # simulator 适配层。
+│           ├── __init__.py           # sim 子包入口。
+│           └── local.py              # 基于显式表的 DARP 内部小规模 simulator。
 │
-└── tests/                          # 单元测试和端到端测试。
-    ├── test_basic_rddl_parser.py   # 测试基础 RDDL parser 和 HTML visualizer。
-    ├── test_rddl_frontends.py      # 测试 RDDLFrontend loader、pyrddl 和 pyRDDLGym 对齐。
-    └── test_rddl_compiler.py       # 测试 ParsedRDDL 到 PlanningProblem 的结构化编译。
+└── tests/                            # 当前阶段测试。
+    ├── test_basic_rddl_parser.py     # parser 和 HTML visualizer 测试。
+    ├── test_darp_entrypoint.py       # 顶层 `darp` CLI 参数和 `-h` 测试。
+    ├── test_rddl_frontends.py        # frontend loader 与第三方 parser 适配测试。
+    ├── test_rddl_compiler.py         # RDDL 到 `PlanningProblem` 的编译测试。
+    ├── test_rddl_grounding.py        # CPF/reward grounding 行为测试。
+    ├── test_local_simulator.py       # DARP 内部 simulator 测试。
+    └── test_compiler_simulator_interaction.py # compiler 与 simulator 联动测试。
 ```
-
-当前 `core/` 只提交 Phase 2.3 编译器所需的最小模型；后续规划中的完整 `core/`、`search/`、`ilp/`、`sim/`、`output/` 和 CLI 会在对应 Phase 实现时继续补齐并同步更新本节。
 
 ## 开发路线图
 
@@ -127,11 +213,14 @@ DARP/
   - [x] 1.1：项目计划、README/README-EN 和文件结构说明
   - [x] 1.2：Python 包配置、requirements 和 `.venv` 使用方式
   - [x] 1.3：最小 RDDL 示例与 pytest 测试入口
-- [ ] Phase 2：RDDL 输入管线
+- [x] Phase 2：RDDL 输入管线
   - [x] 2.1：基础 RDDL parser 与交互式 HTML AST visualizer
   - [x] 2.2：通过 `RDDLFrontend` 对齐 `darp`、`pyrddl`、`pyrddlgym`
   - [x] 2.3：将 `ParsedRDDL` 结构化编译为最小 `PlanningProblem`
-  - [ ] 2.4：补齐标准 RDDL CPF/reward 语义 grounding，不引入新语法
+  - [x] 2.4：补齐标准 RDDL CPF/reward 表达式 grounding，并用 DARP 内部 simulator 验证状态推进
+    - [x] 2.4.1：为 tiny grid 补齐 CPF/reward grounding
+    - [x] 2.4.2：实现 DARP 内部 simulator 并跑通 tiny grid 小实验
+    - [x] 2.4.3：补齐通用标准 RDDL CPF/reward 表达式 grounding，不引入新语法
 - [ ] Phase 3：PROST-like 实时执行流程
   - [ ] 3.1：实现本地 online solve loop：每步 replan、输出 action、接收 observation
   - [ ] 3.2：接入 rddlsim/PROST 风格外部 simulator 协议
@@ -162,90 +251,14 @@ DARP/
   - [ ] 9.2：实现 benchmark 与论文风格实验
   - [ ] 9.3：整理公开 API 与算法 registry
 
-## 安装与运行
-
-开发模式安装：
-
-```bash
-virtualenv .venv
-source .venv/bin/activate
-python -m pip install --no-build-isolation --no-deps -e .
-python -m pip install -r requirements-dev.txt
-```
-
-如果你的机器已经安装了 `python3-venv`，也可以用 `python -m venv .venv` 创建虚拟环境。本机当前是通过 `virtualenv --clear .venv` 创建 `.venv`，因为系统 Python 缺少 `ensurepip`。
-
-仅安装运行时依赖：
-
-```bash
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-```
-
-可选外部依赖仍记录在 `pyproject.toml` extras 中：
-
-```bash
-python -m pip install -e ".[dev,rddl,pyrddl]"
-python -m pip install -e ".[rddl]"
-python -m pip install -e ".[pyrddl]"
-python -m pip install -e ".[highs]"
-python -m pip install -e ".[gurobi]"
-```
-
-运行测试：
+## 测试
 
 ```bash
 python -m pytest
 ```
 
-验证基础 RDDL parser：
+## 当前限制
 
-```bash
-python -m darp.rddl.basic_parser \
-  examples/rddl/tiny_grid_domain.rddl \
-  examples/rddl/tiny_grid_instance.rddl
-```
-
-通过统一 `RDDLFrontend` loader 检查三个 frontend：
-
-```bash
-python -m darp.rddl.loader \
-  examples/rddl/tiny_grid_domain.rddl \
-  examples/rddl/tiny_grid_instance.rddl \
-  --frontend darp
-
-python -m darp.rddl.loader \
-  examples/rddl/tiny_grid_domain.rddl \
-  examples/rddl/tiny_grid_instance.rddl \
-  --frontend pyrddl
-
-python -m darp.rddl.loader \
-  examples/rddl/tiny_grid_domain.rddl \
-  examples/rddl/tiny_grid_instance.rddl \
-  --frontend pyrddlgym
-```
-
-将 RDDL 编译为 DARP `PlanningProblem` 摘要：
-
-```bash
-python -m darp.rddl.compiler \
-  examples/rddl/tiny_grid_domain.rddl \
-  examples/rddl/tiny_grid_instance.rddl \
-  --frontend darp
-```
-
-生成带语法高亮、折叠、精确搜索和缩放功能的图形化 AST HTML：
-
-```bash
-python -m darp.rddl.visualizer \
-  examples/rddl/tiny_grid_domain.rddl \
-  examples/rddl/tiny_grid_instance.rddl \
-  --output tiny_grid_ast.html
-```
-
-## 当前限制与后续计划
-
-- 当前基础 parser 只解析 RDDL 的文件、块、赋值和语句结构，用于验证 AST 与 HTML 可视化；完整 RDDL 表达式语义仍在 Phase 2 后续步骤。
-- 当前 `RDDLCompiler` 已能把离散小规模 `ParsedRDDL` 结构化编译为最小 `PlanningProblem`；完整 CPF/reward 语义 grounding 仍在 Phase 2.4。
-- DARP-RDDL 扩展语法还未定义，并放在后续阶段；当前不让新语法阻塞标准 RDDL 编译链路。
-- `search/`、`ilp/`、`sim/`、`output/` 和 CLI 仍会在后续 Phase 中按 commit 分组加入。
+- 当前 compiler 面向小规模、离散、紧凑 one-hot state fluent 的 RDDL 问题。
+- 当前内部 simulator 基于显式 transition/observation/reward 表，不是通用高性能 RDDL simulator。
+- DARP-RDDL 新语法、durative action 原生语法、HILP、HiGHS/Gurobi backend 仍在后续阶段。
