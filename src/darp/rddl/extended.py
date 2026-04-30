@@ -14,10 +14,13 @@ from darp.rddl.frontend import ParsedRDDL
 
 
 class DARPExtendedFrontend:
+    """Reserve DARP-owned parsing for future extended syntax. / 为未来 DARP 扩展语法预留自有解析入口。"""
+
     name = "darp"
     supports_extended_syntax = True
 
     def parse(self, domain: str | Path, instance: str | Path) -> ParsedRDDL:
+        """Parse files with the DARP-owned structural parser. / 使用 DARP 自有结构 parser 解析文件。"""
         ast = BasicRDDLParser().parse_files(domain, instance)
         return ParsedRDDL(
             frontend=self.name,

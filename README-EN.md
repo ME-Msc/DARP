@@ -48,22 +48,30 @@ The current frontend slots are:
 - `pyrddl`: direct `pyrddl.parser.RDDLParser` frontend, useful as a fork or DARP-owned parser starting point.
 - `darp`: DARP-owned basic parser frontend. It currently parses RDDL file/block/statement structure and reserves the future DARP-RDDL extension entrypoint.
 
-The basic parser can be verified from the command line and can print the AST as Graphviz DOT:
+The basic parser can be verified from the command line:
 
 ```bash
 python -m darp.rddl.basic_parser \
   examples/rddl/tiny_grid_domain.rddl \
-  examples/rddl/tiny_grid_instance.rddl \
-  --dot
+  examples/rddl/tiny_grid_instance.rddl
 ```
 
-To save the DOT file:
+To view the AST graphically, generate a standalone syntax-highlighted HTML visualizer with an English UI, node folding, depth expansion, precise search, and zoom:
 
 ```bash
 python -m darp.rddl.basic_parser \
   examples/rddl/tiny_grid_domain.rddl \
   examples/rddl/tiny_grid_instance.rddl \
-  --dot-output tiny_grid_ast.dot
+  --html-output tiny_grid_ast.html
+```
+
+You can also use the standalone visualizer module:
+
+```bash
+python -m darp.rddl.visualizer \
+  examples/rddl/tiny_grid_domain.rddl \
+  examples/rddl/tiny_grid_instance.rddl \
+  --output tiny_grid_ast.html
 ```
 
 ## Repository Map
@@ -74,102 +82,50 @@ DARP/
 ├── README-EN.md                    # English mirror documentation for collaborators.
 ├── LICENSE                         # Apache-2.0 license text for the project.
 ├── .gitignore                      # Ignores Python caches, virtual environments, build artifacts, and local config.
-├── .codex                          # Local Codex workspace configuration placeholder.
-├── pyproject.toml                  # Python package metadata, dependencies, CLI entrypoint, and optional backend extras.
+├── pyproject.toml                  # Python package metadata, dependencies, and optional backend extras.
 ├── requirements.txt                # Records runtime core dependencies; the current core only uses the Python standard library.
 ├── requirements-dev.txt            # Records development and test dependencies such as pytest.
 │
-├── examples/                       # Minimal RDDL examples and duration configs used by demos and tests.
+├── examples/                       # Minimal RDDL examples used by demos and tests.
 │   ├── rddl/                       # RDDL domain and instance files.
 │   │   ├── tiny_grid_domain.rddl   # Placeholder tiny-grid RDDL domain for demos.
 │   │   └── tiny_grid_instance.rddl # Placeholder tiny-grid RDDL instance for demos.
-│   └── durations/                  # Sidecar configs for durative-action settings.
-│       └── tiny_grid.yaml          # Sidecar duration config for tiny-grid actions.
 │
 ├── src/
 │   └── darp/                       # Main DARP Python package.
 │       ├── __init__.py             # Defines package version and top-level exports.
-│       ├── cli.py                  # Command-line entrypoint for solve and evaluate modes.
 │       │
 │       ├── rddl/                   # RDDL parser frontends, loading, and compilation code.
 │       │   ├── __init__.py         # Marks the RDDL subpackage and keeps parser/compiler TODOs.
-│       │   ├── ast.py              # Defines basic RDDL AST nodes and Graphviz DOT export.
+│       │   ├── ast.py              # Defines the basic RDDL AST node structure.
 │       │   ├── basic_parser.py     # Implements the dependency-free structural RDDL parser and command-line entrypoint.
+│       │   ├── visualizer.py       # Renders the basic AST as a standalone syntax-highlighted graphical HTML tree with folding, precise search, and zoom.
 │       │   ├── frontend.py         # Defines the RDDLFrontend protocol and ParsedRDDL container.
 │       │   ├── pyrddlgym_frontend.py # Reuses pyRDDLGym to parse standard RDDL and return environment objects.
 │       │   ├── pyrddl_frontend.py  # Reuses pyrddl.parser.RDDLParser to produce direct ASTs.
 │       │   ├── extended.py         # Uses the DARP-owned parser and reserves future DARP-RDDL extended syntax.
-│       │   ├── loader.py           # Selects a parser frontend from --rddl-frontend.
-│       │   ├── compiler.py         # Compiles ParsedRDDL into DARP's PlanningProblem.
-│       │   └── durations.py        # Reads duration sidecar configs.
-│       │
-│       ├── core/                   # Solver-independent planning data structures.
-│       │   ├── __init__.py         # Marks the core subpackage and reserves stable API exports.
-│       │   ├── types.py            # Central state, action, observation, and distribution type aliases.
-│       │   ├── problem.py          # Defines the finite-horizon POMDP/(C)C-POMDP problem interface.
-│       │   ├── history.py          # Defines observation histories and action histories matching the paper.
-│       │   ├── belief.py           # Implements belief updates, safe beliefs, and risk probability.
-│       │   ├── duration.py         # Implements fixed, expected/state-dependent, and Gaussian percentile duration models.
-│       │   ├── constraints.py      # Defines expected-cost and chance-risk constraints.
-│       │   └── policy.py           # Represents solve results, action sequences, policy trees, and JSON export data.
-│       │
-│       ├── search/                 # Planning algorithm layer for searching policy space.
-│       │   ├── __init__.py         # Marks the search subpackage and reserves algorithm registry metadata.
-│       │   ├── base.py             # Defines the common Planner interface.
-│       │   ├── and_or_tree.py      # Defines the shared AND-OR history tree structure.
-│       │   ├── expand.py           # Implements the paper's Expand step and computes ILP constants.
-│       │   ├── preprocess.py       # Expands the complete finite tree for the full ILP baseline.
-│       │   ├── full_ilp.py         # Builds and solves the complete ILP without HILP frontier pruning.
-│       │   ├── hilp.py             # Implements the HILP partial-ILP heuristic search from Algorithm 3.
-│       │   ├── heuristics.py       # Provides frontier utility/risk heuristics.
-│       │   └── online_replanner.py # Wraps a PROST-style online replanning loop.
-│       │
-│       ├── ilp/                    # ILP/p-ILP model representation and backend solvers.
-│       │   ├── __init__.py         # Marks the ilp subpackage and keeps backend roadmap TODOs.
-│       │   ├── model.py            # Defines solver-neutral variables, objectives, and linear constraints.
-│       │   ├── backend.py          # Defines the backend protocol shared by internal, HiGHS, and Gurobi.
-│       │   ├── internal.py         # Implements the built-in small-scale binary ILP solver for independent runs.
-│       │   ├── highs.py            # Wraps the optional HiGHS backend.
-│       │   ├── gurobi.py           # Wraps the optional Gurobi backend.
-│       │   └── factory.py          # Selects an ILP backend from CLI/config.
-│       │
-│       ├── sim/                    # Local and external simulation adapters.
-│       │   ├── __init__.py         # Marks the sim subpackage and reserves simulator registration.
-│       │   ├── local.py            # Local sampling simulator based on PlanningProblem.
-│       │   ├── rddlsim_client.py   # Future rddlsim-style external TCP simulator client.
-│       │   └── protocol.py         # Defines the simulator interaction protocol.
-│       │
-│       └── output/                 # Utilities for solve results and trace output.
-│           ├── __init__.py         # Marks the output subpackage and reserves benchmark writers.
-│           ├── json_policy.py      # Writes policy/action-sequence JSON.
-│           └── trace.py            # Records solve/evaluation traces.
+│       │   └── loader.py           # Selects a concrete parser frontend by name.
 │
 └── tests/                          # Unit and end-to-end tests.
-    ├── test_basic_rddl_parser.py   # Tests the basic RDDL parser AST and DOT output.
-    ├── test_history.py             # Tests observation/action history concatenation, parents, and depth.
-    ├── test_belief.py              # Tests belief prediction, observation update, and risk probability.
-    ├── test_duration.py            # Tests fixed and Gaussian duration tau calculations.
-    ├── test_internal_backend.py    # Tests the built-in binary ILP backend on a tiny model.
-    ├── test_and_or_tree.py         # Tests AND-OR tree expansion from the root.
-    ├── test_preprocess_expand.py   # Tests full-tree preprocessing and Expand integration.
-    ├── test_hilp_tiny_grid.py      # Tests HILP and full ILP agreement on tiny grid.
-    └── test_cli.py                 # Tests CLI solve output as parseable JSON.
+    └── test_basic_rddl_parser.py   # Tests the basic RDDL parser and HTML visualizer.
 ```
+
+Planned `core/`, `search/`, `ilp/`, `sim/`, `output/`, and CLI modules will be added in their corresponding phases, with this section updated in the same commits.
 
 ## Development Roadmap
 
-- [x] Phase 1: Project scaffold, CLI, test setup, examples
-- [x] Phase 2.1: Implement a basic RDDL parser with command-line success output and AST DOT export
+- [x] Phase 1: Project scaffold, dependency manifests, test setup, examples
+- [x] Phase 2.1: Implement a basic RDDL parser with command-line success output and interactive HTML visualization
 - [ ] Phase 2.2: Align pyrddl/pyRDDLGym frontends through RDDLFrontend
 - [ ] Phase 2.3: Compile ParsedRDDL into PlanningProblem
-- [x] Phase 3: Implement core POMDP/(C)C-POMDP model
-- [x] Phase 4: Implement AND-OR tree in `and_or_tree.py`
-- [x] Phase 5: Implement paper `Expand` and preprocessing
-- [x] Phase 6: Implement internal ILP backend
-- [x] Phase 7: Implement full ILP baseline
-- [x] Phase 8: Implement HILP partial-ILP search
-- [x] Phase 9: Output offline policy JSON
-- [x] Phase 10: Implement online replanning mode
+- [ ] Phase 3: Implement core POMDP/(C)C-POMDP model
+- [ ] Phase 4: Implement AND-OR tree in `and_or_tree.py`
+- [ ] Phase 5: Implement paper `Expand` and preprocessing
+- [ ] Phase 6: Implement internal ILP backend
+- [ ] Phase 7: Implement full ILP baseline
+- [ ] Phase 8: Implement HILP partial-ILP search
+- [ ] Phase 9: Output offline policy JSON
+- [ ] Phase 10: Implement online replanning mode
 - [ ] Phase 11: Add optional HiGHS backend
 - [ ] Phase 12: Add optional Gurobi backend
 - [ ] Phase 13: Add benchmarks and paper-style experiments
@@ -227,18 +183,26 @@ Run tests:
 python -m pytest
 ```
 
-Verify the basic RDDL parser and print the DOT AST in the terminal:
+Verify the basic RDDL parser:
 
 ```bash
 python -m darp.rddl.basic_parser \
   examples/rddl/tiny_grid_domain.rddl \
+  examples/rddl/tiny_grid_instance.rddl
+```
+
+Generate a syntax-highlighted graphical AST HTML page with folding, precise search, and zoom:
+
+```bash
+python -m darp.rddl.visualizer \
+  examples/rddl/tiny_grid_domain.rddl \
   examples/rddl/tiny_grid_instance.rddl \
-  --dot
+  --output tiny_grid_ast.html
 ```
 
 ## Current Limitations And Next Steps
 
-- The current basic parser only reads RDDL file, block, assignment, and statement structure for AST/DOT visualization; full RDDL expression semantics remain later Phase 2 work.
+- The current basic parser only reads RDDL file, block, assignment, and statement structure for AST/HTML visualization; full RDDL expression semantics remain later Phase 2 work.
 - The default tiny grid uses a built-in Python problem model; the `RDDLFrontend` parsing layer is reserved, but complete RDDL-to-PlanningProblem compilation remains Phase 2.
 - DARP-RDDL extended syntax is not defined yet; sidecar configs are still the recommended way to express duration/risk/HILP metadata for now.
 - The internal ILP backend uses exhaustive binary search and is intended for small examples and tests, not performance.

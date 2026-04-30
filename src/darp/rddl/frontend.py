@@ -12,12 +12,12 @@ from typing import Any, Protocol
 
 
 class RDDLFrontendError(RuntimeError):
-    """Raised when a parser frontend cannot parse an RDDL input."""
+    """Raised when a parser frontend cannot parse RDDL. / 在 parser frontend 无法解析 RDDL 时抛出。"""
 
 
 @dataclass(frozen=True)
 class ParsedRDDL:
-    """A parser-independent container returned by all RDDL frontends."""
+    """Carry parser output in a frontend-neutral shape. / 以前端无关的形式承载 parser 输出。"""
 
     frontend: str
     domain: str
@@ -29,16 +29,11 @@ class ParsedRDDL:
 
 
 class RDDLFrontend(Protocol):
-    """Protocol implemented by every DARP RDDL parser frontend.
-
-    A frontend is the adapter between a concrete parser implementation and
-    DARP's compiler. The compiler should consume ParsedRDDL instead of importing
-    pyRDDLGym, pyrddl, or a future DARP parser directly.
-    """
+    """Define the shared parser frontend interface. / 定义通用 parser frontend 接口。"""
 
     name: str
     supports_extended_syntax: bool
 
     def parse(self, domain: str | Path, instance: str | Path) -> ParsedRDDL:
-        """Parse a domain/instance pair into a parser-independent container."""
+        """Parse a domain/instance pair into a shared container. / 将 domain/instance 解析为统一容器。"""
         raise NotImplementedError

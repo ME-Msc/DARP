@@ -13,10 +13,13 @@ from darp.rddl.frontend import ParsedRDDL, RDDLFrontendError
 
 
 class PyRDDLGymFrontend:
+    """Adapt pyRDDLGym parsing/simulation to DARP. / 将 pyRDDLGym 解析和仿真适配到 DARP。"""
+
     name = "pyrddlgym"
     supports_extended_syntax = False
 
     def parse(self, domain: str | Path, instance: str | Path) -> ParsedRDDL:
+        """Build a pyRDDLGym environment and wrap its model. / 创建 pyRDDLGym 环境并封装其模型。"""
         try:
             import pyRDDLGym
         except ImportError as exc:

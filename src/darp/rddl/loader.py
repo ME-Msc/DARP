@@ -16,7 +16,10 @@ LoadedRDDL = ParsedRDDL
 
 
 class RDDLLoader:
+    """Load RDDL through a selectable parser frontend. / 通过可选择的 parser frontend 加载 RDDL。"""
+
     def __init__(self, frontend: str | RDDLFrontend = "pyrddlgym") -> None:
+        """Create a loader with the selected frontend. / 使用指定 frontend 创建加载器。"""
         self.frontend = self._resolve_frontend(frontend)
 
     def load(
@@ -25,10 +28,12 @@ class RDDLLoader:
         instance: str | Path,
         frontend: str | RDDLFrontend | None = None,
     ) -> LoadedRDDL:
+        """Load a domain/instance pair through a frontend. / 通过 frontend 加载 domain/instance 文件对。"""
         parser = self.frontend if frontend is None else self._resolve_frontend(frontend)
         return parser.parse(domain, instance)
 
     def _resolve_frontend(self, frontend: str | RDDLFrontend) -> RDDLFrontend:
+        """Convert a frontend name or object into a frontend instance. / 将 frontend 名称或对象解析为 frontend 实例。"""
         if not isinstance(frontend, str):
             return frontend
         normalized = frontend.lower().replace("-", "_")

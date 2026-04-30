@@ -13,10 +13,13 @@ from darp.rddl.frontend import ParsedRDDL, RDDLFrontendError
 
 
 class PyRDDLFrontend:
+    """Adapt pyrddl parsing to DARP's frontend container. / 将 pyrddl 解析适配到 DARP frontend 容器。"""
+
     name = "pyrddl"
     supports_extended_syntax = False
 
     def parse(self, domain: str | Path, instance: str | Path) -> ParsedRDDL:
+        """Parse RDDL with pyrddl and return a shared container. / 使用 pyrddl 解析 RDDL 并返回统一容器。"""
         try:
             from pyrddl.parser import RDDLParser
         except ImportError as exc:
