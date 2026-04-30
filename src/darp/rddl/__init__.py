@@ -1,4 +1,4 @@
 """RDDL parser frontend, loading, and compilation utilities."""
 
-# TODO(phase-2.3): Add grounded standard RDDL-to-PlanningProblem compiler coverage.
-# TODO(parser): Implement DARP-RDDL once the extended grammar is specified.
+# TODO(phase-2.4): Add grounded CPF expression coverage for standard RDDL.
+# TODO(phase-8.1): Implement DARP-RDDL once the extended grammar is specified.

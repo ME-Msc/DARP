@@ -104,32 +104,63 @@ DARP/
 │       │   ├── pyrddlgym_frontend.py # 复用 pyRDDLGym 解析标准 RDDL，并返回 DARP AST 与环境对象。
 │       │   ├── pyrddl_frontend.py  # 复用 pyrddl.parser.RDDLParser，并保留 DARP AST 与原生 AST。
 │       │   ├── extended.py         # 使用 DARP 自有 parser，并预留未来 DARP-RDDL 扩展语法。
+│       │   ├── compiler.py         # 将 ParsedRDDL 的 DARP AST 结构化编译为最小 PlanningProblem。
 │       │   └── loader.py           # 根据 frontend 名称选择具体 parser frontend。
+│       │
+│       ├── core/                   # Phase 2.3 所需的最小规划问题数据结构。
+│       │   ├── __init__.py         # 标记 core 子包并保留公开 API TODO。
+│       │   ├── types.py            # 定义 state、action、observation、transition 等共享类型别名。
+│       │   ├── duration.py         # 定义 PlanningProblem 当前需要的动作时长接口和固定时长模型。
+│       │   └── problem.py          # 定义 PlanningProblem，并提供 tiny grid 内置问题。
 │
 └── tests/                          # 单元测试和端到端测试。
     ├── test_basic_rddl_parser.py   # 测试基础 RDDL parser 和 HTML visualizer。
-    └── test_rddl_frontends.py      # 测试 RDDLFrontend loader、pyrddl 和 pyRDDLGym 对齐。
+    ├── test_rddl_frontends.py      # 测试 RDDLFrontend loader、pyrddl 和 pyRDDLGym 对齐。
+    └── test_rddl_compiler.py       # 测试 ParsedRDDL 到 PlanningProblem 的结构化编译。
 ```
 
-后续规划中的 `core/`、`search/`、`ilp/`、`sim/`、`output/` 和 CLI 会在对应 Phase 实现时加入并同步更新本节。
+当前 `core/` 只提交 Phase 2.3 编译器所需的最小模型；后续规划中的完整 `core/`、`search/`、`ilp/`、`sim/`、`output/` 和 CLI 会在对应 Phase 实现时继续补齐并同步更新本节。
 
 ## 开发路线图
 
-- [x] Phase 1：项目脚手架、依赖清单、测试框架、示例文件
-- [x] Phase 2.1：实现基础 RDDL parser，并支持命令行解析成功提示和交互式 HTML 可视化
-- [x] Phase 2.2：通过 RDDLFrontend 对齐 pyrddl/pyRDDLGym frontend
-- [ ] Phase 2.3：将 ParsedRDDL 编译为 PlanningProblem
-- [ ] Phase 3：实现核心 POMDP/(C)C-POMDP 问题模型
-- [ ] Phase 4：在 `and_or_tree.py` 中实现 AND-OR tree
-- [ ] Phase 5：实现论文中的 `Expand` 与 preprocessing
-- [ ] Phase 6：实现内置 ILP backend
-- [ ] Phase 7：实现 full ILP baseline
-- [ ] Phase 8：实现 HILP partial-ILP search
-- [ ] Phase 9：输出 offline policy JSON
-- [ ] Phase 10：实现 online replanning 模式
-- [ ] Phase 11：接入可选 HiGHS backend
-- [ ] Phase 12：接入可选 Gurobi backend
-- [ ] Phase 13：实现 benchmark 与论文风格实验
+- [x] Phase 1：项目基础
+  - [x] 1.1：项目计划、README/README-EN 和文件结构说明
+  - [x] 1.2：Python 包配置、requirements 和 `.venv` 使用方式
+  - [x] 1.3：最小 RDDL 示例与 pytest 测试入口
+- [ ] Phase 2：RDDL 输入管线
+  - [x] 2.1：基础 RDDL parser 与交互式 HTML AST visualizer
+  - [x] 2.2：通过 `RDDLFrontend` 对齐 `darp`、`pyrddl`、`pyrddlgym`
+  - [x] 2.3：将 `ParsedRDDL` 结构化编译为最小 `PlanningProblem`
+  - [ ] 2.4：补齐标准 RDDL CPF/reward 语义 grounding，不引入新语法
+- [ ] Phase 3：PROST-like 实时执行流程
+  - [ ] 3.1：实现本地 online solve loop：每步 replan、输出 action、接收 observation
+  - [ ] 3.2：接入 rddlsim/PROST 风格外部 simulator 协议
+  - [ ] 3.3：实现跨 step 的 belief/state carryover 与时间预算控制
+- [ ] Phase 4：规划核心模型
+  - [ ] 4.1：稳定 `PlanningProblem`、typed identifiers 和模型校验
+  - [ ] 4.2：完善 history、belief、constraints 和 policy tree 基础结构
+  - [ ] 4.3：扩展多约束、chance-risk 与连续/大状态空间接口
+- [ ] Phase 5：搜索算法
+  - [ ] 5.1：在 `and_or_tree.py` 中完善 AND-OR history tree
+  - [ ] 5.2：实现论文中的 `Expand` 与 full-tree preprocessing
+  - [ ] 5.3：实现 full ILP baseline
+  - [ ] 5.4：实现 HILP partial-ILP search
+- [ ] Phase 6：ILP 求解层
+  - [ ] 6.1：实现 ILP model/backend 协议与内置 backend
+  - [ ] 6.2：接入可选 HiGHS backend
+  - [ ] 6.3：接入可选 Gurobi backend
+- [ ] Phase 7：Durative action sidecar
+  - [ ] 7.1：设计 YAML/JSON sidecar schema 和 compiler/runtime 接口
+  - [ ] 7.2：实现 fixed、expected、Gaussian duration model 接入
+  - [ ] 7.3：把论文中的 duration/smoothed-belief 约束接入 HILP
+- [ ] Phase 8：DARP-RDDL 新语法
+  - [ ] 8.1：设计 DARP-RDDL 语法扩展
+  - [ ] 8.2：决定并实现 parser 继承、fork 或自研 grammar
+  - [ ] 8.3：把 sidecar 能力迁移为可选原生语法
+- [ ] Phase 9：输出、接口与实验
+  - [ ] 9.1：完善 offline policy JSON 与 trace 输出
+  - [ ] 9.2：实现 benchmark 与论文风格实验
+  - [ ] 9.3：整理公开 API 与算法 registry
 
 ## 安装与运行
 
@@ -194,6 +225,15 @@ python -m darp.rddl.loader \
   --frontend pyrddlgym
 ```
 
+将 RDDL 编译为 DARP `PlanningProblem` 摘要：
+
+```bash
+python -m darp.rddl.compiler \
+  examples/rddl/tiny_grid_domain.rddl \
+  examples/rddl/tiny_grid_instance.rddl \
+  --frontend darp
+```
+
 生成带语法高亮、折叠、精确搜索和缩放功能的图形化 AST HTML：
 
 ```bash
@@ -206,6 +246,6 @@ python -m darp.rddl.visualizer \
 ## 当前限制与后续计划
 
 - 当前基础 parser 只解析 RDDL 的文件、块、赋值和语句结构，用于验证 AST 与 HTML 可视化；完整 RDDL 表达式语义仍在 Phase 2 后续步骤。
-- 当前 `RDDLFrontend` 已能统一返回 `ParsedRDDL`，并保证 `ast` 是 DARP `RDDLASTNode`；完整 RDDL-to-PlanningProblem 编译仍在 Phase 2.3。
-- DARP-RDDL 扩展语法还未定义；当前建议先用 sidecar 配置表达 duration/risk/HILP 参数。
-- `core/`、`search/`、`ilp/`、`sim/`、`output/` 和 CLI 仍会在后续 Phase 中按 commit 分组加入。
+- 当前 `RDDLCompiler` 已能把离散小规模 `ParsedRDDL` 结构化编译为最小 `PlanningProblem`；完整 CPF/reward 语义 grounding 仍在 Phase 2.4。
+- DARP-RDDL 扩展语法还未定义，并放在后续阶段；当前不让新语法阻塞标准 RDDL 编译链路。
+- `search/`、`ilp/`、`sim/`、`output/` 和 CLI 仍会在后续 Phase 中按 commit 分组加入。

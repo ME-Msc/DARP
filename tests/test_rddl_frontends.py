@@ -1,7 +1,5 @@
 """Tests for RDDLFrontend alignment across parser backends."""
 
-# TODO(phase-2.3): Add compiler-facing assertions once ParsedRDDL feeds PlanningProblem.
-
 import pytest
 
 from darp.rddl.frontend import ParsedRDDL, RDDLFrontendError

@@ -1,8 +1,8 @@
 """Parser frontend protocol for standard and extended RDDL inputs."""
 
-# TODO(phase-2.3): Add typed compiler-facing accessors once PlanningProblem
-# compilation starts consuming ParsedRDDL.
-# TODO(parser): Add DARP-specific AST nodes once extended RDDL syntax is defined.
+# TODO(phase-2.4): Add typed AST accessors when compiler grounding expands
+# beyond the structural subset.
+# TODO(phase-8.2): Add DARP-specific AST nodes once extended RDDL syntax is defined.
 
 from __future__ import annotations
 

@@ -104,32 +104,63 @@ DARP/
 │       │   ├── pyrddlgym_frontend.py # Reuses pyRDDLGym while returning DARP AST and environment objects.
 │       │   ├── pyrddl_frontend.py  # Reuses pyrddl.parser.RDDLParser while keeping DARP AST and native AST.
 │       │   ├── extended.py         # Uses the DARP-owned parser and reserves future DARP-RDDL extended syntax.
+│       │   ├── compiler.py         # Structurally compiles ParsedRDDL's DARP AST into a minimal PlanningProblem.
 │       │   └── loader.py           # Selects a concrete parser frontend by name.
+│       │
+│       ├── core/                   # Minimal planning problem data structures needed by Phase 2.3.
+│       │   ├── __init__.py         # Marks the core subpackage and keeps public API TODOs.
+│       │   ├── types.py            # Defines shared aliases for states, actions, observations, and transitions.
+│       │   ├── duration.py         # Defines the duration interface and fixed-duration model needed by PlanningProblem.
+│       │   └── problem.py          # Defines PlanningProblem and the built-in tiny-grid problem.
 │
 └── tests/                          # Unit and end-to-end tests.
     ├── test_basic_rddl_parser.py   # Tests the basic RDDL parser and HTML visualizer.
-    └── test_rddl_frontends.py      # Tests RDDLFrontend loader, pyrddl, and pyRDDLGym alignment.
+    ├── test_rddl_frontends.py      # Tests RDDLFrontend loader, pyrddl, and pyRDDLGym alignment.
+    └── test_rddl_compiler.py       # Tests structural compilation from ParsedRDDL to PlanningProblem.
 ```
 
-Planned `core/`, `search/`, `ilp/`, `sim/`, `output/`, and CLI modules will be added in their corresponding phases, with this section updated in the same commits.
+The current `core/` commit only contains the minimal model needed by the Phase 2.3 compiler; the fuller `core/`, `search/`, `ilp/`, `sim/`, `output/`, and CLI modules will be added in their corresponding phases and reflected here in the same commits.
 
 ## Development Roadmap
 
-- [x] Phase 1: Project scaffold, dependency manifests, test setup, examples
-- [x] Phase 2.1: Implement a basic RDDL parser with command-line success output and interactive HTML visualization
-- [x] Phase 2.2: Align pyrddl/pyRDDLGym frontends through RDDLFrontend
-- [ ] Phase 2.3: Compile ParsedRDDL into PlanningProblem
-- [ ] Phase 3: Implement core POMDP/(C)C-POMDP model
-- [ ] Phase 4: Implement AND-OR tree in `and_or_tree.py`
-- [ ] Phase 5: Implement paper `Expand` and preprocessing
-- [ ] Phase 6: Implement internal ILP backend
-- [ ] Phase 7: Implement full ILP baseline
-- [ ] Phase 8: Implement HILP partial-ILP search
-- [ ] Phase 9: Output offline policy JSON
-- [ ] Phase 10: Implement online replanning mode
-- [ ] Phase 11: Add optional HiGHS backend
-- [ ] Phase 12: Add optional Gurobi backend
-- [ ] Phase 13: Add benchmarks and paper-style experiments
+- [x] Phase 1: Project foundation
+  - [x] 1.1: Project plan, README/README-EN, and file structure notes
+  - [x] 1.2: Python packaging, requirements, and `.venv` workflow
+  - [x] 1.3: Minimal RDDL examples and pytest entrypoint
+- [ ] Phase 2: RDDL input pipeline
+  - [x] 2.1: Basic RDDL parser and interactive HTML AST visualizer
+  - [x] 2.2: Align `darp`, `pyrddl`, and `pyrddlgym` through `RDDLFrontend`
+  - [x] 2.3: Structurally compile `ParsedRDDL` into a minimal `PlanningProblem`
+  - [ ] 2.4: Complete standard RDDL CPF/reward semantic grounding without adding new syntax
+- [ ] Phase 3: PROST-like realtime execution
+  - [ ] 3.1: Implement a local online solve loop: replan each step, return actions, receive observations
+  - [ ] 3.2: Add rddlsim/PROST-style external simulator protocol support
+  - [ ] 3.3: Add cross-step belief/state carryover and time-budget control
+- [ ] Phase 4: Planning core model
+  - [ ] 4.1: Stabilize `PlanningProblem`, typed identifiers, and model validation
+  - [ ] 4.2: Refine history, belief, constraints, and policy-tree basics
+  - [ ] 4.3: Extend multi-constraint, chance-risk, and continuous/large-state interfaces
+- [ ] Phase 5: Search algorithms
+  - [ ] 5.1: Refine the AND-OR history tree in `and_or_tree.py`
+  - [ ] 5.2: Implement paper `Expand` and full-tree preprocessing
+  - [ ] 5.3: Implement the full ILP baseline
+  - [ ] 5.4: Implement HILP partial-ILP search
+- [ ] Phase 6: ILP solving layer
+  - [ ] 6.1: Implement the ILP model/backend protocol and internal backend
+  - [ ] 6.2: Add optional HiGHS backend
+  - [ ] 6.3: Add optional Gurobi backend
+- [ ] Phase 7: Durative action sidecar
+  - [ ] 7.1: Design YAML/JSON sidecar schema and compiler/runtime interfaces
+  - [ ] 7.2: Wire fixed, expected, and Gaussian duration models
+  - [ ] 7.3: Connect paper duration/smoothed-belief constraints to HILP
+- [ ] Phase 8: DARP-RDDL new syntax
+  - [ ] 8.1: Design DARP-RDDL syntax extensions
+  - [ ] 8.2: Choose and implement parser inheritance, fork, or owned grammar
+  - [ ] 8.3: Migrate sidecar capabilities into optional native syntax
+- [ ] Phase 9: Output, interfaces, and experiments
+  - [ ] 9.1: Refine offline policy JSON and trace output
+  - [ ] 9.2: Add benchmarks and paper-style experiments
+  - [ ] 9.3: Clean up public APIs and algorithm registry
 
 ## Install And Run
 
@@ -194,6 +225,15 @@ python -m darp.rddl.loader \
   --frontend pyrddlgym
 ```
 
+Compile RDDL into a DARP `PlanningProblem` summary:
+
+```bash
+python -m darp.rddl.compiler \
+  examples/rddl/tiny_grid_domain.rddl \
+  examples/rddl/tiny_grid_instance.rddl \
+  --frontend darp
+```
+
 Generate a syntax-highlighted graphical AST HTML page with folding, precise search, and zoom:
 
 ```bash
@@ -206,6 +246,6 @@ python -m darp.rddl.visualizer \
 ## Current Limitations And Next Steps
 
 - The current basic parser only reads RDDL file, block, assignment, and statement structure for AST/HTML visualization; full RDDL expression semantics remain later Phase 2 work.
-- `RDDLFrontend` now returns unified `ParsedRDDL` containers and guarantees that `ast` is DARP's `RDDLASTNode`; complete RDDL-to-PlanningProblem compilation remains Phase 2.3.
-- DARP-RDDL extended syntax is not defined yet; sidecar configs are still the recommended way to express duration/risk/HILP metadata for now.
-- Planned `core/`, `search/`, `ilp/`, `sim/`, `output/`, and CLI modules will be added in grouped future commits.
+- `RDDLCompiler` now structurally compiles small discrete `ParsedRDDL` inputs into a minimal `PlanningProblem`; full CPF/reward semantic grounding remains Phase 2.4.
+- DARP-RDDL extended syntax is still undefined and intentionally remains a later phase so it does not block the standard-RDDL compilation path.
+- Planned `search/`, `ilp/`, `sim/`, `output/`, and CLI modules will be added in grouped future commits.
