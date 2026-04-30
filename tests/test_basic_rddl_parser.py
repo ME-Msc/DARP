@@ -10,10 +10,10 @@ def test_basic_rddl_parser_builds_ast():
     )
 
     assert "nodes=" in ast.summary()
-    assert ast.children[0].children[0].kind == "domain"
-    assert ast.children[0].children[0].label == "tiny_grid"
-    assert ast.children[1].children[0].kind == "instance"
-    assert ast.children[1].children[0].label == "tiny_grid_inst"
+    top_level = {node.kind: node for file_node in ast.children for node in file_node.children}
+    assert top_level["domain"].label == "tiny_grid"
+    assert top_level["non-fluents"].label == "tiny_grid_nf"
+    assert top_level["instance"].label == "tiny_grid_inst"
 
 
 def test_basic_rddl_visualizer_renders_html():

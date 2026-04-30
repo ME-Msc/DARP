@@ -1,7 +1,7 @@
 """Parser frontend protocol for standard and extended RDDL inputs."""
 
-# TODO(phase-2): Stabilize the ParsedRDDL fields needed by the compiler after
-# evaluating pyRDDLGym and pyrddl AST shapes on real benchmarks.
+# TODO(phase-2.3): Add typed compiler-facing accessors once PlanningProblem
+# compilation starts consuming ParsedRDDL.
 # TODO(parser): Add DARP-specific AST nodes once extended RDDL syntax is defined.
 
 from __future__ import annotations
@@ -23,9 +23,29 @@ class ParsedRDDL:
     domain: str
     instance: str
     ast: Any | None = None
+    native_ast: Any | None = None
     model: Any | None = None
     env: Any | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def artifact_summary(self) -> dict[str, str | None]:
+        """Summarize available parser artifacts by type. / 按类型汇总当前可用的解析产物。"""
+        return {
+            "ast": type(self.ast).__name__ if self.ast is not None else None,
+            "native_ast": type(self.native_ast).__name__ if self.native_ast is not None else None,
+            "model": type(self.model).__name__ if self.model is not None else None,
+            "env": type(self.env).__name__ if self.env is not None else None,
+        }
+
+    def to_summary_dict(self) -> dict[str, Any]:
+        """Return a JSON-friendly summary for CLI inspection. / 返回适合 CLI 检查的 JSON 友好摘要。"""
+        return {
+            "frontend": self.frontend,
+            "domain": self.domain,
+            "instance": self.instance,
+            "artifacts": self.artifact_summary(),
+            "metadata": self.metadata,
+        }
 
 
 class RDDLFrontend(Protocol):
@@ -37,3 +57,15 @@ class RDDLFrontend(Protocol):
     def parse(self, domain: str | Path, instance: str | Path) -> ParsedRDDL:
         """Parse a domain/instance pair into a shared container. / 将 domain/instance 解析为统一容器。"""
         raise NotImplementedError
+
+
+def rddl_path(path: str | Path) -> Path:
+    """Normalize one RDDL file path without requiring absolutes. / 规范化一个 RDDL 文件路径但不强制转为绝对路径。"""
+    return Path(path).expanduser()
+
+
+def frontend_error(frontend: str, domain: Path, instance: Path, exc: Exception) -> RDDLFrontendError:
+    """Wrap parser failures with frontend and file context. / 用 frontend 和文件上下文包装解析失败。"""
+    return RDDLFrontendError(
+        f"{frontend} failed to parse domain={domain} instance={instance}: {exc}"
+    )

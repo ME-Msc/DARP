@@ -40,7 +40,7 @@ DARP 第一版优先实现一条可运行、可读、可扩展的研究链路：
 - `supports_extended_syntax`：是否支持 DARP 扩展语法。
 - `parse(domain, instance) -> ParsedRDDL`：把 domain/instance 解析成统一容器。
 
-`ParsedRDDL` 是 compiler 看到的唯一输入形状，里面可以装 `ast`、`model`、`env` 和 metadata。这样后续可以先复用 `pyrddl`，也可以复用或继承 `pyRDDLGym` 的 parser；如果将来 DARP 自己实现 parser，只要仍然返回 `ParsedRDDL`，后面的 `compiler.py`、`core/`、`search/`、`ilp/` 都不需要跟着改。
+`ParsedRDDL` 是 compiler 看到的唯一输入形状，其中 `ast` 固定为 DARP 自己的 `RDDLASTNode`，第三方 parser 的原生 AST 放在 `native_ast`，pyRDDLGym 的可执行对象放在 `model/env`，其他信息放在 metadata。这样后续可以先复用 `pyrddl`，也可以复用或继承 `pyRDDLGym` 的 parser；如果将来 DARP 自己实现 parser，只要仍然返回 `ParsedRDDL`，后面的 `compiler.py`、`core/`、`search/`、`ilp/` 都不需要跟着改。
 
 当前预留三种 frontend：
 
@@ -101,13 +101,14 @@ DARP/
 │       │   ├── basic_parser.py     # 实现无第三方依赖的基础 RDDL 结构 parser 和命令行入口。
 │       │   ├── visualizer.py       # 将基础 AST 渲染为带语法高亮、折叠、精确搜索和缩放功能的独立 HTML 图形化树。
 │       │   ├── frontend.py         # 定义 RDDLFrontend 协议和 ParsedRDDL 统一容器。
-│       │   ├── pyrddlgym_frontend.py # 复用 pyRDDLGym 解析标准 RDDL 并可返回环境对象。
-│       │   ├── pyrddl_frontend.py  # 复用 pyrddl.parser.RDDLParser 直接生成 AST。
+│       │   ├── pyrddlgym_frontend.py # 复用 pyRDDLGym 解析标准 RDDL，并返回 DARP AST 与环境对象。
+│       │   ├── pyrddl_frontend.py  # 复用 pyrddl.parser.RDDLParser，并保留 DARP AST 与原生 AST。
 │       │   ├── extended.py         # 使用 DARP 自有 parser，并预留未来 DARP-RDDL 扩展语法。
 │       │   └── loader.py           # 根据 frontend 名称选择具体 parser frontend。
 │
 └── tests/                          # 单元测试和端到端测试。
-    └── test_basic_rddl_parser.py   # 测试基础 RDDL parser 和 HTML visualizer。
+    ├── test_basic_rddl_parser.py   # 测试基础 RDDL parser 和 HTML visualizer。
+    └── test_rddl_frontends.py      # 测试 RDDLFrontend loader、pyrddl 和 pyRDDLGym 对齐。
 ```
 
 后续规划中的 `core/`、`search/`、`ilp/`、`sim/`、`output/` 和 CLI 会在对应 Phase 实现时加入并同步更新本节。
@@ -116,7 +117,7 @@ DARP/
 
 - [x] Phase 1：项目脚手架、依赖清单、测试框架、示例文件
 - [x] Phase 2.1：实现基础 RDDL parser，并支持命令行解析成功提示和交互式 HTML 可视化
-- [ ] Phase 2.2：通过 RDDLFrontend 对齐 pyrddl/pyRDDLGym frontend
+- [x] Phase 2.2：通过 RDDLFrontend 对齐 pyrddl/pyRDDLGym frontend
 - [ ] Phase 2.3：将 ParsedRDDL 编译为 PlanningProblem
 - [ ] Phase 3：实现核心 POMDP/(C)C-POMDP 问题模型
 - [ ] Phase 4：在 `and_or_tree.py` 中实现 AND-OR tree
@@ -153,28 +154,11 @@ python -m pip install -r requirements.txt
 可选外部依赖仍记录在 `pyproject.toml` extras 中：
 
 ```bash
+python -m pip install -e ".[dev,rddl,pyrddl]"
 python -m pip install -e ".[rddl]"
 python -m pip install -e ".[pyrddl]"
 python -m pip install -e ".[highs]"
 python -m pip install -e ".[gurobi]"
-```
-
-运行 tiny grid 的 HILP：
-
-```bash
-darp solve --algorithm hilp --solver internal
-```
-
-运行 full ILP baseline：
-
-```bash
-darp solve --algorithm full-ilp --solver internal
-```
-
-输出 JSON policy：
-
-```bash
-darp solve --algorithm hilp --solver internal --output policy.json
 ```
 
 运行测试：
@@ -191,6 +175,25 @@ python -m darp.rddl.basic_parser \
   examples/rddl/tiny_grid_instance.rddl
 ```
 
+通过统一 `RDDLFrontend` loader 检查三个 frontend：
+
+```bash
+python -m darp.rddl.loader \
+  examples/rddl/tiny_grid_domain.rddl \
+  examples/rddl/tiny_grid_instance.rddl \
+  --frontend darp
+
+python -m darp.rddl.loader \
+  examples/rddl/tiny_grid_domain.rddl \
+  examples/rddl/tiny_grid_instance.rddl \
+  --frontend pyrddl
+
+python -m darp.rddl.loader \
+  examples/rddl/tiny_grid_domain.rddl \
+  examples/rddl/tiny_grid_instance.rddl \
+  --frontend pyrddlgym
+```
+
 生成带语法高亮、折叠、精确搜索和缩放功能的图形化 AST HTML：
 
 ```bash
@@ -203,9 +206,6 @@ python -m darp.rddl.visualizer \
 ## 当前限制与后续计划
 
 - 当前基础 parser 只解析 RDDL 的文件、块、赋值和语句结构，用于验证 AST 与 HTML 可视化；完整 RDDL 表达式语义仍在 Phase 2 后续步骤。
-- 当前默认 tiny grid 使用内置 Python 问题模型；`RDDLFrontend` 解析层已预留，完整 RDDL-to-PlanningProblem 编译仍在 Phase 2。
+- 当前 `RDDLFrontend` 已能统一返回 `ParsedRDDL`，并保证 `ast` 是 DARP `RDDLASTNode`；完整 RDDL-to-PlanningProblem 编译仍在 Phase 2.3。
 - DARP-RDDL 扩展语法还未定义；当前建议先用 sidecar 配置表达 duration/risk/HILP 参数。
-- 内置 ILP backend 使用穷举式 binary search，只适合小规模问题和测试，不追求性能。
-- HiGHS/Gurobi backend 文件已预留并提供依赖检测，完整性能复现实验放在后续阶段。
-- Gaussian percentile duration 已有可运行近似实现，后续会继续补齐论文中的 smoothed belief 细节。
-- 当前支持单个 expected-cost 或 chance-risk 约束；多约束接口会在 benchmark 阶段扩展。
+- `core/`、`search/`、`ilp/`、`sim/`、`output/` 和 CLI 仍会在后续 Phase 中按 commit 分组加入。

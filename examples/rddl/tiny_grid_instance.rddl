@@ -1,6 +1,11 @@
-instance tiny_grid_inst {
+non-fluents tiny_grid_nf {
   domain = tiny_grid;
   objects { location : { start, safe, risk, goal }; };
+}
+
+instance tiny_grid_inst {
+  domain = tiny_grid;
+  non-fluents = tiny_grid_nf;
   init-state { at(start); };
   horizon = 2;
   discount = 1.0;

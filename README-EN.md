@@ -40,7 +40,7 @@ Therefore, HiGHS and Gurobi are not alternatives to HILP. They are lower-level s
 - `supports_extended_syntax`: whether the frontend supports DARP-specific syntax.
 - `parse(domain, instance) -> ParsedRDDL`: parse a domain/instance pair into a common container.
 
-`ParsedRDDL` is the only input shape the compiler should see. It can carry an `ast`, `model`, `env`, and metadata. This lets DARP reuse `pyrddl`, reuse or subclass pyRDDLGym parser internals, or eventually replace both with a DARP-owned parser without forcing changes in `compiler.py`, `core/`, `search/`, or `ilp/`.
+`ParsedRDDL` is the only input shape the compiler should see. Its `ast` is always DARP's own `RDDLASTNode`, third-party parser ASTs live in `native_ast`, pyRDDLGym executable artifacts live in `model/env`, and extra details live in metadata. This lets DARP reuse `pyrddl`, reuse or subclass pyRDDLGym parser internals, or eventually replace both with a DARP-owned parser without forcing changes in `compiler.py`, `core/`, `search/`, or `ilp/`.
 
 The current frontend slots are:
 
@@ -101,13 +101,14 @@ DARP/
 │       │   ├── basic_parser.py     # Implements the dependency-free structural RDDL parser and command-line entrypoint.
 │       │   ├── visualizer.py       # Renders the basic AST as a standalone syntax-highlighted graphical HTML tree with folding, precise search, and zoom.
 │       │   ├── frontend.py         # Defines the RDDLFrontend protocol and ParsedRDDL container.
-│       │   ├── pyrddlgym_frontend.py # Reuses pyRDDLGym to parse standard RDDL and return environment objects.
-│       │   ├── pyrddl_frontend.py  # Reuses pyrddl.parser.RDDLParser to produce direct ASTs.
+│       │   ├── pyrddlgym_frontend.py # Reuses pyRDDLGym while returning DARP AST and environment objects.
+│       │   ├── pyrddl_frontend.py  # Reuses pyrddl.parser.RDDLParser while keeping DARP AST and native AST.
 │       │   ├── extended.py         # Uses the DARP-owned parser and reserves future DARP-RDDL extended syntax.
 │       │   └── loader.py           # Selects a concrete parser frontend by name.
 │
 └── tests/                          # Unit and end-to-end tests.
-    └── test_basic_rddl_parser.py   # Tests the basic RDDL parser and HTML visualizer.
+    ├── test_basic_rddl_parser.py   # Tests the basic RDDL parser and HTML visualizer.
+    └── test_rddl_frontends.py      # Tests RDDLFrontend loader, pyrddl, and pyRDDLGym alignment.
 ```
 
 Planned `core/`, `search/`, `ilp/`, `sim/`, `output/`, and CLI modules will be added in their corresponding phases, with this section updated in the same commits.
@@ -116,7 +117,7 @@ Planned `core/`, `search/`, `ilp/`, `sim/`, `output/`, and CLI modules will be a
 
 - [x] Phase 1: Project scaffold, dependency manifests, test setup, examples
 - [x] Phase 2.1: Implement a basic RDDL parser with command-line success output and interactive HTML visualization
-- [ ] Phase 2.2: Align pyrddl/pyRDDLGym frontends through RDDLFrontend
+- [x] Phase 2.2: Align pyrddl/pyRDDLGym frontends through RDDLFrontend
 - [ ] Phase 2.3: Compile ParsedRDDL into PlanningProblem
 - [ ] Phase 3: Implement core POMDP/(C)C-POMDP model
 - [ ] Phase 4: Implement AND-OR tree in `and_or_tree.py`
@@ -153,28 +154,11 @@ python -m pip install -r requirements.txt
 Optional external dependencies remain recorded as `pyproject.toml` extras:
 
 ```bash
+python -m pip install -e ".[dev,rddl,pyrddl]"
 python -m pip install -e ".[rddl]"
 python -m pip install -e ".[pyrddl]"
 python -m pip install -e ".[highs]"
 python -m pip install -e ".[gurobi]"
-```
-
-Run HILP on the built-in tiny grid:
-
-```bash
-darp solve --algorithm hilp --solver internal
-```
-
-Run the full ILP baseline:
-
-```bash
-darp solve --algorithm full-ilp --solver internal
-```
-
-Write a JSON policy:
-
-```bash
-darp solve --algorithm hilp --solver internal --output policy.json
 ```
 
 Run tests:
@@ -191,6 +175,25 @@ python -m darp.rddl.basic_parser \
   examples/rddl/tiny_grid_instance.rddl
 ```
 
+Inspect all three frontends through the shared `RDDLFrontend` loader:
+
+```bash
+python -m darp.rddl.loader \
+  examples/rddl/tiny_grid_domain.rddl \
+  examples/rddl/tiny_grid_instance.rddl \
+  --frontend darp
+
+python -m darp.rddl.loader \
+  examples/rddl/tiny_grid_domain.rddl \
+  examples/rddl/tiny_grid_instance.rddl \
+  --frontend pyrddl
+
+python -m darp.rddl.loader \
+  examples/rddl/tiny_grid_domain.rddl \
+  examples/rddl/tiny_grid_instance.rddl \
+  --frontend pyrddlgym
+```
+
 Generate a syntax-highlighted graphical AST HTML page with folding, precise search, and zoom:
 
 ```bash
@@ -203,9 +206,6 @@ python -m darp.rddl.visualizer \
 ## Current Limitations And Next Steps
 
 - The current basic parser only reads RDDL file, block, assignment, and statement structure for AST/HTML visualization; full RDDL expression semantics remain later Phase 2 work.
-- The default tiny grid uses a built-in Python problem model; the `RDDLFrontend` parsing layer is reserved, but complete RDDL-to-PlanningProblem compilation remains Phase 2.
+- `RDDLFrontend` now returns unified `ParsedRDDL` containers and guarantees that `ast` is DARP's `RDDLASTNode`; complete RDDL-to-PlanningProblem compilation remains Phase 2.3.
 - DARP-RDDL extended syntax is not defined yet; sidecar configs are still the recommended way to express duration/risk/HILP metadata for now.
-- The internal ILP backend uses exhaustive binary search and is intended for small examples and tests, not performance.
-- HiGHS/Gurobi backend files are reserved and include dependency checks; full performance experiments are planned later.
-- Gaussian percentile duration has a runnable approximation; the paper's full smoothed-belief details will be refined later.
-- The current implementation supports one expected-cost or chance-risk constraint; multi-constraint support is planned for the benchmark stage.
+- Planned `core/`, `search/`, `ilp/`, `sim/`, `output/`, and CLI modules will be added in grouped future commits.
