@@ -178,7 +178,6 @@ class FiniteHorizonOnlinePlanner:
 def run_local_online_session(
     problem: PlanningProblem,
     *,
-    steps: int | None = None,
     seed: int = 0,
     time_budget_ms: float | None = None,
 ) -> OnlineSessionResult:
@@ -187,11 +186,10 @@ def run_local_online_session(
     planner = FiniteHorizonOnlinePlanner(problem)
     observation = simulator.reset()
     belief = initial_belief_from_observation(problem, observation)
-    limit = steps if steps is not None else problem.max_depth
     trace: list[OnlineStep] = []
     total_reward = 0.0
 
-    for step in range(limit):
+    for step in range(problem.max_depth):
         remaining_depth = max(1, problem.max_depth - step)
         decision = planner.choose_action(
             belief,

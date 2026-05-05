@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local agent/editor state
+.codex
+.agents/
+
+# Generated visualizer artifacts
+*_ast.html

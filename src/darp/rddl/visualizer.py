@@ -289,11 +289,11 @@ def _json_for_html(payload: dict[str, object]) -> str:
 class _RuntimeController:
     """Own the local simulator state behind the browser API. / 持有浏览器 API 背后的本地 simulator 状态。"""
 
-    def __init__(self, problem: PlanningProblem, markers: _RuntimeMarkers) -> None:
+    def __init__(self, problem: PlanningProblem, markers: _RuntimeMarkers, seed: int = 0) -> None:
         """Create a controller and reset the simulator once. / 创建控制器并先重置一次 simulator。"""
         self.problem = problem
         self.markers = markers
-        self.simulator = LocalSimulator(problem, seed=7)
+        self.simulator = LocalSimulator(problem, seed=seed)
         self.planner = FiniteHorizonOnlinePlanner(problem)
         self.lock = threading.Lock()
         self.trace: list[dict[str, object]] = []
@@ -507,10 +507,11 @@ def _serve_runtime_visualizer(
     markers: _RuntimeMarkers,
     host: str,
     port: int,
+    seed: int = 0,
     open_browser: bool = True,
 ) -> int:
     """Serve the interactive runtime visualizer over local HTTP. / 通过本地 HTTP 提供交互式运行可视化。"""
-    controller = _RuntimeController(problem, markers)
+    controller = _RuntimeController(problem, markers, seed=seed)
 
     class Handler(BaseHTTPRequestHandler):
         """Handle one visualizer HTTP request. / 处理一个 visualizer HTTP 请求。"""
@@ -2096,7 +2097,7 @@ def _script() -> str:
         if (!runtimeEnabled()) {
           const message = document.createElement("div");
           message.className = "runtime-message";
-          message.textContent = "Runtime simulator is disabled. Start this visualizer with --with-simulator to advance DARP-selected actions.";
+          message.textContent = "Runtime simulator is disabled. Start DARP with --domain and --instance, or pass --simulator darp, to advance DARP-selected actions.";
           runtimeRoot.appendChild(message);
           return;
         }
@@ -3000,11 +3001,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("domain", help="RDDL domain file to visualize")
     parser.add_argument("instance", help="RDDL instance file to visualize")
     parser.add_argument(
+        "--simulator",
+        choices=("darp", "rddlgym", "pyrddlgym"),
+        help="runtime simulator; use darp for the internal state-machine panel",
+    )
+    parser.add_argument(
         "--with-simulator",
         nargs="?",
         const="darp",
         choices=("darp", "rddlgym", "pyrddlgym"),
-        help="enable a simulator; omit the value for DARP internal simulator or pass rddlgym",
+        dest="simulator",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument("--no-open", action="store_true", help="serve without opening a browser")
     parser.add_argument(
@@ -3015,6 +3022,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--host", default="127.0.0.1", help="host for simulator mode")
     parser.add_argument("--port", type=int, default=0, help="port for simulator mode; 0 picks a free port")
+    parser.add_argument("--seed", type=int, default=0, help="local simulator random seed")
     return parser
 
 
@@ -3026,7 +3034,8 @@ def serve_visualizer(
     frontend: str,
     host: str,
     port: int,
-    open_browser: bool,
+    seed: int = 0,
+    open_browser: bool = True,
 ) -> int:
     """Serve the RDDL visualizer from the top-level DARP CLI. / 从 DARP 顶层 CLI 启动 RDDL 可视化服务。"""
     ast = BasicRDDLParser().parse_files(domain, instance)
@@ -3040,6 +3049,7 @@ def serve_visualizer(
             markers=markers,
             host=host,
             port=port,
+            seed=seed,
             open_browser=open_browser,
         )
     if simulator in {"rddlgym", "pyrddlgym"}:
@@ -3074,6 +3084,7 @@ def main(argv: list[str] | None = None) -> int:
         frontend=args.frontend,
         host=args.host,
         port=args.port,
+        seed=args.seed,
         open_browser=not args.no_open,
     )
 

@@ -1,6 +1,6 @@
 """Top-level command-line entrypoint for DARP."""
 
-# TODO(phase-3.2): Add external rddlsim/PROST simulator mode to `darp solve`.
+# TODO(phase-8.1): Add external rddlsim/PROST simulator mode to the online runtime.
 
 from __future__ import annotations
 
@@ -24,16 +24,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--visualizer",
         action="store_true",
-        help="start the live HTML RDDL source/AST visualizer",
+        help="start the live HTML UI instead of printing a terminal trace",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("online",),
+        default="online",
+        help="execution mode; Phase 3 currently supports local online execution",
     )
     parser.add_argument("--domain", help="RDDL domain file path")
     parser.add_argument("--instance", help="RDDL instance file path")
+    parser.add_argument(
+        "--simulator",
+        choices=("darp", "rddlgym", "pyrddlgym"),
+        default="darp",
+        help="runtime simulator used by the live UI; non-visual solving currently uses DARP internal simulator",
+    )
     parser.add_argument(
         "--with-simulator",
         nargs="?",
         const="darp",
         choices=("darp", "rddlgym", "pyrddlgym"),
-        help="enable simulator mode; omit the value for DARP internal simulator",
+        dest="simulator",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--frontend",
@@ -57,30 +70,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="serve the visualizer without opening a browser",
     )
-    subcommands = parser.add_subparsers(dest="command")
-    solve = subcommands.add_parser("solve", help="run a planner on a RDDL problem")
-    solve.add_argument(
-        "--mode",
-        choices=("online",),
-        default="online",
-        help="solve mode; Phase 3 currently supports local online execution",
-    )
-    solve.add_argument("--domain", help="RDDL domain file path")
-    solve.add_argument("--instance", help="RDDL instance file path")
-    solve.add_argument(
-        "--frontend",
-        choices=available_frontends(),
-        default="darp",
-        help="RDDL frontend used when compiling explicit domain/instance inputs",
-    )
-    solve.add_argument("--steps", type=int, help="maximum number of online decision steps")
-    solve.add_argument("--seed", type=int, default=0, help="local simulator random seed")
-    solve.add_argument(
+    parser.add_argument("--seed", type=int, default=0, help="local simulator random seed")
+    parser.add_argument(
         "--time-budget-ms",
         type=float,
-        help="soft per-decision time budget recorded in the JSON trace",
+        help="soft per-decision time budget recorded in the trace",
     )
-    solve.add_argument("--output", help="optional JSON output file")
+    parser.add_argument("--output", help="optional JSON output file for non-visual execution")
     return parser
 
 
@@ -88,40 +84,76 @@ def main(argv: list[str] | None = None) -> int:
     """Run the DARP command-line entrypoint. / 运行 DARP 命令行入口。"""
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "solve":
-        return _run_solve(args)
-    if not args.visualizer:
-        parser.print_help()
-        return 0
-    if not args.domain or not args.instance:
+    if not args.domain and not args.instance and args.visualizer:
         parser.error("--visualizer requires both --domain and --instance.")
+    if not args.domain and not args.instance and not args.visualizer:
+        return _run_solve(args)
+    if not args.domain or not args.instance:
+        parser.error("--domain and --instance must be provided together.")
+    if not args.visualizer:
+        if args.simulator != "darp":
+            parser.error("--simulator is currently only supported with --visualizer.")
+        return _run_solve(args)
     return serve_visualizer(
         domain=args.domain,
         instance=args.instance,
-        simulator=args.with_simulator,
+        simulator=args.simulator,
         frontend=args.frontend,
         host=args.host,
         port=args.port,
+        seed=args.seed,
         open_browser=not args.no_open,
     )
 
 
 def _run_solve(args: argparse.Namespace) -> int:
-    """Run a command-line solve session. / 运行一次命令行求解会话。"""
+    """Run a command-line planning session. / 运行一次命令行规划会话。"""
     problem = _load_problem(args.domain, args.instance, args.frontend)
     if args.mode != "online":
-        raise ValueError(f"Unsupported solve mode: {args.mode!r}.")
+        raise ValueError(f"Unsupported execution mode: {args.mode!r}.")
     result = run_local_online_session(
         problem,
-        steps=args.steps,
         seed=args.seed,
         time_budget_ms=args.time_budget_ms,
     )
-    text = json.dumps(result.to_dict(), indent=2, sort_keys=True, default=str)
+    payload = result.to_dict()
     if args.output:
-        Path(args.output).write_text(text + "\n", encoding="utf-8")
-    print(text)
+        Path(args.output).write_text(
+            json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n",
+            encoding="utf-8",
+        )
+    print(_format_terminal_trace(payload))
     return 0
+
+
+def _format_terminal_trace(payload: dict[str, object]) -> str:
+    """Format one online result for human-readable terminal output. / 将在线结果格式化为适合终端阅读的文本。"""
+    lines = [
+        "DARP online trace",
+        f"Problem: {payload['problem']}",
+        f"Planner: {payload['planner']}",
+        f"Seed: {payload['seed']}",
+        f"Horizon: {payload['horizon']} (max depth {payload['max_depth']})",
+        "Steps:",
+    ]
+    steps = payload.get("steps", [])
+    assert isinstance(steps, list)
+    for step in steps:
+        assert isinstance(step, dict)
+        decision = step.get("decision", {})
+        value = decision.get("value") if isinstance(decision, dict) else None
+        value_text = f" value={float(value):.3f}" if isinstance(value, int | float) else ""
+        lines.append(
+            "  "
+            f"t={step['step']} "
+            f"obs={step['observation']} "
+            f"action={step['action']} "
+            f"reward={step['reward']} "
+            f"next={step['next_observation']}"
+            f"{value_text}"
+        )
+    lines.append(f"Total reward: {payload['total_reward']}")
+    return "\n".join(lines)
 
 
 def _load_problem(domain: str | None, instance: str | None, frontend: str) -> PlanningProblem:

@@ -10,8 +10,8 @@ The current code focuses on the standard RDDL input pipeline, DARP's small inter
 - Align the `darp`, `pyrddl`, and `pyrddlgym` parser frontends through `RDDLFrontend`.
 - Ground the currently supported RDDL CPF/reward expressions into a minimal `PlanningProblem`.
 - Execute small explicit transition/observation/reward tables with DARP's internal simulator.
-- Start a live HTML UI through the top-level `darp --visualizer` command to inspect source, AST, and optionally an execution state machine where DARP's online planner selects actions and the internal simulator advances states.
-- Run a local online loop with `darp solve --mode online`: replan from the current belief, emit an action, and receive observation/reward from the simulator at each step.
+- Run the default non-visual online solve loop with `darp --domain DOMAIN.rddl --instance INSTANCE.rddl` and print a readable terminal trace.
+- Start the live HTML UI with `--visualizer` to inspect source, AST, and an execution state machine where DARP's planner selects actions and the internal simulator advances states.
 
 ## Installation
 
@@ -54,44 +54,75 @@ You can also avoid the console script and run:
 python -m darp -h
 ```
 
-The current top-level command shape is:
+There is only one primary command:
 
 ```bash
-darp --visualizer --domain DOMAIN.rddl --instance INSTANCE.rddl [options]
-darp solve --mode online [--domain DOMAIN.rddl --instance INSTANCE.rddl] [options]
+darp [--domain DOMAIN.rddl --instance INSTANCE.rddl] [--visualizer] [options]
 ```
 
-Visualizer arguments:
+Default behavior:
+
+| Default | Value | Description |
+| --- | --- | --- |
+| mode | `online` | Replan an action from the current belief at each step. |
+| visualizer | disabled | Print a readable terminal trace by default; only open the web UI when `--visualizer` is provided. |
+| simulator | `darp` | Use DARP's internal simulator to advance state, observation, and reward. |
+| frontend | `darp` | Use DARP's own parser/compiler path. |
+| host | `127.0.0.1` | Listen on localhost by default. |
+| port | `0` | Pick a free port automatically. |
+
+Primary command arguments:
 
 | Argument | Required | Description |
 | --- | --- | --- |
-| `--visualizer` | yes | Start the live HTML visualizer. |
-| `--domain PATH` | yes | RDDL domain file path. |
-| `--instance PATH` | yes | RDDL instance file path. |
-| `--with-simulator [darp\|rddlgym\|pyrddlgym]` | no | Enable simulator mode; omitting the value defaults to `darp` and shows DARP's internal state machine. Passing `rddlgym`/`pyrddlgym` loads pyRDDLGym and hides DARP's internal state machine. |
-| `--frontend {darp,pyrddl,pyrddlgym}` | no | Frontend used when DARP compiles the problem for its internal simulator. Defaults to `darp`. |
+| `--domain PATH` | no | RDDL domain file path; with `--instance`, compiles explicit RDDL, otherwise non-visual mode uses the built-in demo. |
+| `--instance PATH` | no | RDDL instance file path; must be provided with `--domain`. |
+| `--mode online` | no | Phase 3 currently supports the local online solve loop. Defaults to `online`. |
+| `--frontend {darp,pyrddl,pyrddlgym}` | no | RDDL parser/compiler frontend. Defaults to `darp`. |
+| `--simulator {darp,rddlgym,pyrddlgym}` | no | Visualizer runtime simulator. Defaults to `darp`; non-visual mode currently supports only DARP's internal simulator. |
+| `--seed N` | no | Random seed for DARP's internal simulator. Defaults to `0`. |
 | `--host HOST` | no | Visualizer HTTP host. Defaults to `127.0.0.1`. |
 | `--port PORT` | no | Visualizer HTTP port. Defaults to `0`, which chooses a free port. |
 | `--no-open` | no | Serve without opening a browser. |
+| `--visualizer` | no | Start the live HTML visualizer; requires `--domain` and `--instance`. |
+| `--time-budget-ms MS` | no | Soft per-decision time budget recorded in the trace. |
+| `--output PATH` | no | In non-visual mode, write the full JSON trace to a file; without this option, no JSON is emitted. |
 | `-h`, `--help` | no | Show help text. |
 
-Online solve arguments:
+`--frontend` and `--simulator` are not duplicates: `--frontend` controls how RDDL text is parsed/compiled into a DARP model, while `--simulator` controls who receives actions and advances state/observation/reward in the visual runtime. Most users can omit both because both default to `darp`.
 
-| Argument | Required | Description |
-| --- | --- | --- |
-| `solve` | yes | Run a command-line solve workflow. |
-| `--mode online` | no | Phase 3.1 currently supports local online execution. Defaults to `online`. |
-| `--domain PATH` | no | RDDL domain path; with `--instance`, compiles explicit RDDL, otherwise uses the built-in tiny demo. |
-| `--instance PATH` | no | RDDL instance path; must be provided with `--domain`. |
-| `--frontend {darp,pyrddl,pyrddlgym}` | no | Frontend used to compile explicit RDDL inputs. Defaults to `darp`. |
-| `--steps N` | no | Maximum online decision steps. Defaults to `problem.max_depth`. |
-| `--seed N` | no | Random seed for DARP's internal simulator. Defaults to `0`. |
-| `--time-budget-ms MS` | no | Soft per-decision time budget recorded in the JSON trace. |
-| `--output PATH` | no | Write the JSON trace to a file while still printing it. |
+The online solve length comes from the RDDL `horizon` compiled into `problem.max_depth`; it is not manually truncated from the command line.
+
+`--seed` controls stochastic sampling in DARP's internal simulator. The current tiny grid is deterministic, so the seed does not change the trajectory; once random initial beliefs, random transitions, or random observations are supported, the seed will make debugging, tests, and benchmarks reproducible.
 
 ## Examples
 
-View source and AST only:
+Print a non-visual terminal trace from the RDDL tiny grid:
+
+```bash
+darp \
+  --domain examples/rddl/tiny_grid_domain.rddl \
+  --instance examples/rddl/tiny_grid_instance.rddl \
+  --seed 7
+```
+
+Print a non-visual terminal trace from the built-in demo:
+
+```bash
+darp --seed 7
+```
+
+Write the full JSON trace to a file:
+
+```bash
+darp \
+  --domain examples/rddl/tiny_grid_domain.rddl \
+  --instance examples/rddl/tiny_grid_instance.rddl \
+  --seed 7 \
+  --output tiny_grid_trace.json
+```
+
+Start the live visualizer: DARP chooses actions, the internal simulator advances state, and the browser shows RDDL text, AST, and the runtime state machine.
 
 ```bash
 darp \
@@ -100,72 +131,42 @@ darp \
   --instance examples/rddl/tiny_grid_instance.rddl
 ```
 
-Start DARP's internal simulator; the right HTML panel advances the environment while DARP's online planner selects actions from the current belief:
+Serve the visualizer on a fixed port without opening a browser:
 
 ```bash
 darp \
   --visualizer \
   --domain examples/rddl/tiny_grid_domain.rddl \
   --instance examples/rddl/tiny_grid_instance.rddl \
-  --with-simulator
-```
-
-Compile with a selected frontend, then use DARP's internal simulator:
-
-```bash
-darp \
-  --visualizer \
-  --domain examples/rddl/tiny_grid_domain.rddl \
-  --instance examples/rddl/tiny_grid_instance.rddl \
-  --frontend darp \
-  --with-simulator darp
-```
-
-Load pyRDDLGym while hiding DARP's internal state machine:
-
-```bash
-darp \
-  --visualizer \
-  --domain examples/rddl/tiny_grid_domain.rddl \
-  --instance examples/rddl/tiny_grid_instance.rddl \
-  --with-simulator rddlgym
-```
-
-Serve on a fixed port without opening a browser:
-
-```bash
-darp \
-  --visualizer \
-  --domain examples/rddl/tiny_grid_domain.rddl \
-  --instance examples/rddl/tiny_grid_instance.rddl \
-  --with-simulator \
   --host 127.0.0.1 \
   --port 8080 \
   --no-open
 ```
 
-Run the built-in demo with the local online solve loop:
+Compile with a selected frontend while still using DARP's internal simulator:
 
 ```bash
-darp solve --mode online --steps 2 --seed 7
-```
-
-Run the RDDL tiny grid with the local online solve loop:
-
-```bash
-darp solve \
-  --mode online \
+darp \
   --domain examples/rddl/tiny_grid_domain.rddl \
   --instance examples/rddl/tiny_grid_instance.rddl \
-  --steps 4 \
-  --seed 7
+  --frontend darp
+```
+
+Load pyRDDLGym in visualizer mode while hiding DARP's internal state machine:
+
+```bash
+darp \
+  --visualizer \
+  --domain examples/rddl/tiny_grid_domain.rddl \
+  --instance examples/rddl/tiny_grid_instance.rddl \
+  --simulator rddlgym
 ```
 
 ## Architecture
 
 - `rddl/`: RDDL parser frontends, loading, ASTs, expression grounding, and `PlanningProblem` compilation.
 - `core/`: Minimal planning-problem, type, and duration structures for the current phase.
-- `online.py`: Local PROST-like online solve loop and finite-horizon online planner.
+- `online.py`: Local PROST-like online solve loop, terminal traces, optional JSON traces, and finite-horizon online planner.
 - `sim/`: DARP's internal simulator and future external simulator adapters.
 - `search/`: Future AND-OR tree, Expand, full ILP, and HILP search algorithms.
 - `ilp/`: Future internal, HiGHS, and Gurobi ILP backends.
@@ -205,8 +206,8 @@ DARP/
 ├── src/
 │   └── darp/                         # Main DARP Python package.
 │       ├── __init__.py               # Package version and top-level metadata.
-│       ├── __main__.py               # Top-level `darp` command entrypoint for `--visualizer` and related options.
-│       ├── online.py                 # Local online solve loop and finite-horizon dynamic-programming planner.
+│       ├── __main__.py               # Top-level `darp` entrypoint for terminal traces and optional `--visualizer` UI.
+│       ├── online.py                 # Local online solve loop, terminal traces, optional JSON traces, and finite-horizon dynamic-programming planner.
 │       │
 │       ├── core/                     # Minimal planning model for the current phase.
 │       │   ├── __init__.py           # core package entrypoint.
@@ -245,6 +246,8 @@ DARP/
 
 ## Roadmap
 
+DARP should not hard-code a policy for tiny grid. The roadmap below is already ordered by implementation priority: first make the local solve loop reliable, then expand general RDDL modeling, then implement verifiable baselines, then implement the paper search algorithms, then add external simulators, and finally extend durative actions and DARP-RDDL syntax.
+
 - [x] Phase 1: Project foundation
   - [x] 1.1: Project plan, README/README-EN, and file structure notes
   - [x] 1.2: Python packaging, requirements, and `.venv` workflow
@@ -259,33 +262,39 @@ DARP/
     - [x] 2.4.3: Complete general standard RDDL CPF/reward expression grounding without adding new syntax
 - [ ] Phase 3: PROST-like realtime execution
   - [x] 3.1: Implement a local online solve loop: replan each step, return actions, receive observations
-  - [ ] 3.2: Add rddlsim/PROST-style external simulator protocol support
+  - [x] 3.2: Unify the top-level `darp` entrypoint: default to non-visual terminal traces, use `--visualizer` for the web UI, and write JSON through `--output`
   - [ ] 3.3: Refine cross-step belief/state carryover and hard time-budget control
-- [ ] Phase 4: Planning core model
+- [ ] Phase 4: General RDDL problem modeling
   - [ ] 4.1: Stabilize `PlanningProblem`, typed identifiers, and model validation
-  - [ ] 4.2: Refine history, belief, constraints, and policy-tree basics
-  - [ ] 4.3: Extend multi-constraint, chance-risk, and continuous/large-state interfaces
-- [ ] Phase 5: Search algorithms
-  - [ ] 5.1: Refine the AND-OR history tree in `and_or_tree.py`
-  - [ ] 5.2: Implement paper `Expand` and full-tree preprocessing
-  - [ ] 5.3: Implement the full ILP baseline
-  - [ ] 5.4: Implement HILP partial-ILP search
-- [ ] Phase 6: ILP solving layer
-  - [ ] 6.1: Implement the ILP model/backend protocol and internal backend
-  - [ ] 6.2: Add optional HiGHS backend
-  - [ ] 6.3: Add optional Gurobi backend
-- [ ] Phase 7: Durative action sidecar
-  - [ ] 7.1: Design YAML/JSON sidecar schema and compiler/runtime interfaces
-  - [ ] 7.2: Wire fixed, expected, and Gaussian duration models
-  - [ ] 7.3: Connect paper duration/smoothed-belief constraints to HILP
-- [ ] Phase 8: DARP-RDDL new syntax
-  - [ ] 8.1: Design DARP-RDDL syntax extensions
-  - [ ] 8.2: Choose and implement parser inheritance, fork, or owned grammar
-  - [ ] 8.3: Migrate sidecar capabilities into optional native syntax
-- [ ] Phase 9: Output, interfaces, and experiments
-  - [ ] 9.1: Refine offline policy JSON and trace output
-  - [ ] 9.2: Add benchmarks and paper-style experiments
-  - [ ] 9.3: Clean up public APIs and algorithm registry
+  - [ ] 4.2: Support multiple state fluents and factored states, replacing the current one-hot compact-state assumption
+  - [ ] 4.3: Support stochastic CPFs, non-identity observations, initial belief distributions, and action constraints
+  - [ ] 4.4: Validate compiler and simulator semantics against small pyRDDLGym/rddlsim domains
+- [ ] Phase 5: Verifiable baseline solvers
+  - [ ] 5.1: Refine the explicit-state finite-horizon DP baseline for offline policies and online replanning
+  - [ ] 5.2: Add planner registry, unified trace output, and algorithm-selection parameters
+  - [ ] 5.3: Add stochastic/tie-break policies and seed-driven reproducibility tests
+- [ ] Phase 6: Paper search algorithms
+  - [ ] 6.1: Refine the AND-OR history tree in `and_or_tree.py`
+  - [ ] 6.2: Implement paper `Expand` and full-tree preprocessing
+  - [ ] 6.3: Implement the full ILP baseline
+  - [ ] 6.4: Implement HILP partial-ILP search
+- [ ] Phase 7: ILP solving layer
+  - [ ] 7.1: Implement the ILP model/backend protocol and internal backend
+  - [ ] 7.2: Add optional HiGHS backend
+  - [ ] 7.3: Add optional Gurobi backend
+- [ ] Phase 8: External simulators and PROST compatibility
+  - [ ] 8.1: Design the rddlsim/PROST-style online protocol adapter
+  - [ ] 8.2: Implement an external simulator client sharing the local action/observation interface
+  - [ ] 8.3: Add external simulator integration tests and benchmark runner
+- [ ] Phase 9: Durative actions and DARP-RDDL syntax
+  - [ ] 9.1: Design YAML/JSON sidecar schema and compiler/runtime interfaces
+  - [ ] 9.2: Wire fixed, expected, and Gaussian duration models
+  - [ ] 9.3: Connect paper duration/smoothed-belief constraints to HILP
+  - [ ] 9.4: Design and implement native DARP-RDDL syntax extensions
+- [ ] Phase 10: Output, interfaces, and experiments
+  - [ ] 10.1: Refine offline policy JSON and trace output
+  - [ ] 10.2: Add benchmarks and paper-style experiments
+  - [ ] 10.3: Clean up public APIs and algorithm registry
 
 ## Testing
 
@@ -297,4 +306,4 @@ python -m pytest
 
 - The compiler currently targets small, discrete RDDL problems with a compact one-hot state fluent.
 - The internal simulator runs explicit transition/observation/reward tables and is not a general high-performance RDDL simulator.
-- DARP-RDDL syntax extensions, native durative-action syntax, HILP, and HiGHS/Gurobi backends remain later phases.
+- Multiple state fluents, factored states, stochastic observations, full POMDP belief carryover, DARP-RDDL syntax extensions, native durative-action syntax, HILP, and HiGHS/Gurobi backends remain later phases.

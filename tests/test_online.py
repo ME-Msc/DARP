@@ -36,11 +36,11 @@ def test_online_belief_update_tracks_identity_observation():
 def test_local_online_session_returns_json_ready_trace():
     """Check local online execution records actions and rewards. / 检查本地在线执行会记录动作和 reward。"""
     problem = make_tiny_grid_problem()
-    result = run_local_online_session(problem, steps=2, seed=7, time_budget_ms=10.0)
+    result = run_local_online_session(problem, seed=7, time_budget_ms=10.0)
     payload = result.to_dict()
 
     assert payload["mode"] == "online"
     assert payload["planner"] == "finite-horizon-dp"
-    assert len(payload["steps"]) == 2
+    assert len(payload["steps"]) == problem.max_depth
     assert payload["steps"][0]["action"] == "safe_path"
     assert payload["steps"][0]["decision"]["time_budget_ms"] == 10.0
