@@ -100,6 +100,7 @@ def test_basic_rddl_visualizer_renders_internal_runtime_panel():
     assert "<aside class=\"runtime-panel\"" in html
     assert "laneOffset" in html
     assert "Reset dragged node, edge, and label positions" in html
+    assert "runtime-edge-label-link" in html
     assert "DARP action" in html
     assert "runtime-action" not in html
 

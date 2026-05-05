@@ -1128,7 +1128,7 @@ def _styles() -> str:
     }
     .runtime-stage {
       flex: 1 1 auto;
-      min-height: 250px;
+      min-height: 320px;
       position: relative;
       border: 1px solid #d7e1ea;
       border-radius: 8px;
@@ -1214,6 +1214,19 @@ def _styles() -> str:
     .runtime-edge.active {
       stroke: #0284c7;
       stroke-width: 2.6;
+      opacity: 1;
+    }
+    .runtime-edge-label-link {
+      fill: none;
+      stroke: #b6c7d6;
+      stroke-width: 1;
+      stroke-dasharray: 4 4;
+      opacity: 0.8;
+      pointer-events: none;
+    }
+    .runtime-edge-label-link.active {
+      stroke: #0284c7;
+      stroke-width: 1.5;
       opacity: 1;
     }
     .runtime-edge-label-bg {
@@ -2247,8 +2260,8 @@ def _script() -> str:
       }
 
       function renderStateMachineSvg(problem, width, height, stage) {
-        const nodeRadius = clamp(Math.min(width, height) / 28, 12, 24);
-        const labelFontSize = clamp(nodeRadius * 0.74, 10.5, 18);
+        const nodeRadius = clamp(Math.min(width, height) / 36, 10, 18);
+        const labelFontSize = clamp(nodeRadius * 0.64, 8.5, 12.5);
         const layout = runtimePositions(problem, nodeRadius, width, height);
         const positions = layout.positions;
         const displayWidth = Math.max(1, Math.round(layout.width * runtimeGraphZoom));
@@ -2264,7 +2277,7 @@ def _script() -> str:
         svgElement.appendChild(runtimeArrowDefs());
         const markers = problem.markers || { starts: [], risks: [], goals: [] };
         const groups = groupedTransitions(problem);
-        const laneSpacing = Math.max(nodeRadius * 3.2, Math.min(layout.width, layout.height) * 0.055, 46);
+        const laneSpacing = Math.max(nodeRadius * 4.4, Math.min(layout.width, layout.height) * 0.075, 58);
 
         groups.forEach((group) => {
           const from = positions.get(group.from);
@@ -2275,13 +2288,16 @@ def _script() -> str:
           const isActive = group.items.some((transition) => isActiveTransition(transition));
           if (group.from === group.to) {
             const laneOffset = Number(group.laneOffset || 0);
-            const side = laneOffset < 0 ? -1 : 1;
+            const sideFromCenter = Math.sign(from.x - layout.width / 2);
+            const side = sideFromCenter || (laneOffset < 0 ? -1 : 1);
+            const verticalFromCenter = Math.sign(from.y - layout.height / 2);
+            const verticalSide = verticalFromCenter || -1;
             const laneSize = Math.abs(laneOffset) + 1;
             const loopSpread = Math.max(laneSpacing * (0.8 + laneSize * 0.38), nodeRadius * 2.8);
             const loopLift = Math.max(laneSpacing * (0.7 + laneSize * 0.32), nodeRadius * 2.4);
-            const defaultControl = { x: from.x + side * loopSpread, y: from.y - loopLift };
+            const defaultControl = { x: from.x + side * loopSpread, y: from.y + verticalSide * loopLift };
             const control = runtimePointWithDrag(runtimeDraggedEdges, group.id, defaultControl.x, defaultControl.y, layout.width, layout.height);
-            const pathData = `M ${from.x.toFixed(1)} ${(from.y - nodeRadius).toFixed(1)} C ${control.x.toFixed(1)} ${(control.y - nodeRadius).toFixed(1)}, ${(control.x + side * loopSpread).toFixed(1)} ${control.y.toFixed(1)}, ${(from.x + side * nodeRadius).toFixed(1)} ${(from.y - nodeRadius * 0.25).toFixed(1)}`;
+            const pathData = `M ${from.x.toFixed(1)} ${(from.y + verticalSide * nodeRadius).toFixed(1)} C ${control.x.toFixed(1)} ${(control.y + verticalSide * nodeRadius).toFixed(1)}, ${(control.x + side * loopSpread).toFixed(1)} ${control.y.toFixed(1)}, ${(from.x + side * nodeRadius).toFixed(1)} ${(from.y + verticalSide * nodeRadius * 0.25).toFixed(1)}`;
             const edgePath = makeSvg("path", {
               class: isActive ? "runtime-edge active" : "runtime-edge",
               d: pathData,
@@ -2289,7 +2305,7 @@ def _script() -> str:
             });
             svgElement.appendChild(edgePath);
             const labelDefaultX = clamp(control.x + side * nodeRadius, 36, layout.width - 36);
-            const labelDefaultY = clamp(control.y - nodeRadius * 0.65, 20, layout.height - 20);
+            const labelDefaultY = clamp(control.y + verticalSide * nodeRadius * 0.65, 20, layout.height - 20);
             const labelPosition = runtimePointWithDrag(runtimeDraggedLabels, group.id, labelDefaultX, labelDefaultY, layout.width, layout.height);
             const dragPath = makeSvg("path", {
               class: "runtime-edge-drag-area",
@@ -2308,6 +2324,7 @@ def _script() -> str:
               );
             });
             svgElement.appendChild(dragPath);
+            appendRuntimeEdgeLabelLink(svgElement, control, labelPosition, isActive);
             appendRuntimeEdgeLabel(
               svgElement,
               labelPosition.x,
@@ -2334,7 +2351,8 @@ def _script() -> str:
           const uy = dy / length;
           const perpendicularX = -uy;
           const perpendicularY = ux;
-          const offset = Number(group.laneOffset || 0) * laneSpacing;
+          const directionSign = String(group.from) <= String(group.to) ? 1 : -1;
+          const offset = Number(group.laneOffset || 0) * laneSpacing * directionSign;
           const startX = from.x + ux * nodeRadius;
           const startY = from.y + uy * nodeRadius;
           const endX = to.x - ux * (nodeRadius + 8);
@@ -2369,6 +2387,7 @@ def _script() -> str:
             );
           });
           svgElement.appendChild(dragPath);
+          appendRuntimeEdgeLabelLink(svgElement, control, labelPosition, isActive);
           appendRuntimeEdgeLabel(
             svgElement,
             labelPosition.x,
@@ -2491,10 +2510,15 @@ def _script() -> str:
         if (problem.layout && problem.layout.kind === "grid") {
           const rows = problem.layout.rows;
           const cols = problem.layout.cols;
-          const marginX = Math.max(54, nodeRadius * 4.5);
-          const marginY = Math.max(48, nodeRadius * 4.2);
-          const usableWidth = Math.max(1, width - marginX * 2);
-          const usableHeight = Math.max(1, height - marginY * 2);
+          const insetX = Math.max(80, nodeRadius * 6);
+          const insetY = Math.max(70, nodeRadius * 5.5);
+          const maxGridWidth = Math.max(1, width - insetX * 2);
+          const maxGridHeight = Math.max(1, height - insetY * 2);
+          const targetGap = clamp(Math.min(width, height) / 4.1, 95, 190);
+          const gapX = cols <= 1 ? 0 : Math.min(maxGridWidth / (cols - 1), targetGap);
+          const gapY = rows <= 1 ? 0 : Math.min(maxGridHeight / (rows - 1), targetGap * 0.95);
+          const originX = width / 2 - (gapX * (cols - 1)) / 2;
+          const originY = height / 2 - (gapY * (rows - 1)) / 2;
           for (const state of problem.states) {
             const cellInfo = problem.layout.cells[state];
             if (!cellInfo) {
@@ -2502,10 +2526,10 @@ def _script() -> str:
             }
             const x = cols <= 1
               ? width / 2
-              : marginX + ((cellInfo.col - 1) / (cols - 1)) * usableWidth;
+              : originX + (cellInfo.col - 1) * gapX;
             const y = rows <= 1
               ? height / 2
-              : marginY + ((cellInfo.row - 1) / (rows - 1)) * usableHeight;
+              : originY + (cellInfo.row - 1) * gapY;
             positions.set(state, runtimePositionWithDrag(state, x, y, width, height, nodeRadius));
           }
           return { positions, width, height };
@@ -2605,6 +2629,19 @@ def _script() -> str:
           && runtimeState.last_action === transition.action
           && runtimeState.previous_state === transition.from
           && runtimeState.state === transition.to;
+      }
+
+      function appendRuntimeEdgeLabelLink(svgElement, anchor, labelPosition, isActive) {
+        const dx = labelPosition.x - anchor.x;
+        const dy = labelPosition.y - anchor.y;
+        if (Math.hypot(dx, dy) < 4) {
+          return;
+        }
+        const pathData = `M ${anchor.x.toFixed(1)} ${anchor.y.toFixed(1)} L ${labelPosition.x.toFixed(1)} ${labelPosition.y.toFixed(1)}`;
+        svgElement.appendChild(makeSvg("path", {
+          class: isActive ? "runtime-edge-label-link active" : "runtime-edge-label-link",
+          d: pathData,
+        }));
       }
 
       function appendRuntimeEdgeLabel(svgElement, x, y, labelLines, fontSize = 6, onDragStart = null) {
