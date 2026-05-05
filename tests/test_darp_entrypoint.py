@@ -1,6 +1,8 @@
+import json
+
 import pytest
 
-from darp.__main__ import build_parser
+from darp.__main__ import build_parser, main
 
 
 def test_darp_help_exits_successfully(capsys):
@@ -42,3 +44,39 @@ def test_darp_visualizer_arguments_parse():
     assert args.frontend == "darp"
     assert args.port == 8080
     assert args.no_open is True
+
+
+def test_darp_solve_online_arguments_parse():
+    """Check online solve arguments parse cleanly. / 检查在线 solve 参数能正确解析。"""
+    args = build_parser().parse_args(
+        [
+            "solve",
+            "--mode",
+            "online",
+            "--steps",
+            "2",
+            "--seed",
+            "7",
+            "--time-budget-ms",
+            "5",
+        ]
+    )
+
+    assert args.command == "solve"
+    assert args.mode == "online"
+    assert args.steps == 2
+    assert args.seed == 7
+    assert args.time_budget_ms == 5.0
+
+
+def test_darp_solve_online_outputs_trace(capsys):
+    """Check `darp solve` prints an online trace. / 检查 `darp solve` 会输出在线轨迹。"""
+    exit_code = main(["solve", "--mode", "online", "--steps", "2", "--seed", "7"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert payload["mode"] == "online"
+    assert payload["planner"] == "finite-horizon-dp"
+    assert len(payload["steps"]) == 2
+    assert payload["steps"][0]["action"] == "safe_path"

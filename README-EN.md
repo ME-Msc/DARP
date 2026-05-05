@@ -2,7 +2,7 @@
 
 Durative Action RDDL Planner is a Python research prototype for parsing RDDL problems, compiling them into finite-horizon POMDP / C-POMDP / CC-POMDP-style planning models, and incrementally implementing the full ILP and HILP search workflow from "Heuristic Search in Dual Space for Constrained Fixed-Horizon POMDPs with Durative Actions".
 
-The current code focuses on the standard RDDL input pipeline, DARP's small internal simulator, and an interactive HTML visualizer. PROST-like online execution, AND-OR trees, full ILP, HILP, HiGHS/Gurobi backends, and durative-action interfaces will be added in later phases.
+The current code focuses on the standard RDDL input pipeline, DARP's small internal simulator, an interactive HTML visualizer, and a local PROST-like online solve loop. External simulator protocols, AND-OR trees, full ILP, HILP, HiGHS/Gurobi backends, and durative-action interfaces will be added in later phases.
 
 ## Feature Status
 
@@ -10,7 +10,8 @@ The current code focuses on the standard RDDL input pipeline, DARP's small inter
 - Align the `darp`, `pyrddl`, and `pyrddlgym` parser frontends through `RDDLFrontend`.
 - Ground the currently supported RDDL CPF/reward expressions into a minimal `PlanningProblem`.
 - Execute small explicit transition/observation/reward tables with DARP's internal simulator.
-- Start a live HTML UI through the top-level `darp --visualizer` command to inspect source, AST, and optionally an execution state machine where DARP selects actions and the internal simulator advances states.
+- Start a live HTML UI through the top-level `darp --visualizer` command to inspect source, AST, and optionally an execution state machine where DARP's online planner selects actions and the internal simulator advances states.
+- Run a local online loop with `darp solve --mode online`: replan from the current belief, emit an action, and receive observation/reward from the simulator at each step.
 
 ## Installation
 
@@ -57,9 +58,10 @@ The current top-level command shape is:
 
 ```bash
 darp --visualizer --domain DOMAIN.rddl --instance INSTANCE.rddl [options]
+darp solve --mode online [--domain DOMAIN.rddl --instance INSTANCE.rddl] [options]
 ```
 
-Arguments:
+Visualizer arguments:
 
 | Argument | Required | Description |
 | --- | --- | --- |
@@ -73,6 +75,20 @@ Arguments:
 | `--no-open` | no | Serve without opening a browser. |
 | `-h`, `--help` | no | Show help text. |
 
+Online solve arguments:
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `solve` | yes | Run a command-line solve workflow. |
+| `--mode online` | no | Phase 3.1 currently supports local online execution. Defaults to `online`. |
+| `--domain PATH` | no | RDDL domain path; with `--instance`, compiles explicit RDDL, otherwise uses the built-in tiny demo. |
+| `--instance PATH` | no | RDDL instance path; must be provided with `--domain`. |
+| `--frontend {darp,pyrddl,pyrddlgym}` | no | Frontend used to compile explicit RDDL inputs. Defaults to `darp`. |
+| `--steps N` | no | Maximum online decision steps. Defaults to `problem.max_depth`. |
+| `--seed N` | no | Random seed for DARP's internal simulator. Defaults to `0`. |
+| `--time-budget-ms MS` | no | Soft per-decision time budget recorded in the JSON trace. |
+| `--output PATH` | no | Write the JSON trace to a file while still printing it. |
+
 ## Examples
 
 View source and AST only:
@@ -84,7 +100,7 @@ darp \
   --instance examples/rddl/tiny_grid_instance.rddl
 ```
 
-Start DARP's internal simulator; the right HTML panel advances the environment while DARP selects actions:
+Start DARP's internal simulator; the right HTML panel advances the environment while DARP's online planner selects actions from the current belief:
 
 ```bash
 darp \
@@ -128,10 +144,28 @@ darp \
   --no-open
 ```
 
+Run the built-in demo with the local online solve loop:
+
+```bash
+darp solve --mode online --steps 2 --seed 7
+```
+
+Run the RDDL tiny grid with the local online solve loop:
+
+```bash
+darp solve \
+  --mode online \
+  --domain examples/rddl/tiny_grid_domain.rddl \
+  --instance examples/rddl/tiny_grid_instance.rddl \
+  --steps 4 \
+  --seed 7
+```
+
 ## Architecture
 
 - `rddl/`: RDDL parser frontends, loading, ASTs, expression grounding, and `PlanningProblem` compilation.
 - `core/`: Minimal planning-problem, type, and duration structures for the current phase.
+- `online.py`: Local PROST-like online solve loop and finite-horizon online planner.
 - `sim/`: DARP's internal simulator and future external simulator adapters.
 - `search/`: Future AND-OR tree, Expand, full ILP, and HILP search algorithms.
 - `ilp/`: Future internal, HiGHS, and Gurobi ILP backends.
@@ -172,6 +206,7 @@ DARP/
 │   └── darp/                         # Main DARP Python package.
 │       ├── __init__.py               # Package version and top-level metadata.
 │       ├── __main__.py               # Top-level `darp` command entrypoint for `--visualizer` and related options.
+│       ├── online.py                 # Local online solve loop and finite-horizon dynamic-programming planner.
 │       │
 │       ├── core/                     # Minimal planning model for the current phase.
 │       │   ├── __init__.py           # core package entrypoint.
@@ -204,6 +239,7 @@ DARP/
     ├── test_rddl_compiler.py         # RDDL-to-`PlanningProblem` compiler tests.
     ├── test_rddl_grounding.py        # CPF/reward grounding behavior tests.
     ├── test_local_simulator.py       # DARP internal simulator tests.
+    ├── test_online.py                # Local online solve loop and belief-update tests.
     └── test_compiler_simulator_interaction.py # Compiler/simulator integration tests.
 ```
 
@@ -222,9 +258,9 @@ DARP/
     - [x] 2.4.2: Implement DARP's internal simulator and run the tiny-grid experiment
     - [x] 2.4.3: Complete general standard RDDL CPF/reward expression grounding without adding new syntax
 - [ ] Phase 3: PROST-like realtime execution
-  - [ ] 3.1: Implement a local online solve loop: replan each step, return actions, receive observations
+  - [x] 3.1: Implement a local online solve loop: replan each step, return actions, receive observations
   - [ ] 3.2: Add rddlsim/PROST-style external simulator protocol support
-  - [ ] 3.3: Add cross-step belief/state carryover and time-budget control
+  - [ ] 3.3: Refine cross-step belief/state carryover and hard time-budget control
 - [ ] Phase 4: Planning core model
   - [ ] 4.1: Stabilize `PlanningProblem`, typed identifiers, and model validation
   - [ ] 4.2: Refine history, belief, constraints, and policy-tree basics

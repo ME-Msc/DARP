@@ -102,6 +102,7 @@ def test_basic_rddl_visualizer_renders_internal_runtime_panel():
     assert "Reset dragged node, edge, and label positions" in html
     assert "runtime-edge-label-link" in html
     assert "DARP action" in html
+    assert "Belief peak" in html
     assert "runtime-action" not in html
 
 
@@ -135,9 +136,12 @@ def test_runtime_controller_plans_and_steps_grid_actions():
 
     snapshot = controller.snapshot()
     assert snapshot["state"] == "c11"
+    assert snapshot["planner"] == "finite-horizon-dp"
+    assert snapshot["belief"]["c11"] == 1.0
     assert snapshot["planned_action"] == "move-east"
 
     snapshot = controller.step()
     assert snapshot["state"] == "c12"
     assert snapshot["last_action"] == "move-east"
+    assert snapshot["belief"]["c12"] == 1.0
     assert snapshot["planned_action"] == "move-east"

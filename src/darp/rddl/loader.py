@@ -1,7 +1,7 @@
 """RDDL loading through selectable parser frontends."""
 
-# TODO(phase-3.1): Support repository names in addition to explicit domain and
-# instance file paths for every frontend that can handle them.
+# TODO(rddl-registry): Support repository names in addition to explicit domain
+# and instance file paths for every frontend that can handle them.
 
 from __future__ import annotations
 

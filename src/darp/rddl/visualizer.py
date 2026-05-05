@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from darp.online import FiniteHorizonOnlinePlanner, initial_belief_from_observation, update_belief
 from darp.core.problem import PlanningProblem
 from darp.rddl.ast import RDDLASTNode
 from darp.rddl.basic_parser import BasicRDDLParser
@@ -293,11 +294,13 @@ class _RuntimeController:
         self.problem = problem
         self.markers = markers
         self.simulator = LocalSimulator(problem, seed=7)
+        self.planner = FiniteHorizonOnlinePlanner(problem)
         self.lock = threading.Lock()
         self.trace: list[dict[str, object]] = []
         self.last_action: str | None = None
         self.previous_state: object | None = None
         self.observation: object | None = None
+        self.belief = dict(problem.initial_belief)
         self.reward = 0.0
         self.done = False
         self.reset()
@@ -306,6 +309,7 @@ class _RuntimeController:
         """Reset the simulation and return a browser snapshot. / 重置仿真并返回浏览器快照。"""
         with self.lock:
             self.observation = self.simulator.reset()
+            self.belief = initial_belief_from_observation(self.problem, self.observation)
             self.reward = 0.0
             self.done = False
             self.last_action = None
@@ -316,6 +320,7 @@ class _RuntimeController:
                     "action": "reset",
                     "state": self.simulator.state,
                     "observation": self.observation,
+                    "belief": self.belief,
                     "reward": 0.0,
                     "done": False,
                 }
@@ -334,17 +339,12 @@ class _RuntimeController:
         with self.lock:
             if self.done:
                 return self._snapshot_locked()
-            action = _select_action(self.problem, self.simulator.state, self.markers)
-            if action is None:
-                self.done = True
-                snapshot = self._snapshot_locked()
-                print(
-                    "Runtime step: no DARP action available; marking runtime done.",
-                    flush=True,
-                )
-                return snapshot
+            decision = self._plan_locked()
+            action = decision.action
             self.previous_state = self.simulator.state
+            previous_belief = dict(self.belief)
             self.observation, self.reward, self.done, info = self.simulator.step(action)
+            self.belief = update_belief(self.problem, self.belief, action, self.observation)
             self.last_action = action
             self.trace.append(
                 {
@@ -353,6 +353,9 @@ class _RuntimeController:
                     "previous_state": self.previous_state,
                     "state": info["state"],
                     "observation": self.observation,
+                    "belief": previous_belief,
+                    "next_belief": self.belief,
+                    "decision": decision.to_dict(),
                     "reward": self.reward,
                     "done": self.done,
                 }
@@ -375,9 +378,11 @@ class _RuntimeController:
     def _snapshot_locked(self) -> dict[str, object]:
         """Build a snapshot while the controller lock is held. / 在持锁状态下构建快照。"""
         state = self.simulator.state
+        decision = None if self.done else self._plan_locked()
         return {
             "state": state,
             "observation": self.observation,
+            "belief": self.belief,
             "reward": self.reward,
             "step": self.simulator.steps,
             "done": self.done,
@@ -385,9 +390,16 @@ class _RuntimeController:
             "previous_state": self.previous_state,
             "initial_state": self.trace[0]["state"] if self.trace else None,
             "initial_observation": self.trace[0]["observation"] if self.trace else None,
-            "planned_action": _select_action(self.problem, state, self.markers),
+            "planner": self.planner.name,
+            "planned_action": decision.action if decision is not None else None,
+            "planned_decision": decision.to_dict() if decision is not None else None,
             "trace": self.trace,
         }
+
+    def _plan_locked(self):
+        """Plan from the current online belief while the lock is held. / 在持锁状态下根据当前在线 belief 规划。"""
+        remaining_depth = max(1, self.problem.max_depth - self.simulator.steps)
+        return self.planner.choose_action(self.belief, remaining_depth=remaining_depth)
 
 
 def _runtime_payload(
@@ -486,43 +498,6 @@ def _walk_ast(node: RDDLASTNode) -> list[RDDLASTNode]:
     for child in node.children:
         result.extend(_walk_ast(child))
     return result
-
-
-def _select_action(
-    problem: PlanningProblem, state: object | None, markers: _RuntimeMarkers
-) -> str | None:
-    """Select DARP's next temporary policy action. / 选择 DARP 临时策略的下一个动作。"""
-    if state is None:
-        return problem.actions[0] if problem.actions else None
-    goals = set(markers.goals)
-    risks = set(markers.risks)
-    if not goals:
-        return problem.actions[0] if problem.actions else None
-    if str(state) in goals:
-        return _hold_or_first_action(problem, state)
-    queue: list[tuple[object, list[str]]] = [(state, [])]
-    seen = {state}
-    while queue:
-        current, actions = queue.pop(0)
-        if str(current) in goals:
-            return actions[0] if actions else None
-        for action in problem.actions:
-            for target in problem.states:
-                if problem.transition_prob(current, action, target) <= 1e-12:
-                    continue
-                if target in seen or (str(target) in risks and str(target) not in goals):
-                    continue
-                seen.add(target)
-                queue.append((target, [*actions, action]))
-    return problem.actions[0] if problem.actions else None
-
-
-def _hold_or_first_action(problem: PlanningProblem, state: object) -> str | None:
-    """Prefer an action that keeps a goal state stable. / 优先选择能让 goal state 保持稳定的动作。"""
-    for action in problem.actions:
-        if problem.transition_prob(state, action, state) > 1e-12:
-            return action
-    return problem.actions[0] if problem.actions else None
 
 
 def _serve_runtime_visualizer(
@@ -2187,8 +2162,10 @@ def _script() -> str:
         const info = document.createElement("div");
         info.className = "runtime-info";
         info.appendChild(runtimeInfoLine("Initialization", runtimeState ? `${runtimeState.initial_state} / obs ${runtimeState.initial_observation}` : "-"));
+        info.appendChild(runtimeInfoLine("Planner", runtimeState && runtimeState.planner ? runtimeState.planner : "none"));
         info.appendChild(runtimeInfoLine("Last action", runtimeState && runtimeState.last_action ? runtimeState.last_action : "none"));
         info.appendChild(runtimeInfoLine("DARP planned action", runtimeState && runtimeState.planned_action ? runtimeState.planned_action : "none"));
+        info.appendChild(runtimeInfoLine("Belief peak", runtimeState && runtimeState.belief ? runtimeBeliefSummary(runtimeState.belief) : "-"));
         info.appendChild(runtimeInfoLine("Available actions", data.runtime.problem.actions.join(", ")));
         runtimeRoot.appendChild(info);
 
@@ -2235,6 +2212,17 @@ def _script() -> str:
         row.appendChild(strong);
         row.appendChild(document.createTextNode(value === null || value === undefined ? "-" : String(value)));
         return row;
+      }
+
+      function runtimeBeliefSummary(belief) {
+        const entries = Object.entries(belief || {})
+          .filter((entry) => Number(entry[1]) > 1e-6)
+          .sort((left, right) => Number(right[1]) - Number(left[1]));
+        if (!entries.length) {
+          return "empty";
+        }
+        const [state, probability] = entries[0];
+        return `${state}=${formatProbability(probability)}`;
       }
 
       function setRuntimeZoom(nextZoom) {
