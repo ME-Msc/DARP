@@ -74,7 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--time-budget-ms",
         type=float,
-        help="soft per-decision time budget recorded in the trace",
+        help="hard per-decision time budget in milliseconds",
     )
     parser.add_argument("--output", help="optional JSON output file for non-visual execution")
     return parser
@@ -143,6 +143,7 @@ def _format_terminal_trace(payload: dict[str, object]) -> str:
         decision = step.get("decision", {})
         value = decision.get("value") if isinstance(decision, dict) else None
         value_text = f" value={float(value):.3f}" if isinstance(value, int | float) else ""
+        status_text = " timeout" if isinstance(decision, dict) and decision.get("timed_out") else ""
         lines.append(
             "  "
             f"t={step['step']} "
@@ -151,6 +152,7 @@ def _format_terminal_trace(payload: dict[str, object]) -> str:
             f"reward={step['reward']} "
             f"next={step['next_observation']}"
             f"{value_text}"
+            f"{status_text}"
         )
     lines.append(f"Total reward: {payload['total_reward']}")
     return "\n".join(lines)

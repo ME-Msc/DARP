@@ -1,7 +1,8 @@
 """Finite-horizon POMDP/(C)C-POMDP problem interface."""
 
 # TODO(phase-4.1): Replace permissive mappings with validated typed model builders.
-# TODO(phase-4.3): Add multi-constraint and continuous-state extension points.
+# TODO(phase-4.3): Add explicit reset-observation, multi-constraint, and
+# continuous-state extension points.
 
 from __future__ import annotations
 
@@ -50,6 +51,19 @@ class PlanningProblem:
     def observation_prob(self, observation: Observation, state: State, action: Action) -> float:
         """Return P(observation | state, action). / 返回给定 state 和 action 后观测到 observation 的概率。"""
         return float(self.observation_model.get((observation, state, action), 0.0))
+
+    def initial_observation_prob(self, observation: Observation, state: State) -> float:
+        """Return P(first observation | initial state). / 返回给定初始 state 的首个 observation 概率。"""
+        action_likelihoods = [
+            self.observation_prob(observation, state, action) for action in self.actions
+        ]
+        has_explicit_likelihood = any(
+            (observation, state, action) in self.observation_model for action in self.actions
+        )
+        positive_likelihoods = [value for value in action_likelihoods if value > 0.0]
+        if has_explicit_likelihood or positive_likelihoods:
+            return sum(action_likelihoods) / len(action_likelihoods)
+        return 1.0 if observation == state else 0.0
 
     def reward(self, state: State, action: Action) -> float:
         """Return the immediate reward for one state-action pair. / 返回一个 state-action 对的即时 reward。"""

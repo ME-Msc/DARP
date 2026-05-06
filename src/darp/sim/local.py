@@ -1,7 +1,7 @@
 """Local sampling simulator for PlanningProblem."""
 
-# TODO(phase-3.3): Carry observation-history keys through episodes for online
-# replanning and offline policy evaluation.
+# TODO(phase-5.1): Carry observation-history keys through episodes for offline
+# policy evaluation and reusable planner traces.
 
 from __future__ import annotations
 
@@ -43,9 +43,7 @@ class LocalSimulator:
         """Reset to an initial state and return the first observation. / 重置到初始 state 并返回首个 observation。"""
         self.steps = 0
         self.state = _sample_weighted(list(self.problem.initial_belief.items()), self.rng)
-        if self.state in self.problem.observations:
-            return self.state
-        return self.problem.observations[0]
+        return self._observe_initial()
 
     def step(self, action: Action) -> tuple[Observation, float, bool, dict[str, object]]:
         """Apply one action and return observation, reward, done, info. / 执行动作并返回 observation、reward、done、info。"""
@@ -76,3 +74,16 @@ class LocalSimulator:
             ],
             self.rng,
         )
+
+    def _observe_initial(self) -> Observation:
+        """Sample the first observation from the initial observation model. / 从初始 observation 模型采样首个 observation。"""
+        assert self.state is not None
+        weights = [
+            (observation, self.problem.initial_observation_prob(observation, self.state))
+            for observation in self.problem.observations
+        ]
+        if sum(weight for _, weight in weights) <= 0.0:
+            if self.state in self.problem.observations:
+                return self.state
+            return self.problem.observations[0]
+        return _sample_weighted(weights, self.rng)

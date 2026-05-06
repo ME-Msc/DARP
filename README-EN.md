@@ -11,6 +11,7 @@ The current code focuses on the standard RDDL input pipeline, DARP's small inter
 - Ground the currently supported RDDL CPF/reward expressions into a minimal `PlanningProblem`.
 - Execute small explicit transition/observation/reward tables with DARP's internal simulator.
 - Run the default non-visual online solve loop with `darp --domain DOMAIN.rddl --instance INSTANCE.rddl` and print a readable terminal trace.
+- Carry belief across steps with Bayesian observation-model updates, and return traceable fallback actions when hard decision budgets expire.
 - Start the live HTML UI with `--visualizer` to inspect source, AST, and an execution state machine where DARP's planner selects actions and the internal simulator advances states.
 
 ## Installation
@@ -85,7 +86,7 @@ Primary command arguments:
 | `--port PORT` | no | Visualizer HTTP port. Defaults to `0`, which chooses a free port. |
 | `--no-open` | no | Serve without opening a browser. |
 | `--visualizer` | no | Start the live HTML visualizer; requires `--domain` and `--instance`. |
-| `--time-budget-ms MS` | no | Soft per-decision time budget recorded in the trace. |
+| `--time-budget-ms MS` | no | Hard per-decision time budget; timeout returns a fallback action and is marked in the trace. |
 | `--output PATH` | no | In non-visual mode, write the full JSON trace to a file; without this option, no JSON is emitted. |
 | `-h`, `--help` | no | Show help text. |
 
@@ -260,10 +261,10 @@ DARP should not hard-code a policy for tiny grid. The roadmap below is already o
     - [x] 2.4.1: Ground tiny-grid CPF/reward dynamics
     - [x] 2.4.2: Implement DARP's internal simulator and run the tiny-grid experiment
     - [x] 2.4.3: Complete general standard RDDL CPF/reward expression grounding without adding new syntax
-- [ ] Phase 3: PROST-like realtime execution
+- [x] Phase 3: PROST-like realtime execution
   - [x] 3.1: Implement a local online solve loop: replan each step, return actions, receive observations
   - [x] 3.2: Unify the top-level `darp` entrypoint: default to non-visual terminal traces, use `--visualizer` for the web UI, and write JSON through `--output`
-  - [ ] 3.3: Refine cross-step belief/state carryover and hard time-budget control
+  - [x] 3.3: Refine Bayesian cross-step belief carryover, initial-observation sampling, and hard-budget fallback decisions
 - [ ] Phase 4: General RDDL problem modeling
   - [ ] 4.1: Stabilize `PlanningProblem`, typed identifiers, and model validation
   - [ ] 4.2: Support multiple state fluents and factored states, replacing the current one-hot compact-state assumption
@@ -306,4 +307,4 @@ python -m pytest
 
 - The compiler currently targets small, discrete RDDL problems with a compact one-hot state fluent.
 - The internal simulator runs explicit transition/observation/reward tables and is not a general high-performance RDDL simulator.
-- Multiple state fluents, factored states, stochastic observations, full POMDP belief carryover, DARP-RDDL syntax extensions, native durative-action syntax, HILP, and HiGHS/Gurobi backends remain later phases.
+- Multiple state fluents, factored states, large/continuous belief representations, DARP-RDDL syntax extensions, native durative-action syntax, HILP, and HiGHS/Gurobi backends remain later phases.
