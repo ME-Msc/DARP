@@ -1,7 +1,7 @@
 """Standalone HTML visualizer for the built-in RDDL AST."""
 
-# TODO(phase-4.1): Show exact token spans for typed expression nodes when the
-# compiler moves to a factored RDDL AST.
+# TODO(phase-9.4): Show exact token spans for future typed DARP-RDDL expression
+# nodes once the extension grammar is specified.
 
 from __future__ import annotations
 

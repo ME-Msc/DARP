@@ -1,7 +1,7 @@
 """Small RDDL expression parser and evaluator for grounding."""
 
-# TODO(phase-4.1): Lift this expression IR into the factored state model once
-# multiple state fluents and richer RDDL variable domains are supported.
+# TODO(phase-6.2): Preserve expression structure in preprocessing so AND-OR
+# expansion can reuse grounded CPF dependencies instead of reparsing text.
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import math
 import re
 from typing import Mapping, Protocol
 
-from darp.core.types import Action, State
+from darp.core.types import Action, GroundAtom, State
 from darp.rddl.ast import RDDLASTNode
 
 ExpressionValue = bool | float | str
@@ -61,6 +61,8 @@ class EvaluationContext:
     variables: dict[str, str]
     fluent_values: Mapping[tuple[str, tuple[str, ...]], ExpressionValue] = field(default_factory=dict)
     objects: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    state_atoms: frozenset[GroundAtom] = field(default_factory=frozenset)
+    state_pvariables: frozenset[str] = field(default_factory=frozenset)
     action_fluents: frozenset[tuple[str, tuple[str, ...]]] = field(default_factory=frozenset)
     action_pvariables: frozenset[str] = field(default_factory=frozenset)
 
@@ -81,6 +83,14 @@ class LiteralExpression:
         """Return the literal value. / 返回 literal 值。"""
         if isinstance(self.value, str) and self.value in context.variables:
             return context.variables[self.value]
+        if isinstance(self.value, str) and self.value in context.state_pvariables:
+            return (self.value, ()) in context.state_atoms
+        if isinstance(self.value, str) and self.value in context.action_pvariables:
+            return (self.value, ()) in context.action_fluents
+        if isinstance(self.value, str) and (self.value, ()) in context.fluent_values:
+            return context.fluent_values[(self.value, ())]
+        if isinstance(self.value, str) and (self.value, ()) in context.non_fluents:
+            return True
         if isinstance(self.value, str) and self.value in context.actions:
             return context.action == self.value
         return self.value
@@ -103,6 +113,8 @@ class CallExpression:
             if len(values) != 1:
                 raise RDDLExpressionError(f"State fluent {self.name!r} expects one argument.")
             return values[0] == context.current_state
+        if self.name in context.state_pvariables:
+            return (self.name, values) in context.state_atoms
         if self.name in context.actions and not values:
             return context.action == self.name
         if self.name in context.action_pvariables:

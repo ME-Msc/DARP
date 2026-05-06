@@ -1,0 +1,7 @@
+instance factored_door_inst {
+  domain = factored_door;
+  init-state { };
+  horizon = 4;
+  discount = 1.0;
+  max-nondef-actions = 1;
+}

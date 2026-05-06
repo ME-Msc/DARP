@@ -9,6 +9,8 @@ The current code focuses on the standard RDDL input pipeline, DARP's small inter
 - Parse standard RDDL domain/instance files into DARP-owned `RDDLASTNode` ASTs.
 - Align the `darp`, `pyrddl`, and `pyrddlgym` parser frontends through `RDDLFrontend`.
 - Ground the currently supported RDDL CPF/reward expressions into a minimal `PlanningProblem`.
+- Support small boolean factored states: multiple state fluents are enumerated into explicit finite states that still work with the local planner/simulator.
+- Support `Bernoulli(p)` stochastic CPFs, `observ-fluent` noisy observations, explicit reset-observation models, and `max-nondef-actions` static action constraints.
 - Execute small explicit transition/observation/reward tables with DARP's internal simulator.
 - Run the default non-visual online solve loop with `darp --domain DOMAIN.rddl --instance INSTANCE.rddl` and print a readable terminal trace.
 - Carry belief across steps with Bayesian observation-model updates, and return traceable fallback actions when hard decision budgets expire.
@@ -107,6 +109,15 @@ darp \
   --seed 7
 ```
 
+Run the Phase 4 factored-door example with multiple state fluents, stochastic CPFs, and noisy observations:
+
+```bash
+darp \
+  --domain examples/rddl/factored_door_domain.rddl \
+  --instance examples/rddl/factored_door_instance.rddl \
+  --seed 1
+```
+
 Print a non-visual terminal trace from the built-in demo:
 
 ```bash
@@ -202,7 +213,9 @@ DARP/
 ├── examples/                         # Example input directory.
 │   └── rddl/                         # RDDL example files.
 │       ├── tiny_grid_domain.rddl     # 3x3 tiny-grid domain with CPF/reward dynamics.
-│       └── tiny_grid_instance.rddl   # 3x3 tiny-grid instance with objects and horizon settings.
+│       ├── tiny_grid_instance.rddl   # 3x3 tiny-grid instance with objects and horizon settings.
+│       ├── factored_door_domain.rddl # Phase 4 factored-state example with stochastic CPFs and an observ-fluent.
+│       └── factored_door_instance.rddl # Phase 4 factored-state example instance.
 │
 ├── src/
 │   └── darp/                         # Main DARP Python package.
@@ -265,11 +278,11 @@ DARP should not hard-code a policy for tiny grid. The roadmap below is already o
   - [x] 3.1: Implement a local online solve loop: replan each step, return actions, receive observations
   - [x] 3.2: Unify the top-level `darp` entrypoint: default to non-visual terminal traces, use `--visualizer` for the web UI, and write JSON through `--output`
   - [x] 3.3: Refine Bayesian cross-step belief carryover, initial-observation sampling, and hard-budget fallback decisions
-- [ ] Phase 4: General RDDL problem modeling
-  - [ ] 4.1: Stabilize `PlanningProblem`, typed identifiers, and model validation
-  - [ ] 4.2: Support multiple state fluents and factored states, replacing the current one-hot compact-state assumption
-  - [ ] 4.3: Support stochastic CPFs, non-identity observations, initial belief distributions, and action constraints
-  - [ ] 4.4: Validate compiler and simulator semantics against small pyRDDLGym/rddlsim domains
+- [x] Phase 4: General RDDL problem modeling
+  - [x] 4.1: Stabilize `PlanningProblem`, typed identifiers, and model validation
+  - [x] 4.2: Support multiple state fluents and factored states, replacing the current one-hot compact-state assumption
+  - [x] 4.3: Support stochastic CPFs, non-identity observations, initial belief distributions, and action constraints
+  - [x] 4.4: Validate compiler, simulator, and online-belief semantics with the tiny-grid and factored-door domains; rddlsim protocol integration remains in Phase 8
 - [ ] Phase 5: Verifiable baseline solvers
   - [ ] 5.1: Refine the explicit-state finite-horizon DP baseline for offline policies and online replanning
   - [ ] 5.2: Add planner registry, unified trace output, and algorithm-selection parameters
@@ -305,6 +318,6 @@ python -m pytest
 
 ## Current Limitations
 
-- The compiler currently targets small, discrete RDDL problems with a compact one-hot state fluent.
+- The compiler currently targets small, discrete RDDL problems; it supports compact one-hot states and explicitly enumerated boolean factored states.
 - The internal simulator runs explicit transition/observation/reward tables and is not a general high-performance RDDL simulator.
-- Multiple state fluents, factored states, large/continuous belief representations, DARP-RDDL syntax extensions, native durative-action syntax, HILP, and HiGHS/Gurobi backends remain later phases.
+- Large/continuous belief representations, external rddlsim/PROST protocols, DARP-RDDL syntax extensions, native durative-action syntax, HILP, and HiGHS/Gurobi backends remain later phases.

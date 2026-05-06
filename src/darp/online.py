@@ -1,7 +1,5 @@
 """Local PROST-like online execution loop."""
 
-# TODO(phase-4.3): Replace action-averaged initial observation likelihoods with
-# an explicit reset-observation model once the compiler supports it.
 # TODO(phase-5.2): Let future anytime/search planners return their best partial
 # policy when a hard deadline expires.
 

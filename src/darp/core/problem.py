@@ -1,8 +1,7 @@
 """Finite-horizon POMDP/(C)C-POMDP problem interface."""
 
-# TODO(phase-4.1): Replace permissive mappings with validated typed model builders.
-# TODO(phase-4.3): Add explicit reset-observation, multi-constraint, and
-# continuous-state extension points.
+# TODO(phase-7.1): Move larger sparse transition/observation tables behind a
+# backend-friendly matrix abstraction before ILP and benchmark scaling.
 
 from __future__ import annotations
 
@@ -13,8 +12,10 @@ from darp.core.duration import DurationModel, FixedDurationModel
 from darp.core.types import (
     Action,
     Distribution,
+    GroundAtom,
     Observation,
     ObservationKey,
+    ResetObservationKey,
     RewardKey,
     State,
     TransitionKey,
@@ -40,9 +41,122 @@ class PlanningProblem:
     cost_budget: float | None = None
     risk_states: frozenset[State] = field(default_factory=frozenset)
     risk_budget: float | None = None
+    reset_observation_model: Mapping[ResetObservationKey, float] = field(default_factory=dict)
+    action_fluents: Mapping[Action, frozenset[GroundAtom]] = field(default_factory=dict)
+    max_nondef_actions: int | None = None
     max_depth: int = 12
     name: str = "planning_problem"
     metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Validate explicit finite-horizon table semantics. / 校验显式有限 horizon 表语义。"""
+        self.validate()
+
+    def validate(self) -> None:
+        """Raise a clear error when the model tables are inconsistent. / 模型表不一致时抛出清晰错误。"""
+        if not self.states:
+            raise ValueError("PlanningProblem must define at least one state.")
+        if not self.actions:
+            raise ValueError("PlanningProblem must define at least one action.")
+        if not self.observations:
+            raise ValueError("PlanningProblem must define at least one observation.")
+        if self.max_depth < 1:
+            raise ValueError("PlanningProblem.max_depth must be at least 1.")
+        if self.horizon < 0:
+            raise ValueError("PlanningProblem.horizon must be non-negative.")
+        if self.discount < 0:
+            raise ValueError("PlanningProblem.discount must be non-negative.")
+        if self.max_nondef_actions is not None and self.max_nondef_actions < 0:
+            raise ValueError("PlanningProblem.max_nondef_actions must be non-negative.")
+        self._validate_initial_belief()
+        self._validate_transition_model()
+        self._validate_observation_model()
+        self._validate_reset_observation_model()
+        self._validate_action_fluents()
+
+    def _validate_initial_belief(self) -> None:
+        """Validate that the initial belief is normalized on known states. / 校验初始 belief 在已知 state 上归一化。"""
+        unknown = set(self.initial_belief) - set(self.states)
+        if unknown:
+            raise ValueError(f"Initial belief contains unknown states: {sorted(map(str, unknown))!r}.")
+        total = 0.0
+        for state in self.states:
+            probability = float(self.initial_belief.get(state, 0.0))
+            if probability < -1e-12:
+                raise ValueError(f"Initial belief for state {state!r} is negative.")
+            total += max(0.0, probability)
+        if abs(total - 1.0) > 1e-8:
+            raise ValueError(f"Initial belief must sum to 1.0, found {total:.6g}.")
+
+    def _validate_transition_model(self) -> None:
+        """Validate transition probability mass for every state-action pair. / 校验每个 state-action 的转移概率质量。"""
+        for source in self.states:
+            for action in self.actions:
+                total = 0.0
+                for target in self.states:
+                    probability = self.transition_prob(source, action, target)
+                    if probability < -1e-12:
+                        raise ValueError(
+                            f"Transition probability for {(source, action, target)!r} is negative."
+                        )
+                    total += max(0.0, probability)
+                if abs(total - 1.0) > 1e-8:
+                    raise ValueError(
+                        f"Transition mass for state={source!r}, action={action!r} "
+                        f"must sum to 1.0, found {total:.6g}."
+                    )
+
+    def _validate_observation_model(self) -> None:
+        """Validate observation probability mass for every state-action pair. / 校验每个 state-action 的观测概率质量。"""
+        for state in self.states:
+            for action in self.actions:
+                total = 0.0
+                for observation in self.observations:
+                    probability = self.observation_prob(observation, state, action)
+                    if probability < -1e-12:
+                        raise ValueError(
+                            f"Observation probability for {(observation, state, action)!r} is negative."
+                        )
+                    total += max(0.0, probability)
+                if abs(total - 1.0) > 1e-8:
+                    raise ValueError(
+                        f"Observation mass for state={state!r}, action={action!r} "
+                        f"must sum to 1.0, found {total:.6g}."
+                    )
+
+    def _validate_reset_observation_model(self) -> None:
+        """Validate reset-observation mass when provided. / 校验 reset-observation 概率质量。"""
+        if not self.reset_observation_model:
+            return
+        for state in self.states:
+            total = 0.0
+            for observation in self.observations:
+                probability = float(self.reset_observation_model.get((observation, state), 0.0))
+                if probability < -1e-12:
+                    raise ValueError(
+                        f"Reset observation probability for {(observation, state)!r} is negative."
+                    )
+                total += max(0.0, probability)
+            if abs(total - 1.0) > 1e-8:
+                raise ValueError(
+                    f"Reset observation mass for state={state!r} must sum to 1.0, "
+                    f"found {total:.6g}."
+                )
+
+    def _validate_action_fluents(self) -> None:
+        """Validate action fluent metadata and max-nondef constraints. / 校验 action fluent 元数据和 max-nondef 约束。"""
+        unknown = set(self.action_fluents) - set(self.actions)
+        if unknown:
+            raise ValueError(f"Action fluent metadata contains unknown actions: {sorted(unknown)!r}.")
+        if self.max_nondef_actions is None:
+            return
+        for action in self.actions:
+            active = len(self.action_fluents.get(action, frozenset()))
+            if active > self.max_nondef_actions:
+                raise ValueError(
+                    f"Action {action!r} activates {active} fluents, exceeding "
+                    f"max_nondef_actions={self.max_nondef_actions}."
+                )
 
     def transition_prob(self, source: State, action: Action, target: State) -> float:
         """Return P(target | source, action). / 返回给定 source 和 action 后到达 target 的概率。"""
@@ -54,6 +168,8 @@ class PlanningProblem:
 
     def initial_observation_prob(self, observation: Observation, state: State) -> float:
         """Return P(first observation | initial state). / 返回给定初始 state 的首个 observation 概率。"""
+        if self.reset_observation_model:
+            return float(self.reset_observation_model.get((observation, state), 0.0))
         action_likelihoods = [
             self.observation_prob(observation, state, action) for action in self.actions
         ]
@@ -72,6 +188,14 @@ class PlanningProblem:
     def cost(self, state: State, action: Action) -> float:
         """Return the immediate constraint cost for one pair. / 返回一个 state-action 对的即时约束 cost。"""
         return float(self.costs.get((state, action), 0.0))
+
+    def is_action_allowed(self, action: Action) -> bool:
+        """Return whether an action satisfies static action constraints. / 返回 action 是否满足静态动作约束。"""
+        if action not in self.actions:
+            return False
+        if self.max_nondef_actions is None:
+            return True
+        return len(self.action_fluents.get(action, frozenset())) <= self.max_nondef_actions
 
     @property
     def constraint_budget(self) -> float | None:
@@ -104,6 +228,7 @@ class PlanningProblem:
             "initial_belief": dict(self.initial_belief),
             "nonzero_transitions": nonzero_transitions,
             "nonzero_observations": nonzero_observations,
+            "max_nondef_actions": self.max_nondef_actions,
             "metadata": dict(self.metadata),
         }
 

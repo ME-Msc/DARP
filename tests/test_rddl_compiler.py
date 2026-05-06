@@ -9,6 +9,8 @@ from darp.rddl.loader import RDDLLoader
 
 DOMAIN = "examples/rddl/tiny_grid_domain.rddl"
 INSTANCE = "examples/rddl/tiny_grid_instance.rddl"
+FACTORED_DOMAIN = "examples/rddl/factored_door_domain.rddl"
+FACTORED_INSTANCE = "examples/rddl/factored_door_instance.rddl"
 GRID_STATES = ("c11", "c12", "c13", "c21", "c22", "c23", "c31", "c32", "c33")
 GRID_ACTIONS = ("move-east", "move-south", "move-west", "move-north")
 
@@ -47,12 +49,53 @@ def test_compiler_accepts_all_available_frontends(frontend):
     assert problem.metadata["frontend"] == frontend
 
 
+def test_compiler_builds_factored_boolean_problem():
+    """Check Phase 4 factored-state compilation. / 检查 Phase 4 的 factored state 编译。"""
+    loaded = RDDLLoader("darp").load(FACTORED_DOMAIN, FACTORED_INSTANCE)
+    problem = RDDLCompiler().compile(loaded)
+
+    assert problem.states == ("{}", "{door-open}", "{has-key}", "{has-key,door-open}")
+    assert problem.observations == ("{}", "{heard-open}")
+    assert problem.actions == ("pick-key", "open-door", "wait")
+    assert problem.initial_belief["{}"] == 1.0
+    assert problem.max_nondef_actions == 1
+    assert problem.action_fluents["open-door"] == frozenset({("open-door", ())})
+    assert problem.metadata["compiler_mode"] == "factored-grounded-rddl-expressions"
+    assert problem.metadata["state_fluents"] == ["has-key", "door-open"]
+    assert problem.metadata["observation_fluents"] == ["heard-open"]
+
+
 def test_compiler_rejects_missing_canonical_ast():
     """Check that compilation requires the canonical DARP AST. / 检查编译必须使用 DARP 标准 AST。"""
     loaded = ParsedRDDL(frontend="bad", domain=DOMAIN, instance=INSTANCE, ast=None)
 
     with pytest.raises(RDDLCompileError, match="RDDLASTNode"):
         RDDLCompiler().compile(loaded)
+
+
+def test_planning_problem_validation_rejects_bad_transition_mass():
+    """Check core model validation catches invalid tables. / 检查核心模型校验能发现非法表。"""
+    with pytest.raises(ValueError, match="Transition mass"):
+        PlanningProblem(
+            states=("s0", "s1"),
+            actions=("a",),
+            observations=("s0", "s1"),
+            transitions={
+                ("s0", "a", "s0"): 0.5,
+                ("s0", "a", "s1"): 0.0,
+                ("s1", "a", "s0"): 0.0,
+                ("s1", "a", "s1"): 1.0,
+            },
+            observation_model={
+                ("s0", "s0", "a"): 1.0,
+                ("s1", "s0", "a"): 0.0,
+                ("s0", "s1", "a"): 0.0,
+                ("s1", "s1", "a"): 1.0,
+            },
+            rewards={("s0", "a"): 0.0, ("s1", "a"): 0.0},
+            initial_belief={"s0": 1.0, "s1": 0.0},
+            horizon=1.0,
+        )
 
 
 def test_compiler_cli_prints_problem_summary(capsys):

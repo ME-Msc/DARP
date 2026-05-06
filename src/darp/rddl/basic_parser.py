@@ -1,7 +1,7 @@
 """A dependency-free, structural RDDL parser."""
 
-# TODO(phase-4.1): Add typed production AST nodes when factored RDDL grounding
-# replaces the current compact compiler input.
+# TODO(phase-9.4): Add typed production AST nodes when DARP-RDDL extension
+# syntax is specified.
 # TODO(phase-8.2): Add DARP-RDDL extension keywords after the syntax is designed.
 
 from __future__ import annotations

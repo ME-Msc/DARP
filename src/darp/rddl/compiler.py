@@ -1,23 +1,22 @@
 """Compile parsed RDDL documents into DARP PlanningProblem objects."""
 
-# TODO(phase-4.1): Lift grounding from the compact one-hot state abstraction to
-# full factored state-fluent valuations.
-# TODO(phase-4.1): Keep this compiler dependent on ParsedRDDL only, not on a
-# concrete pyRDDLGym or pyrddl parser implementation as the model grows.
+# TODO(phase-6.2): Reuse factored CPF dependency information during AND-OR
+# expansion instead of grounding every next-state valuation eagerly.
 
 from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from itertools import combinations
 from itertools import product
 import json
 from math import ceil
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from darp.core.duration import FixedDurationModel
 from darp.core.problem import PlanningProblem
-from darp.core.types import Action, ObservationKey, RewardKey, State, TransitionKey
+from darp.core.types import Action, GroundAtom, Observation, ObservationKey, RewardKey, State, TransitionKey
 from darp.rddl.ast import RDDLASTNode
 from darp.rddl.expressions import (
     EvaluationContext,
@@ -40,6 +39,7 @@ class _PVariable:
     name: str
     roles: frozenset[str]
     parameters: tuple[str, ...]
+    default: ExpressionValue = False
 
 
 @dataclass(frozen=True)
@@ -58,6 +58,28 @@ class _GroundedTables:
     transitions: dict[TransitionKey, float]
     rewards: dict[RewardKey, float]
     compiler_mode: str
+
+
+@dataclass(frozen=True)
+class _FactoredGrounding:
+    """Store all explicit tables for a factored finite model. / 保存 factored 有限模型的显式表。"""
+
+    states: tuple[State, ...]
+    observations: tuple[Observation, ...]
+    transitions: dict[TransitionKey, float]
+    observation_model: dict[ObservationKey, float]
+    reset_observation_model: dict[tuple[Observation, State], float]
+    rewards: dict[RewardKey, float]
+    initial_belief: dict[State, float]
+
+
+@dataclass(frozen=True)
+class _CPF:
+    """Store one CPF target signature and expression. / 保存一个 CPF 目标签名和表达式。"""
+
+    name: str
+    parameters: tuple[str, ...]
+    expression: str
 
 
 class RDDLCompiler:
@@ -89,26 +111,61 @@ class RDDLCompiler:
         if not action_variables:
             raise RDDLCompileError("No action-fluent pvariables were found in the RDDL domain.")
 
-        primary_type = _primary_state_type(state_variables, objects)
-        states = tuple(objects[primary_type])
-        actions = _ground_action_names(action_variables, objects)
-        if not states:
-            raise RDDLCompileError(f"No objects were found for state type {primary_type!r}.")
-
-        initial_states = _initial_states(document.instance, state_variables[0].name)
-        initial_belief = _initial_belief(states, initial_states)
         horizon = _float_assignment(document.instance, "horizon", default=1.0)
         discount = _float_assignment(document.instance, "discount", default=1.0)
-        grounded = _ground_compact_tables(
-            document,
-            states,
-            actions,
-            state_variables[0].name,
-            objects,
-            frozenset(pvar.name for pvar in action_variables),
-        )
-        observations = states
-        observation_model = _identity_observations(observations, actions)
+        max_nondef_actions = _int_assignment(document.instance, "max-nondef-actions", default=1)
+        actions, action_fluents = _ground_actions(action_variables, objects, max_nondef_actions)
+        action_pvariables = frozenset(pvar.name for pvar in action_variables)
+        if not _use_factored_grounding(state_variables):
+            primary_type = _primary_state_type(state_variables, objects)
+            states = tuple(objects[primary_type])
+            if not states:
+                raise RDDLCompileError(f"No objects were found for state type {primary_type!r}.")
+            initial_states = _initial_states(document.instance, state_variables[0].name)
+            initial_belief = _initial_belief(states, initial_states)
+            grounded = _ground_compact_tables(
+                document,
+                states,
+                actions,
+                state_variables[0].name,
+                objects,
+                action_pvariables,
+                action_fluents,
+            )
+            observations: tuple[Observation, ...] = states
+            observation_model = _identity_observations(observations, actions)
+            reset_observation_model = {}
+            compiler_metadata = {
+                "state_fluent": state_variables[0].name,
+                "state_type": primary_type,
+                "compiler_mode": grounded.compiler_mode,
+            }
+        else:
+            grounded_model = _ground_factored_model(
+                document=document,
+                state_variables=state_variables,
+                action_variables=action_variables,
+                objects=objects,
+                actions=actions,
+                action_fluents=action_fluents,
+                action_pvariables=action_pvariables,
+            )
+            states = grounded_model.states
+            observations = grounded_model.observations
+            initial_belief = grounded_model.initial_belief
+            grounded = _GroundedTables(
+                transitions=grounded_model.transitions,
+                rewards=grounded_model.rewards,
+                compiler_mode="factored-grounded-rddl-expressions",
+            )
+            observation_model = grounded_model.observation_model
+            reset_observation_model = grounded_model.reset_observation_model
+            compiler_metadata = {
+                "state_fluents": [pvar.name for pvar in state_variables],
+                "observation_fluents": [pvar.name for pvar in _observ_variables(pvariables)],
+                "compiler_mode": grounded.compiler_mode,
+                "state_encoding": "active-ground-atom-tuple",
+            }
         max_depth = max(1, int(ceil(horizon)))
 
         return PlanningProblem(
@@ -122,6 +179,9 @@ class RDDLCompiler:
             horizon=horizon,
             discount=discount,
             duration_model=FixedDurationModel({action: 1.0 for action in actions}),
+            reset_observation_model=reset_observation_model,
+            action_fluents=action_fluents,
+            max_nondef_actions=max_nondef_actions,
             max_depth=max_depth,
             name=instance_name,
             metadata={
@@ -129,9 +189,8 @@ class RDDLCompiler:
                 "frontend": loaded.frontend,
                 "domain": domain_name,
                 "instance": instance_name,
-                "state_fluent": state_variables[0].name,
-                "state_type": primary_type,
-                "compiler_mode": grounded.compiler_mode,
+                "max_nondef_actions": max_nondef_actions,
+                **compiler_metadata,
             },
         )
 
@@ -190,6 +249,17 @@ def _float_assignment(node: RDDLASTNode, name: str, *, default: float) -> float:
         raise RDDLCompileError(f"Assignment {name!r} must be numeric, found {value!r}.") from exc
 
 
+def _int_assignment(node: RDDLASTNode, name: str, *, default: int) -> int:
+    """Return one assignment as an int with a fallback. / 以 int 读取一个 assignment 并支持默认值。"""
+    value = _assignment(node, name)
+    if value is None:
+        return default
+    try:
+        return int(float(value))
+    except ValueError as exc:
+        raise RDDLCompileError(f"Assignment {name!r} must be integer-like, found {value!r}.") from exc
+
+
 def _object_table(document: _RDDLDocument) -> dict[str, tuple[str, ...]]:
     """Parse object declarations from non-fluents or instance blocks. / 从 non-fluents 或 instance 块解析对象声明。"""
     container = document.non_fluents or document.instance
@@ -198,7 +268,7 @@ def _object_table(document: _RDDLDocument) -> dict[str, tuple[str, ...]]:
         domain_objects = _enum_object_table(document.domain)
         if domain_objects:
             return domain_objects
-        raise RDDLCompileError("No objects or enum type block was found in the RDDL input.")
+        return {}
 
     objects: dict[str, tuple[str, ...]] = {}
     for statement in block.children:
@@ -234,18 +304,59 @@ def _pvariables(domain: RDDLASTNode) -> list[_PVariable]:
         name_part, _, spec_part = statement.label.partition(":")
         name, parameters = _signature(name_part.strip())
         roles = frozenset(_set_items(spec_part))
-        result.append(_PVariable(name=name, roles=roles, parameters=parameters))
+        result.append(
+            _PVariable(
+                name=name,
+                roles=roles,
+                parameters=parameters,
+                default=_pvariable_default(roles),
+            )
+        )
     return result
 
 
-def _ground_action_names(
-    action_variables: list[_PVariable], objects: dict[str, tuple[str, ...]]
-) -> tuple[Action, ...]:
-    """Ground action pvariables into compact action names. / 将 action pvariable grounding 成紧凑动作名。"""
-    actions: list[Action] = []
+def _pvariable_default(roles: frozenset[str]) -> ExpressionValue:
+    """Extract the default value from a pvariable role set. / 从 pvariable role 集合中提取默认值。"""
+    for role in roles:
+        key, separator, value = role.partition("=")
+        if separator and key.strip() == "default":
+            return _literal_value(value.strip())
+    return False
+
+
+def _literal_value(text: str) -> ExpressionValue:
+    """Parse a simple bool/number/object literal. / 解析简单 bool、数字或对象 literal。"""
+    cleaned = text.strip()
+    if cleaned.lower() == "true":
+        return True
+    if cleaned.lower() == "false":
+        return False
+    try:
+        return float(cleaned)
+    except ValueError:
+        return _object_name(cleaned)
+
+
+def _use_factored_grounding(state_variables: list[_PVariable]) -> bool:
+    """Return whether the compiler should enumerate factored valuations. / 判断是否应枚举 factored valuation。"""
+    return len(state_variables) != 1 or len(state_variables[0].parameters) != 1
+
+
+def _observ_variables(pvariables: list[_PVariable]) -> list[_PVariable]:
+    """Return observation-fluent pvariables. / 返回 observation-fluent pvariable。"""
+    return [pvar for pvar in pvariables if "observ-fluent" in pvar.roles]
+
+
+def _ground_actions(
+    action_variables: list[_PVariable],
+    objects: dict[str, tuple[str, ...]],
+    max_nondef_actions: int,
+) -> tuple[tuple[Action, ...], dict[Action, frozenset[GroundAtom]]]:
+    """Ground action pvariables into constrained action sets. / 将 action pvariable grounding 成受约束的 action 集。"""
+    atoms: list[GroundAtom] = []
     for pvar in action_variables:
         if not pvar.parameters:
-            actions.append(pvar.name)
+            atoms.append((pvar.name, ()))
             continue
         domains = []
         for parameter in pvar.parameters:
@@ -255,8 +366,19 @@ def _ground_action_names(
                 )
             domains.append(objects[parameter])
         for values in product(*domains):
-            actions.append(_format_ground_atom(pvar.name, values))
-    return tuple(actions)
+            atoms.append((pvar.name, tuple(values)))
+
+    if max_nondef_actions < 0:
+        raise RDDLCompileError("max-nondef-actions must be non-negative.")
+    if max_nondef_actions == 0:
+        return ("noop",), {"noop": frozenset()}
+
+    action_fluents: dict[Action, frozenset[GroundAtom]] = {}
+    for size in range(1, min(max_nondef_actions, len(atoms)) + 1):
+        for active_atoms in combinations(atoms, size):
+            action = _format_action_set(active_atoms)
+            action_fluents[action] = frozenset(active_atoms)
+    return tuple(action_fluents), action_fluents
 
 
 def _child_block(node: RDDLASTNode, label: str) -> RDDLASTNode | None:
@@ -299,6 +421,35 @@ def _format_ground_atom(name: str, parameters: tuple[str, ...]) -> str:
     if not parameters:
         return name
     return f"{name}({','.join(parameters)})"
+
+
+def _format_action_set(atoms: tuple[GroundAtom, ...]) -> Action:
+    """Format active action fluents as one planner action. / 将活动 action fluent 格式化为一个 planner action。"""
+    return " + ".join(_format_ground_atom(name, parameters) for name, parameters in atoms)
+
+
+def _format_atom_valuation(atoms: tuple[GroundAtom, ...]) -> str:
+    """Format a boolean valuation as active ground atoms. / 将布尔 valuation 格式化为 active ground atom 集。"""
+    if not atoms:
+        return "{}"
+    return "{" + ",".join(_format_ground_atom(name, parameters) for name, parameters in atoms) + "}"
+
+
+def _split_top_level_commas(text: str) -> list[str]:
+    """Split comma text while preserving function-call arguments. / 按顶层逗号切分并保留函数参数。"""
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    for index, char in enumerate(text):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(0, depth - 1)
+        elif char == "," and depth == 0:
+            parts.append(text[start:index])
+            start = index + 1
+    parts.append(text[start:])
+    return parts
 
 
 def _ground_atom_signature(text: str) -> tuple[str, tuple[str, ...]]:
@@ -349,6 +500,7 @@ def _ground_compact_tables(
     state_fluent: str,
     objects: dict[str, tuple[str, ...]],
     action_pvariables: frozenset[str],
+    action_fluents: Mapping[Action, frozenset[GroundAtom]],
 ) -> _GroundedTables:
     """Ground supported compact RDDL semantics into tables. / 将已支持的紧凑 RDDL 语义 grounding 成表。"""
     cpf = _state_cpf(document.domain, state_fluent)
@@ -381,6 +533,7 @@ def _ground_compact_tables(
         fluent_values=fluent_values,
         objects=objects,
         action_pvariables=action_pvariables,
+        action_fluents_by_action=action_fluents,
     )
     rewards = _ground_rewards(
         states=states,
@@ -391,11 +544,128 @@ def _ground_compact_tables(
         fluent_values=fluent_values,
         objects=objects,
         action_pvariables=action_pvariables,
+        action_fluents_by_action=action_fluents,
     )
     return _GroundedTables(
         transitions=transitions,
         rewards=rewards,
         compiler_mode="grounded-rddl-expressions",
+    )
+
+
+def _ground_factored_model(
+    *,
+    document: _RDDLDocument,
+    state_variables: list[_PVariable],
+    action_variables: list[_PVariable],
+    objects: dict[str, tuple[str, ...]],
+    actions: tuple[Action, ...],
+    action_fluents: Mapping[Action, frozenset[GroundAtom]],
+    action_pvariables: frozenset[str],
+) -> _FactoredGrounding:
+    """Ground small boolean factored RDDL into explicit finite tables. / 将小型布尔 factored RDDL grounding 成显式有限表。"""
+    state_atoms = _ground_pvariable_atoms(state_variables, objects)
+    observ_variables = _observ_variables(_pvariables(document.domain))
+    observation_atoms = _ground_pvariable_atoms(observ_variables, objects)
+    state_pvariables = frozenset(pvar.name for pvar in state_variables)
+    observation_pvariables = frozenset(pvar.name for pvar in observ_variables)
+    fluent_values = _non_fluent_values(document, objects)
+    non_fluents = frozenset(
+        key for key, value in fluent_values.items() if isinstance(value, bool) and value
+    )
+    state_cpfs = _cpfs_by_name(document.domain, state_pvariables)
+    missing_state_cpfs = [name for name in state_pvariables if name not in state_cpfs]
+    if missing_state_cpfs:
+        raise RDDLCompileError(f"Missing CPF(s) for state fluent(s): {missing_state_cpfs!r}.")
+    observation_cpfs = _cpfs_by_name(document.domain, observation_pvariables)
+    missing_observation_cpfs = [name for name in observation_pvariables if name not in observation_cpfs]
+    if missing_observation_cpfs:
+        raise RDDLCompileError(
+            f"Missing CPF(s) for observ-fluent(s): {missing_observation_cpfs!r}."
+        )
+
+    states = _enumerate_atom_valuations(state_atoms)
+    observations: tuple[Observation, ...]
+    observations = _enumerate_atom_valuations(observation_atoms) if observation_atoms else states
+    initial_state = _initial_factored_state(document.instance, state_atoms, state_variables)
+    initial_belief = {state: (1.0 if state == initial_state else 0.0) for state in states}
+
+    transition_exprs = {
+        name: parse_expression(cpf.expression) for name, cpf in state_cpfs.items()
+    }
+    observation_exprs = {
+        name: parse_expression(cpf.expression) for name, cpf in observation_cpfs.items()
+    }
+    reward_expr = parse_expression(_assignment(document.domain, "reward") or "0")
+
+    transitions = _ground_factored_transitions(
+        states=states,
+        state_atoms=state_atoms,
+        actions=actions,
+        action_fluents=action_fluents,
+        state_cpfs=state_cpfs,
+        transition_exprs=transition_exprs,
+        state_pvariables=state_pvariables,
+        action_pvariables=action_pvariables,
+        non_fluents=non_fluents,
+        fluent_values=fluent_values,
+        objects=objects,
+    )
+    rewards = _ground_factored_rewards(
+        states=states,
+        actions=actions,
+        action_fluents=action_fluents,
+        reward_expr=reward_expr,
+        state_pvariables=state_pvariables,
+        action_pvariables=action_pvariables,
+        non_fluents=non_fluents,
+        fluent_values=fluent_values,
+        objects=objects,
+    )
+    if observation_atoms:
+        observation_model = _ground_factored_observations(
+            states=states,
+            observations=observations,
+            observation_atoms=observation_atoms,
+            actions=actions,
+            action_fluents=action_fluents,
+            observation_cpfs=observation_cpfs,
+            observation_exprs=observation_exprs,
+            state_pvariables=state_pvariables,
+            observation_pvariables=observation_pvariables,
+            action_pvariables=action_pvariables,
+            non_fluents=non_fluents,
+            fluent_values=fluent_values,
+            objects=objects,
+        )
+        reset_observation_model = _ground_reset_observations(
+            states=states,
+            observations=observations,
+            observation_atoms=observation_atoms,
+            observation_cpfs=observation_cpfs,
+            observation_exprs=observation_exprs,
+            state_pvariables=state_pvariables,
+            observation_pvariables=observation_pvariables,
+            action_pvariables=action_pvariables,
+            non_fluents=non_fluents,
+            fluent_values=fluent_values,
+            objects=objects,
+        )
+    else:
+        observation_model = _identity_observations(observations, actions)
+        reset_observation_model = {
+            (observation, state): 1.0 if observation == state else 0.0
+            for observation in observations
+            for state in states
+        }
+    return _FactoredGrounding(
+        states=states,
+        observations=observations,
+        transitions=transitions,
+        observation_model=observation_model,
+        reset_observation_model=reset_observation_model,
+        rewards=rewards,
+        initial_belief=initial_belief,
     )
 
 
@@ -422,6 +692,384 @@ def _state_cpf(domain: RDDLASTNode, state_fluent: str) -> _StateCPF | None:
                 raise RDDLCompileError(f"State CPF {name!r} must have one compact object parameter.")
             return _StateCPF(parameter=parameters[0], expression=expression.strip())
     return None
+
+
+def _cpfs_by_name(domain: RDDLASTNode, names: frozenset[str]) -> dict[str, _CPF]:
+    """Return CPF definitions keyed by fluent name. / 按 fluent 名称返回 CPF 定义。"""
+    block = _child_block(domain, "cpfs")
+    if block is None:
+        return {}
+    result: dict[str, _CPF] = {}
+    for statement in block.children:
+        left, separator, expression = statement.label.partition("=")
+        if not separator:
+            continue
+        name, parameters = _signature(left.strip())
+        base_name = name.rstrip("'")
+        if base_name in names:
+            result[base_name] = _CPF(
+                name=base_name,
+                parameters=parameters,
+                expression=expression.strip(),
+            )
+    return result
+
+
+def _ground_pvariable_atoms(
+    pvariables: list[_PVariable], objects: dict[str, tuple[str, ...]]
+) -> tuple[GroundAtom, ...]:
+    """Ground pvariables into canonical atom signatures. / 将 pvariable grounding 成标准 atom 签名。"""
+    atoms: list[GroundAtom] = []
+    for pvar in pvariables:
+        if not pvar.parameters:
+            atoms.append((pvar.name, ()))
+            continue
+        domains: list[tuple[str, ...]] = []
+        for parameter in pvar.parameters:
+            if parameter not in objects:
+                raise RDDLCompileError(
+                    f"Parameter type {parameter!r} for {pvar.name!r} has no objects."
+                )
+            domains.append(objects[parameter])
+        for values in product(*domains):
+            atoms.append((pvar.name, tuple(values)))
+    return tuple(atoms)
+
+
+def _enumerate_atom_valuations(atoms: tuple[GroundAtom, ...]) -> tuple[str, ...]:
+    """Enumerate active-atom tuple states for boolean fluents. / 枚举布尔 fluent 的 active-atom tuple 状态。"""
+    states: list[str] = []
+    for flags in product((False, True), repeat=len(atoms)):
+        active = (
+            (name, parameters)
+            for (name, parameters), is_active in zip(atoms, flags, strict=True)
+            if is_active
+        )
+        states.append(_format_atom_valuation(tuple(active)))
+    return tuple(states)
+
+
+def _initial_factored_state(
+    instance: RDDLASTNode,
+    state_atoms: tuple[GroundAtom, ...],
+    state_variables: list[_PVariable],
+) -> State:
+    """Build the deterministic factored initial state from init-state. / 从 init-state 构建确定性 factored 初始状态。"""
+    atom_set = set(state_atoms)
+    values = {
+        atom: bool(_default_for_atom(atom, state_variables))
+        for atom in state_atoms
+    }
+    block = _child_block(instance, "init-state")
+    if block is not None:
+        for statement in block.children:
+            left, separator, raw_value = statement.label.partition("=")
+            name, parameters = _signature(left.strip())
+            atom = (name, tuple(_object_name(parameter) for parameter in parameters))
+            if atom not in atom_set:
+                raise RDDLCompileError(f"Initial state atom {left.strip()!r} is not a state fluent.")
+            values[atom] = bool(_literal_value(raw_value.strip())) if separator else True
+    return _format_atom_valuation(
+        tuple((name, parameters) for name, parameters in state_atoms if values[(name, parameters)])
+    )
+
+
+def _default_for_atom(atom: GroundAtom, pvariables: list[_PVariable]) -> ExpressionValue:
+    """Return the declared default for one grounded atom. / 返回一个 grounded atom 的声明默认值。"""
+    name, _parameters = atom
+    for pvar in pvariables:
+        if pvar.name == name:
+            return pvar.default
+    return False
+
+
+def _atoms_from_state(state: State) -> frozenset[GroundAtom]:
+    """Parse a factored state tuple into active atoms. / 将 factored state tuple 解析为 active atom。"""
+    if isinstance(state, tuple):
+        return frozenset(_ground_atom_signature(atom) for atom in state)
+    text = str(state).strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        return frozenset()
+    inner = text[1:-1].strip()
+    if not inner:
+        return frozenset()
+    return frozenset(
+        _ground_atom_signature(atom.strip()) for atom in _split_top_level_commas(inner) if atom.strip()
+    )
+
+
+def _context_for_state_action(
+    *,
+    state: State,
+    action: Action,
+    actions: tuple[Action, ...],
+    action_fluents: Mapping[Action, frozenset[GroundAtom]],
+    state_pvariables: frozenset[str],
+    action_pvariables: frozenset[str],
+    non_fluents: frozenset[tuple[str, tuple[str, ...]]],
+    fluent_values: dict[tuple[str, tuple[str, ...]], ExpressionValue],
+    objects: dict[str, tuple[str, ...]],
+    variables: dict[str, str] | None = None,
+) -> EvaluationContext:
+    """Build an expression context for factored grounding. / 为 factored grounding 构建表达式上下文。"""
+    return EvaluationContext(
+        state_fluent="",
+        current_state=state,
+        action=action,
+        actions=actions,
+        non_fluents=non_fluents,
+        variables=variables or {},
+        fluent_values=fluent_values,
+        objects=objects,
+        state_atoms=_atoms_from_state(state),
+        state_pvariables=state_pvariables,
+        action_fluents=action_fluents.get(action, frozenset()),
+        action_pvariables=action_pvariables,
+    )
+
+
+def _ground_factored_transitions(
+    *,
+    states: tuple[State, ...],
+    state_atoms: tuple[GroundAtom, ...],
+    actions: tuple[Action, ...],
+    action_fluents: Mapping[Action, frozenset[GroundAtom]],
+    state_cpfs: Mapping[str, _CPF],
+    transition_exprs: Mapping[str, Any],
+    state_pvariables: frozenset[str],
+    action_pvariables: frozenset[str],
+    non_fluents: frozenset[tuple[str, tuple[str, ...]]],
+    fluent_values: dict[tuple[str, tuple[str, ...]], ExpressionValue],
+    objects: dict[str, tuple[str, ...]],
+) -> dict[TransitionKey, float]:
+    """Ground independent boolean state CPFs into transition probabilities. / 将独立布尔 state CPF grounding 为转移概率。"""
+    transitions: dict[TransitionKey, float] = {}
+    for source in states:
+        for action in actions:
+            true_probabilities = {
+                atom: _factored_atom_true_probability(
+                    atom,
+                    state_cpfs,
+                    transition_exprs,
+                    _context_for_state_action(
+                        state=source,
+                        action=action,
+                        actions=actions,
+                        action_fluents=action_fluents,
+                        state_pvariables=state_pvariables,
+                        action_pvariables=action_pvariables,
+                        non_fluents=non_fluents,
+                        fluent_values=fluent_values,
+                        objects=objects,
+                        variables=_variables_for_atom(atom, state_cpfs[atom[0]]),
+                    ),
+                )
+                for atom in state_atoms
+            }
+            for target in states:
+                target_atoms = _atoms_from_state(target)
+                probability = 1.0
+                for atom, true_probability in true_probabilities.items():
+                    probability *= true_probability if atom in target_atoms else 1.0 - true_probability
+                transitions[(source, action, target)] = probability
+    return transitions
+
+
+def _ground_factored_rewards(
+    *,
+    states: tuple[State, ...],
+    actions: tuple[Action, ...],
+    action_fluents: Mapping[Action, frozenset[GroundAtom]],
+    reward_expr: Any,
+    state_pvariables: frozenset[str],
+    action_pvariables: frozenset[str],
+    non_fluents: frozenset[tuple[str, tuple[str, ...]]],
+    fluent_values: dict[tuple[str, tuple[str, ...]], ExpressionValue],
+    objects: dict[str, tuple[str, ...]],
+) -> dict[RewardKey, float]:
+    """Ground reward over factored states and action sets. / 在 factored state 和 action 集上 grounding reward。"""
+    rewards: dict[RewardKey, float] = {}
+    for state in states:
+        for action in actions:
+            context = _context_for_state_action(
+                state=state,
+                action=action,
+                actions=actions,
+                action_fluents=action_fluents,
+                state_pvariables=state_pvariables,
+                action_pvariables=action_pvariables,
+                non_fluents=non_fluents,
+                fluent_values=fluent_values,
+                objects=objects,
+            )
+            rewards[(state, action)] = float(reward_expr.evaluate(context))
+    return rewards
+
+
+def _ground_factored_observations(
+    *,
+    states: tuple[State, ...],
+    observations: tuple[Observation, ...],
+    observation_atoms: tuple[GroundAtom, ...],
+    actions: tuple[Action, ...],
+    action_fluents: Mapping[Action, frozenset[GroundAtom]],
+    observation_cpfs: Mapping[str, _CPF],
+    observation_exprs: Mapping[str, Any],
+    state_pvariables: frozenset[str],
+    observation_pvariables: frozenset[str],
+    action_pvariables: frozenset[str],
+    non_fluents: frozenset[tuple[str, tuple[str, ...]]],
+    fluent_values: dict[tuple[str, tuple[str, ...]], ExpressionValue],
+    objects: dict[str, tuple[str, ...]],
+) -> dict[ObservationKey, float]:
+    """Ground observation CPFs into P(observation | state, action). / 将观测 CPF grounding 成 P(observation | state, action)。"""
+    model: dict[ObservationKey, float] = {}
+    for state in states:
+        for action in actions:
+            true_probabilities = _observation_true_probabilities(
+                state=state,
+                action=action,
+                actions=actions,
+                action_fluents=action_fluents,
+                observation_atoms=observation_atoms,
+                observation_cpfs=observation_cpfs,
+                observation_exprs=observation_exprs,
+                state_pvariables=state_pvariables,
+                observation_pvariables=observation_pvariables,
+                action_pvariables=action_pvariables,
+                non_fluents=non_fluents,
+                fluent_values=fluent_values,
+                objects=objects,
+            )
+            for observation in observations:
+                model[(observation, state, action)] = _factored_observation_probability(
+                    observation, true_probabilities
+                )
+    return model
+
+
+def _ground_reset_observations(
+    *,
+    states: tuple[State, ...],
+    observations: tuple[Observation, ...],
+    observation_atoms: tuple[GroundAtom, ...],
+    observation_cpfs: Mapping[str, _CPF],
+    observation_exprs: Mapping[str, Any],
+    state_pvariables: frozenset[str],
+    observation_pvariables: frozenset[str],
+    action_pvariables: frozenset[str],
+    non_fluents: frozenset[tuple[str, tuple[str, ...]]],
+    fluent_values: dict[tuple[str, tuple[str, ...]], ExpressionValue],
+    objects: dict[str, tuple[str, ...]],
+) -> dict[tuple[Observation, State], float]:
+    """Ground reset observation probabilities without active actions. / 在无活动 action 下 grounding reset observation 概率。"""
+    model: dict[tuple[Observation, State], float] = {}
+    reset_action = "__reset__"
+    for state in states:
+        true_probabilities = _observation_true_probabilities(
+            state=state,
+            action=reset_action,
+            actions=(reset_action,),
+            action_fluents={reset_action: frozenset()},
+            observation_atoms=observation_atoms,
+            observation_cpfs=observation_cpfs,
+            observation_exprs=observation_exprs,
+            state_pvariables=state_pvariables,
+            observation_pvariables=observation_pvariables,
+            action_pvariables=action_pvariables,
+            non_fluents=non_fluents,
+            fluent_values=fluent_values,
+            objects=objects,
+        )
+        for observation in observations:
+            model[(observation, state)] = _factored_observation_probability(
+                observation, true_probabilities
+            )
+    return model
+
+
+def _observation_true_probabilities(
+    *,
+    state: State,
+    action: Action,
+    actions: tuple[Action, ...],
+    action_fluents: Mapping[Action, frozenset[GroundAtom]],
+    observation_atoms: tuple[GroundAtom, ...],
+    observation_cpfs: Mapping[str, _CPF],
+    observation_exprs: Mapping[str, Any],
+    state_pvariables: frozenset[str],
+    observation_pvariables: frozenset[str],
+    action_pvariables: frozenset[str],
+    non_fluents: frozenset[tuple[str, tuple[str, ...]]],
+    fluent_values: dict[tuple[str, tuple[str, ...]], ExpressionValue],
+    objects: dict[str, tuple[str, ...]],
+) -> dict[GroundAtom, float]:
+    """Evaluate every observation atom's true probability. / 求值每个 observation atom 为真的概率。"""
+    return {
+        atom: _factored_atom_true_probability(
+            atom,
+            observation_cpfs,
+            observation_exprs,
+            _context_for_state_action(
+                state=state,
+                action=action,
+                actions=actions,
+                action_fluents=action_fluents,
+                state_pvariables=state_pvariables | observation_pvariables,
+                action_pvariables=action_pvariables,
+                non_fluents=non_fluents,
+                fluent_values=fluent_values,
+                objects=objects,
+                variables=_variables_for_atom(atom, observation_cpfs[atom[0]]),
+            ),
+        )
+        for atom in observation_atoms
+    }
+
+
+def _factored_atom_true_probability(
+    atom: GroundAtom,
+    cpfs: Mapping[str, _CPF],
+    expressions: Mapping[str, Any],
+    context: EvaluationContext,
+) -> float:
+    """Evaluate a boolean CPF as a true probability. / 将布尔 CPF 求值为 true 概率。"""
+    name, _parameters = atom
+    if name not in cpfs:
+        raise RDDLCompileError(f"Missing CPF for fluent {name!r}.")
+    value = expressions[name].evaluate(context)
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, (int, float)):
+        probability = float(value)
+        if probability < -1e-12 or probability > 1.0 + 1e-12:
+            raise RDDLCompileError(
+                f"CPF for atom {_format_ground_atom(*atom)!r} returned probability {probability}."
+            )
+        return min(1.0, max(0.0, probability))
+    return 1.0 if _object_name(value).lower() == "true" else 0.0
+
+
+def _variables_for_atom(atom: GroundAtom, cpf: _CPF) -> dict[str, str]:
+    """Bind CPF parameters to one grounded atom. / 将 CPF 参数绑定到一个 grounded atom。"""
+    _name, parameters = atom
+    if len(parameters) != len(cpf.parameters):
+        raise RDDLCompileError(
+            f"CPF {cpf.name!r} expects {len(cpf.parameters)} parameter(s), "
+            f"but atom has {len(parameters)}."
+        )
+    return {variable: value for variable, value in zip(cpf.parameters, parameters, strict=True)}
+
+
+def _factored_observation_probability(
+    observation: Observation, true_probabilities: Mapping[GroundAtom, float]
+) -> float:
+    """Return probability for one active-observation tuple. / 返回某个 active-observation tuple 的概率。"""
+    active_atoms = _atoms_from_state(observation)
+    probability = 1.0
+    for atom, true_probability in true_probabilities.items():
+        probability *= true_probability if atom in active_atoms else 1.0 - true_probability
+    return probability
 
 
 def _non_fluent_values(
@@ -482,6 +1130,7 @@ def _ground_state_transitions(
     fluent_values: dict[tuple[str, tuple[str, ...]], ExpressionValue],
     objects: dict[str, tuple[str, ...]],
     action_pvariables: frozenset[str],
+    action_fluents_by_action: Mapping[Action, frozenset[GroundAtom]],
 ) -> dict[TransitionKey, float]:
     """Evaluate one compact state CPF into transition probabilities. / 将一个紧凑 state CPF 求值为转移概率。"""
     transitions = {(source, action, target): 0.0 for source in states for action in actions for target in states}
@@ -489,7 +1138,6 @@ def _ground_state_transitions(
         for action in actions:
             probabilities: list[tuple[State, float]] = []
             for target in states:
-                action_name, action_parameters = _ground_atom_signature(action)
                 context = EvaluationContext(
                     state_fluent=state_fluent,
                     current_state=source,
@@ -499,7 +1147,9 @@ def _ground_state_transitions(
                     variables={cpf_parameter: str(target)},
                     fluent_values=fluent_values,
                     objects=objects,
-                    action_fluents=frozenset({(action_name, action_parameters)}),
+                    state_atoms=frozenset({(state_fluent, (str(source),))}),
+                    state_pvariables=frozenset({state_fluent}),
+                    action_fluents=action_fluents_by_action.get(action, frozenset()),
                     action_pvariables=action_pvariables,
                 )
                 probabilities.append((target, _transition_probability(expression.evaluate(context), target)))
@@ -536,12 +1186,12 @@ def _ground_rewards(
     fluent_values: dict[tuple[str, tuple[str, ...]], ExpressionValue],
     objects: dict[str, tuple[str, ...]],
     action_pvariables: frozenset[str],
+    action_fluents_by_action: Mapping[Action, frozenset[GroundAtom]],
 ) -> dict[RewardKey, float]:
     """Evaluate the reward expression for every compact state-action pair. / 对每个紧凑 state-action 对求值 reward。"""
     rewards: dict[RewardKey, float] = {}
     for state in states:
         for action in actions:
-            action_name, action_parameters = _ground_atom_signature(action)
             context = EvaluationContext(
                 state_fluent=state_fluent,
                 current_state=state,
@@ -551,7 +1201,9 @@ def _ground_rewards(
                 variables={},
                 fluent_values=fluent_values,
                 objects=objects,
-                action_fluents=frozenset({(action_name, action_parameters)}),
+                state_atoms=frozenset({(state_fluent, (str(state),))}),
+                state_pvariables=frozenset({state_fluent}),
+                action_fluents=action_fluents_by_action.get(action, frozenset()),
                 action_pvariables=action_pvariables,
             )
             rewards[(state, action)] = float(expression.evaluate(context))

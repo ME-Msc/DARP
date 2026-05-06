@@ -49,6 +49,8 @@ class LocalSimulator:
         """Apply one action and return observation, reward, done, info. / 执行动作并返回 observation、reward、done、info。"""
         if action not in self.problem.actions:
             raise ValueError(f"Unknown action {action!r}; expected one of {self.problem.actions!r}.")
+        if not self.problem.is_action_allowed(action):
+            raise ValueError(f"Action {action!r} violates the problem action constraints.")
         if self.state is None:
             self.reset()
         assert self.state is not None

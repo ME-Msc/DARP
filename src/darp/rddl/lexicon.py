@@ -1,7 +1,7 @@
 """Shared RDDL lexical constants for parsing and display."""
 
-# TODO(phase-4.1): Extend these constants when the compiler moves from compact
-# grounding to a fuller factored RDDL grammar.
+# TODO(phase-9.4): Extend these constants when DARP-RDDL adds native durative
+# action syntax.
 
 from __future__ import annotations
 

@@ -7,6 +7,8 @@ from darp.rddl.loader import RDDLLoader
 
 DOMAIN = "examples/rddl/tiny_grid_domain.rddl"
 INSTANCE = "examples/rddl/tiny_grid_instance.rddl"
+FACTORED_DOMAIN = "examples/rddl/factored_door_domain.rddl"
+FACTORED_INSTANCE = "examples/rddl/factored_door_instance.rddl"
 
 
 def test_tiny_grid_transitions_are_grounded_from_cpfs():
@@ -118,6 +120,22 @@ def test_grounding_supports_parameterized_actions_and_object_cpfs(tmp_path):
     assert problem.transition_prob("b", "choose(a)", "a") == 1.0
     assert problem.reward("a", "choose(b)") == 5.0
     assert problem.reward("a", "choose(a)") == 0.0
+
+
+def test_factored_grounding_supports_stochastic_cpfs_and_observations():
+    """Check factored stochastic transition and noisy observation grounding. / 检查 factored 随机转移和噪声观测 grounding。"""
+    loaded = RDDLLoader("darp").load(FACTORED_DOMAIN, FACTORED_INSTANCE)
+    problem = RDDLCompiler().compile(loaded)
+
+    assert problem.transition_prob("{}", "pick-key", "{has-key}") == 1.0
+    assert problem.transition_prob("{has-key}", "open-door", "{has-key,door-open}") == 0.8
+    assert round(problem.transition_prob("{has-key}", "open-door", "{has-key}"), 6) == 0.2
+    assert problem.transition_prob("{}", "open-door", "{}") == 1.0
+    assert problem.observation_prob("{heard-open}", "{door-open}", "wait") == 0.9
+    assert problem.observation_prob("{heard-open}", "{}", "wait") == 0.2
+    assert problem.initial_observation_prob("{heard-open}", "{}") == 0.2
+    assert problem.reward("{door-open}", "wait") == 10.0
+    assert problem.reward("{}", "pick-key") == -1.0
 
 
 def _write_rddl_pair(tmp_path: Path, domain_text: str, instance_text: str) -> tuple[Path, Path]:
