@@ -39,6 +39,8 @@ H_GAP = 42
 V_GAP = 92
 MARGIN_X = 36
 MARGIN_Y = 32
+MAX_COLLAPSED_CHILD_LINES = 5
+MAX_COLLAPSED_LINE_LENGTH = 70
 
 TOKEN_PATTERN = re.compile(
     r"\s+|==|!=|<=|>=|\d+(?:\.\d+)?|@[A-Za-z0-9_-]+|\?[A-Za-z0-9_-]+|"
@@ -73,8 +75,11 @@ class _VisualNode:
     node: RDDLASTNode
     node_id: str
     lines: tuple[_VisualLine, ...]
+    collapsed_lines: tuple[_VisualLine, ...]
     width: float
     height: float
+    collapsed_width: float
+    collapsed_height: float
 
 
 @dataclass(frozen=True)
@@ -108,8 +113,17 @@ def render_html(
 </head>
 <body>
   <header>
-    <h1>{escaped_title}</h1>
-    <div class="summary">{summary}</div>
+    <div class="header-main">
+      <div>
+        <h1>{escaped_title}</h1>
+        <div class="summary">{summary}</div>
+      </div>
+      <div class="panel-toggles" role="toolbar" aria-label="Panel visibility">
+        <button id="toggle-source-panel" type="button" aria-pressed="true">Source</button>
+        <button id="toggle-ast-panel" type="button" aria-pressed="true">AST</button>
+        <button id="toggle-runtime-panel" type="button" aria-pressed="true">Runtime</button>
+      </div>
+    </div>
   </header>
   <main class="{workspace_class}">
     <aside class="text-panel" aria-label="RDDL source text">
@@ -224,6 +238,12 @@ def _build_visual_data(
                 [{"text": token.text, "className": token.css_class} for token in line.tokens]
                 for line in visual.lines
             ],
+            "collapsedLines": [
+                [{"text": token.text, "className": token.css_class} for token in line.tokens]
+                for line in visual.collapsed_lines
+            ],
+            "collapsedWidth": round(visual.collapsed_width, 1),
+            "collapsedHeight": round(visual.collapsed_height, 1),
         }
         nodes.append(payload)
         if node.kind == "file":
@@ -276,7 +296,7 @@ def _file_payload(file_id: str, path: str) -> dict[str, object]:
 
 def _search_text(node: RDDLASTNode, visual: _VisualNode, depth: int) -> str:
     """Build searchable text for one AST node. / 为单个 AST 节点构建可搜索文本。"""
-    rendered = " ".join(line.text for line in visual.lines)
+    rendered = " ".join(line.text for line in (*visual.lines, *visual.collapsed_lines))
     return f"{node.kind} {node.label} {rendered} depth:{depth}"
 
 
@@ -666,6 +686,9 @@ def _styles() -> str:
     * {
       box-sizing: border-box;
     }
+    [hidden] {
+      display: none !important;
+    }
     body {
       margin: 0;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -681,6 +704,12 @@ def _styles() -> str:
       z-index: 2;
       backdrop-filter: blur(8px);
     }
+    .header-main {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+    }
     h1 {
       font-size: 22px;
       margin: 0 0 6px;
@@ -690,6 +719,32 @@ def _styles() -> str:
       color: var(--muted);
       font-size: 13px;
       margin-bottom: 0;
+    }
+    .panel-toggles {
+      display: inline-flex;
+      flex: 0 0 auto;
+      align-items: center;
+      gap: 6px;
+      padding: 5px;
+      border: 1px solid #d7e1ea;
+      border-radius: 8px;
+      background: #f8fbfd;
+    }
+    .panel-toggles button {
+      min-width: 72px;
+      height: 30px;
+      padding: 0 9px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .panel-toggles button[aria-pressed="true"] {
+      border-color: #0284c7;
+      background: #e8f4ff;
+      color: #075985;
+    }
+    .panel-toggles button[disabled] {
+      cursor: not-allowed;
+      opacity: 0.45;
     }
     .ast-tools {
       flex: 0 0 auto;
@@ -1013,10 +1068,20 @@ def _styles() -> str:
     }
     .canvas {
       flex: 1 1 auto;
-      width: max-content;
-      min-width: 100%;
+      width: 100%;
+      min-width: 0;
       padding: 12px;
       overflow: auto;
+      cursor: grab;
+      touch-action: none;
+    }
+    .canvas svg {
+      cursor: inherit;
+      touch-action: none;
+    }
+    .canvas.ast-panning {
+      cursor: grabbing;
+      user-select: none;
     }
     .runtime-panel {
       min-width: 0;
@@ -1253,6 +1318,9 @@ def _styles() -> str:
     .node {
       cursor: pointer;
     }
+    .node-collapsed .node-card {
+      stroke-dasharray: 5 4;
+    }
     .node-card {
       fill: var(--panel);
       stroke: var(--node-border);
@@ -1322,6 +1390,10 @@ def _styles() -> str:
       fill: #172534;
       pointer-events: none;
     }
+    .collapsed-summary {
+      fill: #52677c;
+      font-size: 11px;
+    }
     .toggle-button {
       cursor: pointer;
     }
@@ -1390,6 +1462,10 @@ def _styles() -> str:
       cursor: grabbing;
       user-select: none;
     }
+    body.is-panning-ast {
+      cursor: grabbing;
+      user-select: none;
+    }
     """
 
 
@@ -1400,11 +1476,18 @@ def _script() -> str:
       const SVG_NS = "http://www.w3.org/2000/svg";
       const data = JSON.parse(document.getElementById("ast-data").textContent);
       const workspace = document.querySelector("main.workspace");
+      const sourcePanel = document.querySelector(".text-panel");
+      const graphPanel = document.querySelector(".graph-panel");
+      const runtimePanel = document.querySelector(".runtime-panel");
       const svg = document.getElementById("ast-svg");
+      const canvas = document.getElementById("canvas");
       const outline = document.getElementById("text-outline");
       const splitResizer = document.getElementById("split-resizer");
       const runtimeResizer = document.getElementById("runtime-resizer");
       const runtimeRoot = document.getElementById("runtime-root");
+      const toggleSourcePanel = document.getElementById("toggle-source-panel");
+      const toggleAstPanel = document.getElementById("toggle-ast-panel");
+      const toggleRuntimePanel = document.getElementById("toggle-runtime-panel");
       const depthInput = document.getElementById("depth-input");
       const searchInput = document.getElementById("search-input");
       const matchCaseInput = document.getElementById("match-case");
@@ -1422,6 +1505,14 @@ def _script() -> str:
       let focusPulseId = null;
       let searchError = "";
       let zoom = 1;
+      let latestAstLayout = null;
+      let astPan = { x: 0, y: 0 };
+      let suppressNextAstClick = false;
+      const panelVisible = {
+        source: true,
+        ast: true,
+        runtime: Boolean(runtimePanel),
+      };
       let runtimeState = data.runtime && data.runtime.snapshot ? data.runtime.snapshot : null;
       let runtimeGraphZoom = 1;
       let runtimeResizeObserver = null;
@@ -1607,6 +1698,81 @@ def _script() -> str:
         }
       }
 
+      function setupPanelToggles() {
+        toggleSourcePanel.addEventListener("click", () => togglePanel("source"));
+        toggleAstPanel.addEventListener("click", () => togglePanel("ast"));
+        if (runtimePanel) {
+          toggleRuntimePanel.addEventListener("click", () => togglePanel("runtime"));
+        } else {
+          toggleRuntimePanel.disabled = true;
+          toggleRuntimePanel.setAttribute("aria-pressed", "false");
+          toggleRuntimePanel.title = "Runtime panel is only available with DARP internal simulator";
+        }
+        updatePanelVisibility();
+      }
+
+      function togglePanel(name) {
+        if (!panelVisible[name]) {
+          panelVisible[name] = true;
+        } else if (visiblePanelCount() > 1) {
+          panelVisible[name] = false;
+        }
+        updatePanelVisibility();
+      }
+
+      function visiblePanelCount() {
+        return Number(panelVisible.source) + Number(panelVisible.ast) + Number(panelVisible.runtime);
+      }
+
+      function updatePanelVisibility() {
+        sourcePanel.hidden = !panelVisible.source;
+        graphPanel.hidden = !panelVisible.ast;
+        splitResizer.hidden = !(panelVisible.source && panelVisible.ast);
+        if (runtimePanel) {
+          runtimePanel.hidden = !panelVisible.runtime;
+        }
+        if (runtimeResizer) {
+          runtimeResizer.hidden = !(panelVisible.ast && panelVisible.runtime);
+        }
+        toggleSourcePanel.setAttribute("aria-pressed", String(panelVisible.source));
+        toggleAstPanel.setAttribute("aria-pressed", String(panelVisible.ast));
+        if (runtimePanel) {
+          toggleRuntimePanel.setAttribute("aria-pressed", String(panelVisible.runtime));
+        }
+        const onlyOnePanelVisible = visiblePanelCount() <= 1;
+        toggleSourcePanel.disabled = panelVisible.source && onlyOnePanelVisible;
+        toggleAstPanel.disabled = panelVisible.ast && onlyOnePanelVisible;
+        if (runtimePanel) {
+          toggleRuntimePanel.disabled = panelVisible.runtime && onlyOnePanelVisible;
+        }
+        const columns = [];
+        if (panelVisible.source) {
+          columns.push("minmax(280px, var(--source-width, 28vw))");
+        }
+        if (panelVisible.source && panelVisible.ast) {
+          columns.push("10px");
+        }
+        if (panelVisible.ast) {
+          columns.push("minmax(360px, 1fr)");
+        }
+        if (panelVisible.ast && panelVisible.runtime) {
+          columns.push("10px");
+        }
+        if (panelVisible.runtime) {
+          columns.push("minmax(300px, var(--runtime-width, 28vw))");
+        }
+        workspace.style.gridTemplateColumns = columns.join(" ") || "minmax(360px, 1fr)";
+        workspace.classList.toggle("source-hidden", !panelVisible.source);
+        workspace.classList.toggle("ast-hidden", !panelVisible.ast);
+        workspace.classList.toggle("runtime-hidden", !panelVisible.runtime);
+        if (panelVisible.ast) {
+          window.requestAnimationFrame(render);
+        }
+        if (panelVisible.runtime) {
+          window.requestAnimationFrame(refreshRuntime);
+        }
+      }
+
       function setupSplitResizer() {
         splitResizer.addEventListener("pointerdown", (event) => {
           event.preventDefault();
@@ -1667,6 +1833,100 @@ def _script() -> str:
         });
       }
 
+      function setupAstCanvasPan() {
+        canvas.addEventListener("pointerdown", (event) => {
+          if (event.button !== 0 || closestFromEvent(event, ".toggle-button")) {
+            return;
+          }
+          const startX = event.clientX;
+          const startY = event.clientY;
+          const startPan = { x: astPan.x, y: astPan.y };
+          let didDrag = false;
+          canvas.classList.add("ast-panning");
+          document.body.classList.add("is-panning-ast");
+
+          const onMove = (moveEvent) => {
+            const deltaX = moveEvent.clientX - startX;
+            const deltaY = moveEvent.clientY - startY;
+            if (Math.hypot(deltaX, deltaY) > 3) {
+              didDrag = true;
+              moveEvent.preventDefault();
+            }
+            astPan = {
+              x: startPan.x - deltaX / zoom,
+              y: startPan.y - deltaY / zoom,
+            };
+            applyAstViewBox();
+          };
+          const onUp = () => {
+            canvas.classList.remove("ast-panning");
+            document.body.classList.remove("is-panning-ast");
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
+            if (didDrag) {
+              suppressNextAstClick = true;
+              window.setTimeout(() => {
+                suppressNextAstClick = false;
+              }, 120);
+            }
+          };
+          window.addEventListener("pointermove", onMove);
+          window.addEventListener("pointerup", onUp, { once: true });
+        });
+      }
+
+      function closestFromEvent(event, selector) {
+        return event.target && event.target.closest ? event.target.closest(selector) : null;
+      }
+
+      function clampAstPan(layout = latestAstLayout) {
+        if (!layout) {
+          return;
+        }
+        const viewport = astViewport(layout);
+        const marginX = Math.max(120, viewport.viewWidth * 0.18);
+        const marginY = Math.max(120, viewport.viewHeight * 0.18);
+        astPan = {
+          x: clamp(
+            astPan.x,
+            Math.min(-marginX, layout.width - viewport.viewWidth - marginX),
+            Math.max(marginX, layout.width - viewport.viewWidth + marginX),
+          ),
+          y: clamp(
+            astPan.y,
+            Math.min(-marginY, layout.height - viewport.viewHeight - marginY),
+            Math.max(marginY, layout.height - viewport.viewHeight + marginY),
+          ),
+        };
+      }
+
+      function applyAstViewBox(layout = latestAstLayout) {
+        if (!layout) {
+          return null;
+        }
+        const viewport = astViewport(layout);
+        clampAstPan(layout);
+        svg.setAttribute(
+          "viewBox",
+          `${astPan.x.toFixed(1)} ${astPan.y.toFixed(1)} ${viewport.viewWidth.toFixed(1)} ${viewport.viewHeight.toFixed(1)}`,
+        );
+        return viewport;
+      }
+
+      function astViewport(layout) {
+        const bounds = canvas.getBoundingClientRect();
+        const visibleWidth = Math.max(320, Math.floor(bounds.width - 24));
+        const visibleHeight = Math.max(260, Math.floor(bounds.height - 24));
+        const displayWidth = Math.max(visibleWidth, Math.ceil(layout.width * zoom));
+        const displayHeight = Math.max(visibleHeight, Math.ceil(layout.height * zoom));
+        return {
+          displayWidth,
+          displayHeight,
+          viewWidth: displayWidth / zoom,
+          viewHeight: displayHeight / zoom,
+        };
+      }
+
       function escapeRegExp(value) {
         return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       }
@@ -1725,9 +1985,24 @@ def _script() -> str:
         }
       }
 
+      function nodeMetrics(node) {
+        const isCollapsed = node.children.length > 0 && !expanded.has(node.id);
+        const collapsedLines = node.collapsedLines || [];
+        const lines = isCollapsed && collapsedLines.length > 0
+          ? node.lines.concat(collapsedLines)
+          : node.lines;
+        return {
+          isCollapsed,
+          width: isCollapsed ? (node.collapsedWidth || node.width) : node.width,
+          height: isCollapsed ? (node.collapsedHeight || node.height) : node.height,
+          lines,
+        };
+      }
+
       function measureVisibleTree(id, depth, levelHeights) {
         const node = nodes.get(id);
-        levelHeights.set(depth, Math.max(levelHeights.get(depth) || 0, node.height));
+        const metrics = nodeMetrics(node);
+        levelHeights.set(depth, Math.max(levelHeights.get(depth) || 0, metrics.height));
         const childBranches = expanded.has(id)
           ? node.children.map((childId) => measureVisibleTree(childId, depth + 1, levelHeights))
           : [];
@@ -1739,17 +2014,20 @@ def _script() -> str:
           id,
           depth,
           children: childBranches,
-          subtreeWidth: Math.max(node.width, childWidth),
+          width: metrics.width,
+          height: metrics.height,
+          subtreeWidth: Math.max(metrics.width, childWidth),
         };
       }
 
       function placeVisibleTree(branch, left, levelY, placements, edges) {
-        const node = nodes.get(branch.id);
         const centerX = left + branch.subtreeWidth / 2;
         placements.push({
           id: branch.id,
-          x: centerX - node.width / 2,
+          x: centerX - branch.width / 2,
           y: levelY.get(branch.depth),
+          width: branch.width,
+          height: branch.height,
         });
         if (branch.children.length === 0) {
           return;
@@ -1787,24 +2065,23 @@ def _script() -> str:
 
       function render() {
         const layout = layoutVisible();
+        latestAstLayout = layout;
         const placementById = new Map(layout.placements.map((placement) => [placement.id, placement]));
         const visibleIds = new Set(layout.placements.map((placement) => placement.id));
         svg.replaceChildren();
-        svg.setAttribute("viewBox", `0 0 ${Math.ceil(layout.width)} ${Math.ceil(layout.height)}`);
-        svg.setAttribute("width", String(Math.ceil(layout.width * zoom)));
-        svg.setAttribute("height", String(Math.ceil(layout.height * zoom)));
-        svg.style.width = `${Math.ceil(layout.width * zoom)}px`;
-        svg.style.height = `${Math.ceil(layout.height * zoom)}px`;
+        const viewport = applyAstViewBox(layout);
+        svg.setAttribute("width", String(viewport.displayWidth));
+        svg.setAttribute("height", String(viewport.displayHeight));
+        svg.style.width = `${viewport.displayWidth}px`;
+        svg.style.height = `${viewport.displayHeight}px`;
 
         const edgeLayer = makeSvg("g", { class: "edges" });
         for (const [parentId, childId] of layout.edges) {
-          const parent = nodes.get(parentId);
-          const child = nodes.get(childId);
           const parentPlace = placementById.get(parentId);
           const childPlace = placementById.get(childId);
-          const x1 = parentPlace.x + parent.width / 2;
-          const y1 = parentPlace.y + parent.height;
-          const x2 = childPlace.x + child.width / 2;
+          const x1 = parentPlace.x + parentPlace.width / 2;
+          const y1 = parentPlace.y + parentPlace.height;
+          const x2 = childPlace.x + childPlace.width / 2;
           const y2 = childPlace.y;
           const midY = (y1 + y2) / 2;
           edgeLayer.appendChild(makeSvg("path", {
@@ -1825,10 +2102,14 @@ def _script() -> str:
 
       function renderNode(node, placement) {
         const classes = ["node", node.cssClass];
+        const metrics = nodeMetrics(node);
         const isMatch = matchIds.includes(node.id);
         const isActiveMatch = activeMatchIndex >= 0 && matchIds[activeMatchIndex] === node.id;
         const isSelected = selectedId === node.id;
         const isFocusPulse = focusPulseId === node.id;
+        if (metrics.isCollapsed) {
+          classes.push("node-collapsed");
+        }
         if (isMatch) {
           classes.push("node-match");
         }
@@ -1851,8 +2132,8 @@ def _script() -> str:
             class: "node-halo",
             x: -7,
             y: -7,
-            width: node.width + 14,
-            height: node.height + 14,
+            width: metrics.width + 14,
+            height: metrics.height + 14,
             rx: 13,
           }));
         }
@@ -1860,8 +2141,8 @@ def _script() -> str:
           class: "node-card",
           x: 0,
           y: 0,
-          width: node.width,
-          height: node.height,
+          width: metrics.width,
+          height: metrics.height,
           rx: 8,
         }));
         if (isMatch) {
@@ -1869,7 +2150,7 @@ def _script() -> str:
             class: isActiveMatch ? "match-bar active-match-bar" : "match-bar",
             x: 10,
             y: 5,
-            width: Math.max(24, node.width - 20),
+            width: Math.max(24, metrics.width - 20),
             height: 5,
             rx: 3,
           }));
@@ -1888,9 +2169,9 @@ def _script() -> str:
         badge.textContent = node.kind;
         group.appendChild(badge);
 
-        node.lines.forEach((line, lineIndex) => {
+        metrics.lines.forEach((line, lineIndex) => {
           const text = makeSvg("text", {
-            class: "label",
+            class: lineIndex >= node.lines.length ? "label collapsed-summary" : "label",
             x: data.layout.padX,
             y: data.layout.labelBaselineY + lineIndex * data.layout.lineHeight,
             "xml:space": "preserve",
@@ -1906,7 +2187,7 @@ def _script() -> str:
         if (node.children.length > 0) {
           const toggle = makeSvg("g", {
             class: "toggle-button",
-            transform: `translate(${node.width - 28} 8)`,
+            transform: `translate(${metrics.width - 28} 8)`,
             role: "button",
             tabindex: "0",
           });
@@ -1940,9 +2221,15 @@ def _script() -> str:
         }
 
         group.addEventListener("click", () => {
+          if (suppressNextAstClick) {
+            return;
+          }
           selectNode(node.id, { revealGraph: false, scrollGraph: false, scrollText: true, pulse: false });
         });
         group.addEventListener("dblclick", () => {
+          if (suppressNextAstClick) {
+            return;
+          }
           if (node.children.length > 0) {
             toggleExpanded(node.id);
           }
@@ -2872,9 +3159,15 @@ def _script() -> str:
           applySearch();
         }
       });
+      window.addEventListener("resize", () => {
+        if (panelVisible.ast && latestAstLayout) {
+          render();
+        }
+      });
 
       renderTextOutline();
       setupSplitResizer();
+      setupAstCanvasPan();
 
       if (data.totalNodes <= 60) {
         expandAll();
@@ -2883,6 +3176,7 @@ def _script() -> str:
       }
       render();
       refreshRuntime();
+      setupPanelToggles();
     })();
     """
 
@@ -2890,16 +3184,59 @@ def _script() -> str:
 def _make_visual_node(node: RDDLASTNode, node_id: str) -> _VisualNode:
     """Create display lines and dimensions for one AST node. / 为单个 AST 节点创建显示行和尺寸。"""
     visual_lines = _label_lines(node)
+    collapsed_lines = _collapsed_summary_lines(node)
     max_text_length = max([len(node.kind)] + [len(line.text) for line in visual_lines])
+    collapsed_text_length = max(
+        [len(node.kind)] + [len(line.text) for line in (*visual_lines, *collapsed_lines)]
+    )
     width = max(MIN_NODE_WIDTH, PAD_X * 2 + max_text_length * CHAR_WIDTH)
     height = max(MIN_NODE_HEIGHT, LABEL_BASELINE_Y + (len(visual_lines) - 1) * LINE_HEIGHT + BOTTOM_PAD)
+    collapsed_width = max(MIN_NODE_WIDTH, PAD_X * 2 + collapsed_text_length * CHAR_WIDTH)
+    collapsed_height = max(
+        MIN_NODE_HEIGHT,
+        LABEL_BASELINE_Y + (len(visual_lines) + len(collapsed_lines) - 1) * LINE_HEIGHT + BOTTOM_PAD,
+    )
     return _VisualNode(
         node=node,
         node_id=node_id,
         lines=visual_lines,
+        collapsed_lines=collapsed_lines,
         width=width,
         height=height,
+        collapsed_width=collapsed_width,
+        collapsed_height=collapsed_height,
     )
+
+
+def _collapsed_summary_lines(node: RDDLASTNode) -> tuple[_VisualLine, ...]:
+    """Summarize direct children inside a folded parent. / 在折叠父节点内摘要直接子节点。"""
+    if not node.children:
+        return ()
+    child_lines = [_child_summary_line(child) for child in node.children[:MAX_COLLAPSED_CHILD_LINES]]
+    remaining = len(node.children) - len(child_lines)
+    if remaining > 0:
+        child_lines.append(f"... {remaining} more")
+    return tuple(_visual_line(line) for line in ("contains:", *child_lines))
+
+
+def _child_summary_line(child: RDDLASTNode) -> str:
+    """Build one compact child phrase for folded nodes. / 为折叠节点构建一个简洁子节点短语。"""
+    label = _compact_summary_text(child.label)
+    if child.kind in {"assignment", "statement"}:
+        text = label or child.kind
+    elif label:
+        text = f"{child.kind}: {label}"
+    else:
+        text = f"{child.kind}: {len(child.children)} children"
+    return f"- {_compact_summary_text(text)}"
+
+
+def _compact_summary_text(value: str) -> str:
+    """Collapse whitespace and truncate long folded summaries. / 压缩空白并截断过长的折叠摘要。"""
+    compacted = " ".join(value.strip().split())
+    if len(compacted) <= MAX_COLLAPSED_LINE_LENGTH:
+        return compacted
+    return compacted[: MAX_COLLAPSED_LINE_LENGTH - 3].rstrip() + "..."
 
 
 def _label_lines(node: RDDLASTNode) -> tuple[_VisualLine, ...]:
@@ -3080,7 +3417,7 @@ def main(argv: list[str] | None = None) -> int:
     return serve_visualizer(
         domain=args.domain,
         instance=args.instance,
-        simulator=args.with_simulator,
+        simulator=args.simulator,
         frontend=args.frontend,
         host=args.host,
         port=args.port,

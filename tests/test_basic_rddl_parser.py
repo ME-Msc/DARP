@@ -37,6 +37,23 @@ def test_basic_rddl_visualizer_renders_html():
     assert "id=\"text-outline\"" in html
     assert "RDDL Source" in html
     assert "Source and AST controls" in html
+    assert "panel-toggles" in html
+    assert "id=\"toggle-source-panel\"" in html
+    assert "id=\"toggle-ast-panel\"" in html
+    assert "id=\"toggle-runtime-panel\"" in html
+    assert "setupPanelToggles" in html
+    assert "setupAstCanvasPan" in html
+    assert "applyAstViewBox" in html
+    assert "clampAstPan" in html
+    assert "astPan" in html
+    assert "onlyOnePanelVisible" in html
+    assert "[hidden]" in html
+    assert "nodeMetrics" in html
+    assert "ast-panning" in html
+    assert "node-collapsed" in html
+    assert "collapsed-summary" in html
+    assert "collapsedLines" in html
+    assert "contains:" in html
     assert "runtime-edge-label" in html
     assert "runtime-info" in html
     assert "runtimeGraphZoom" in html
