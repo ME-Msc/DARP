@@ -9,6 +9,7 @@ The current code focuses on the standard RDDL input pipeline, DARP's small inter
 - Parse standard RDDL domain/instance files into DARP-owned `RDDLASTNode` ASTs.
 - Align the `darp`, `pyrddl`, and `pyrddlgym` parser frontends through `RDDLFrontend`.
 - Ground the currently supported RDDL CPF/reward expressions into a minimal `PlanningProblem`.
+- The current requirement baseline supports only `reward-deterministic`: reward expressions cannot call stochastic distributions; other requirements will be implemented and committed one by one.
 - Support small boolean factored states: multiple state fluents are enumerated into explicit finite states that still work with the local planner/simulator.
 - Support `Bernoulli(p)` stochastic CPFs, `observ-fluent` noisy observations, explicit reset-observation models, and `max-nondef-actions` static action constraints.
 - Execute small explicit transition/observation/reward tables with DARP's internal simulator.
@@ -235,6 +236,7 @@ DARP/
 │       │   ├── basic_parser.py       # Dependency-free basic structural RDDL parser.
 │       │   ├── lexicon.py            # RDDL keywords, block names, and lexical symbols.
 │       │   ├── expressions.py        # Standard RDDL expression parsing and evaluation for grounding.
+│       │   ├── semantics.py          # RDDL requirement rollout plan and current semantic checks.
 │       │   ├── frontend.py           # `RDDLFrontend` protocol and `ParsedRDDL` container.
 │       │   ├── extended.py           # DARP-owned frontend with future extension-syntax hooks.
 │       │   ├── pyrddl_frontend.py    # `pyrddl` frontend adapter.
@@ -283,6 +285,7 @@ DARP should not hard-code a policy for tiny grid. The roadmap below is already o
   - [x] 4.2: Support multiple state fluents and factored states, replacing the current one-hot compact-state assumption
   - [x] 4.3: Support stochastic CPFs, non-identity observations, initial belief distributions, and action constraints
   - [x] 4.4: Validate compiler, simulator, and online-belief semantics with the tiny-grid and factored-door domains; rddlsim protocol integration remains in Phase 8
+  - [x] 4.5: Implement the `reward-deterministic` requirement baseline; future requirements will be implemented, tested, and committed separately
 - [ ] Phase 5: Verifiable baseline solvers
   - [ ] 5.1: Refine the explicit-state finite-horizon DP baseline for offline policies and online replanning
   - [ ] 5.2: Add planner registry, unified trace output, and algorithm-selection parameters
@@ -319,5 +322,6 @@ python -m pytest
 ## Current Limitations
 
 - The compiler currently targets small, discrete RDDL problems; it supports compact one-hot states and explicitly enumerated boolean factored states.
+- Current requirement semantic checks support only `reward-deterministic`; all other requirements are recorded as a staged rollout plan in `rddl/semantics.py`.
 - The internal simulator runs explicit transition/observation/reward tables and is not a general high-performance RDDL simulator.
 - Large/continuous belief representations, external rddlsim/PROST protocols, DARP-RDDL syntax extensions, native durative-action syntax, HILP, and HiGHS/Gurobi backends remain later phases.

@@ -36,6 +36,8 @@ BUILTIN_CALLS = frozenset(
         "round",
     }
 )
+PROBABILITY_DISTRIBUTIONS = frozenset({"Bernoulli"})
+"""Stochastic distribution calls recognized by requirement checks. / requirement 检查识别的随机分布调用。"""
 
 
 class RDDLExpressionError(ValueError):
@@ -237,6 +239,27 @@ def parse_expression(text: str) -> Expression:
     if not stream.done:
         raise RDDLExpressionError(f"Unexpected token {stream.peek()!r} in expression {text!r}.")
     return expression
+
+
+def expression_uses_distribution(expression: Expression) -> bool:
+    """Return whether an expression calls a stochastic distribution. / 判断表达式是否调用随机分布。"""
+    if isinstance(expression, CallExpression):
+        return expression.name in PROBABILITY_DISTRIBUTIONS or any(
+            expression_uses_distribution(argument) for argument in expression.args
+        )
+    if isinstance(expression, UnaryExpression):
+        return expression_uses_distribution(expression.operand)
+    if isinstance(expression, BinaryExpression):
+        return expression_uses_distribution(expression.left) or expression_uses_distribution(expression.right)
+    if isinstance(expression, IfExpression):
+        return (
+            expression_uses_distribution(expression.condition)
+            or expression_uses_distribution(expression.when_true)
+            or expression_uses_distribution(expression.when_false)
+        )
+    if isinstance(expression, AggregateExpression):
+        return expression_uses_distribution(expression.body)
+    return False
 
 
 def parse_expression_ast(text: str) -> RDDLASTNode:

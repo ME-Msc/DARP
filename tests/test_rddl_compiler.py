@@ -31,6 +31,7 @@ def test_compiler_builds_planning_problem_from_darp_ast():
     assert problem.discount == 1.0
     assert problem.observation_prob("c11", "c11", "move-east") == 1.0
     assert problem.metadata["compiler_mode"] == "grounded-rddl-expressions"
+    assert problem.metadata["requirements"] == ["reward-deterministic"]
 
 
 @pytest.mark.parametrize("frontend", ["darp", "pyrddl", "pyrddlgym"])
@@ -73,6 +74,66 @@ def test_compiler_rejects_missing_canonical_ast():
         RDDLCompiler().compile(loaded)
 
 
+def test_compiler_rejects_stochastic_reward_when_reward_deterministic(tmp_path):
+    """Check the first requirement baseline. / 检查第一个 requirement 基线。"""
+    domain, instance = _write_rddl_pair(
+        tmp_path,
+        """
+        domain bad_reward_randomness {
+          requirements { reward-deterministic };
+          pvariables {
+            ok : { state-fluent, bool, default = false };
+            wait : { action-fluent, bool, default = false };
+          };
+          cpfs { ok' = ok; };
+          reward = Bernoulli(0.5);
+        }
+        """,
+        """
+        instance bad_reward_randomness_inst {
+          domain = bad_reward_randomness;
+          init-state { };
+          horizon = 1;
+          discount = 1;
+          max-nondef-actions = 1;
+        }
+        """,
+    )
+
+    with pytest.raises(RDDLCompileError, match="reward-deterministic"):
+        RDDLCompiler().compile(RDDLLoader("darp").load(domain, instance))
+
+
+def test_compiler_rejects_unimplemented_requirement_for_now(tmp_path):
+    """Check future requirements are added one by one. / 检查未来 requirements 会逐个加入。"""
+    domain, instance = _write_rddl_pair(
+        tmp_path,
+        """
+        domain unsupported_requirement {
+          requirements { reward-deterministic, cpf-deterministic };
+          pvariables {
+            ok : { state-fluent, bool, default = false };
+            wait : { action-fluent, bool, default = false };
+          };
+          cpfs { ok' = ok; };
+          reward = 0;
+        }
+        """,
+        """
+        instance unsupported_requirement_inst {
+          domain = unsupported_requirement;
+          init-state { };
+          horizon = 1;
+          discount = 1;
+          max-nondef-actions = 1;
+        }
+        """,
+    )
+
+    with pytest.raises(RDDLCompileError, match="Only 'reward-deterministic'"):
+        RDDLCompiler().compile(RDDLLoader("darp").load(domain, instance))
+
+
 def test_planning_problem_validation_rejects_bad_transition_mass():
     """Check core model validation catches invalid tables. / 检查核心模型校验能发现非法表。"""
     with pytest.raises(ValueError, match="Transition mass"):
@@ -106,3 +167,12 @@ def test_compiler_cli_prints_problem_summary(capsys):
     assert exit_code == 0
     assert '"name": "tiny_grid_inst"' in captured.out
     assert '"compiler_mode": "grounded-rddl-expressions"' in captured.out
+
+
+def _write_rddl_pair(tmp_path, domain_text: str, instance_text: str):
+    """Write temporary RDDL files. / 写入临时 RDDL 文件。"""
+    domain = tmp_path / "domain.rddl"
+    instance = tmp_path / "instance.rddl"
+    domain.write_text(domain_text, encoding="utf-8")
+    instance.write_text(instance_text, encoding="utf-8")
+    return domain, instance

@@ -26,29 +26,11 @@ from darp.rddl.expressions import (
 )
 from darp.rddl.frontend import ParsedRDDL
 from darp.rddl.loader import RDDLLoader, available_frontends
-
-
-class RDDLCompileError(ValueError):
-    """Raised when ParsedRDDL cannot be compiled. / 在 ParsedRDDL 无法编译时抛出。"""
-
-
-@dataclass(frozen=True)
-class _PVariable:
-    """Store one parsed pvariable declaration. / 保存一个解析出的 pvariable 声明。"""
-
-    name: str
-    roles: frozenset[str]
-    parameters: tuple[str, ...]
-    default: ExpressionValue = False
-
-
-@dataclass(frozen=True)
-class _RDDLDocument:
-    """Group top-level RDDL blocks needed by the compiler. / 组合 compiler 需要的顶层 RDDL 块。"""
-
-    domain: RDDLASTNode
-    instance: RDDLASTNode
-    non_fluents: RDDLASTNode | None
+from darp.rddl.semantics import PVariable as _PVariable
+from darp.rddl.semantics import RDDLCompileError
+from darp.rddl.semantics import RDDLDocument as _RDDLDocument
+from darp.rddl.semantics import requirements_from_domain
+from darp.rddl.semantics import validate_rddl_semantics
 
 
 @dataclass(frozen=True)
@@ -104,6 +86,8 @@ class RDDLCompiler:
 
         objects = _object_table(document)
         pvariables = _pvariables(document.domain)
+        requirements = requirements_from_domain(document.domain)
+        validate_rddl_semantics(document, requirements)
         state_variables = [pvar for pvar in pvariables if "state-fluent" in pvar.roles]
         action_variables = [pvar for pvar in pvariables if "action-fluent" in pvar.roles]
         if not state_variables:
@@ -189,6 +173,7 @@ class RDDLCompiler:
                 "frontend": loaded.frontend,
                 "domain": domain_name,
                 "instance": instance_name,
+                "requirements": sorted(requirements),
                 "max_nondef_actions": max_nondef_actions,
                 **compiler_metadata,
             },
