@@ -100,10 +100,10 @@ requirement_list  = requirement_name, { ",", requirement_name } ;
 
 requirement_name  = supported_requirement | planned_requirement ;
 supported_requirement
-                  = "reward-deterministic" ;
+                  = "reward-deterministic"
+                  | "cpf-deterministic" ;
 planned_requirement
-                  = "cpf-deterministic"
-                  | "partially-observed"
+                  = "partially-observed"
                   | "concurrent"
                   | "constrained-state"
                   | "integer-valued"
@@ -234,18 +234,27 @@ fluent_call       = identifier, "(", [ expression, { ",", expression } ], ")" ;
    1. Every declared requirement name must be known.
       中文：requirements 中的名字必须是 DARP 已登记的标准名字，拼错会报错。
 
-   2. Only reward-deterministic is accepted as an implemented requirement.
-      中文：当前真正支持并允许启用的 requirement 只有 reward-deterministic。
+   2. reward-deterministic and cpf-deterministic are accepted as implemented
+      requirements.
+      中文：当前真正支持并允许启用的 requirements 是 reward-deterministic
+      和 cpf-deterministic。
 
    3. If reward-deterministic is declared, reward must exist and must not call a
       stochastic distribution such as Bernoulli.
       中文：声明 reward-deterministic 后，domain 必须有 reward，并且 reward
       不能调用 Bernoulli 这类随机分布。
 
-   4. Other requirements are planned rollout items, not enabled semantics yet.
+   4. If cpf-deterministic is declared, state-fluent transition CPFs must not
+      call stochastic distributions such as Bernoulli. Observation CPFs remain
+      separate and will be governed by partially-observed later.
+      中文：声明 cpf-deterministic 后，state-fluent 的转移 CPF 不能调用
+      Bernoulli 这类随机分布；observ-fluent 的观测 CPF 后续由
+      partially-observed 单独约束。
+
+   5. Other requirements are planned rollout items, not enabled semantics yet.
       中文：其它 requirements 会按 roadmap 一个一个实现、测试和提交。
 
-   5. compiler.py already grounds selected small discrete constructs such as
+   6. compiler.py already grounds selected small discrete constructs such as
       boolean state fluents, action fluents, non-fluents, CPFs, observations,
       rewards, max-nondef-actions, and horizon. Requirement declarations are
       still intentionally stricter than the grounding machinery so semantic

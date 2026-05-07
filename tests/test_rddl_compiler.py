@@ -31,7 +31,7 @@ def test_compiler_builds_planning_problem_from_darp_ast():
     assert problem.discount == 1.0
     assert problem.observation_prob("c11", "c11", "move-east") == 1.0
     assert problem.metadata["compiler_mode"] == "grounded-rddl-expressions"
-    assert problem.metadata["requirements"] == ["reward-deterministic"]
+    assert problem.metadata["requirements"] == ["cpf-deterministic", "reward-deterministic"]
 
 
 @pytest.mark.parametrize("frontend", ["darp", "pyrddl", "pyrddlgym"])
@@ -104,13 +104,74 @@ def test_compiler_rejects_stochastic_reward_when_reward_deterministic(tmp_path):
         RDDLCompiler().compile(RDDLLoader("darp").load(domain, instance))
 
 
-def test_compiler_rejects_unimplemented_requirement_for_now(tmp_path):
-    """Check future requirements are added one by one. / 检查未来 requirements 会逐个加入。"""
+def test_compiler_accepts_cpf_deterministic_for_deterministic_cpfs(tmp_path):
+    """Check deterministic state CPFs can enable the requirement. / 检查确定性 state CPF 可启用该 requirement。"""
+    domain, instance = _write_rddl_pair(
+        tmp_path,
+        """
+        domain deterministic_cpfs {
+          requirements { reward-deterministic, cpf-deterministic };
+          pvariables {
+            ok : { state-fluent, bool, default = false };
+            wait : { action-fluent, bool, default = false };
+          };
+          cpfs { ok' = ok; };
+          reward = 0;
+        }
+        """,
+        """
+        instance deterministic_cpfs_inst {
+          domain = deterministic_cpfs;
+          init-state { };
+          horizon = 1;
+          discount = 1;
+          max-nondef-actions = 1;
+        }
+        """,
+    )
+
+    problem = RDDLCompiler().compile(RDDLLoader("darp").load(domain, instance))
+
+    assert problem.metadata["requirements"] == ["cpf-deterministic", "reward-deterministic"]
+
+
+def test_compiler_rejects_stochastic_state_cpf_when_cpf_deterministic(tmp_path):
+    """Check cpf-deterministic rejects stochastic transition CPFs. / 检查 cpf-deterministic 会拒绝随机转移 CPF。"""
+    domain, instance = _write_rddl_pair(
+        tmp_path,
+        """
+        domain bad_state_cpf_randomness {
+          requirements { reward-deterministic, cpf-deterministic };
+          pvariables {
+            ok : { state-fluent, bool, default = false };
+            wait : { action-fluent, bool, default = false };
+          };
+          cpfs { ok' = Bernoulli(0.5); };
+          reward = 0;
+        }
+        """,
+        """
+        instance bad_state_cpf_randomness_inst {
+          domain = bad_state_cpf_randomness;
+          init-state { };
+          horizon = 1;
+          discount = 1;
+          max-nondef-actions = 1;
+        }
+        """,
+    )
+
+    with pytest.raises(RDDLCompileError, match="cpf-deterministic"):
+        RDDLCompiler().compile(RDDLLoader("darp").load(domain, instance))
+
+
+def test_compiler_still_rejects_other_unimplemented_requirements(tmp_path):
+    """Check future requirements are still added one by one. / 检查未来 requirements 仍会逐个加入。"""
     domain, instance = _write_rddl_pair(
         tmp_path,
         """
         domain unsupported_requirement {
-          requirements { reward-deterministic, cpf-deterministic };
+          requirements { reward-deterministic, partially-observed };
           pvariables {
             ok : { state-fluent, bool, default = false };
             wait : { action-fluent, bool, default = false };
@@ -130,7 +191,7 @@ def test_compiler_rejects_unimplemented_requirement_for_now(tmp_path):
         """,
     )
 
-    with pytest.raises(RDDLCompileError, match="Only 'reward-deterministic'"):
+    with pytest.raises(RDDLCompileError, match="Only 'reward-deterministic' and 'cpf-deterministic'"):
         RDDLCompiler().compile(RDDLLoader("darp").load(domain, instance))
 
 

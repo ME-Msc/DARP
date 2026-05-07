@@ -1,5 +1,5 @@
 domain tiny_grid {
-  requirements = { reward-deterministic };
+  requirements = { reward-deterministic, cpf-deterministic };
   types { location : { @c11, @c12, @c13, @c21, @c22, @c23, @c31, @c32, @c33 }; };
   pvariables {
     is-start(location) : { non-fluent, bool, default = false };

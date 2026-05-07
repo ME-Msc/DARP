@@ -10,6 +10,7 @@ RDDL_KEYWORDS = frozenset(
         "action-fluent",
         "bool",
         "cpfs",
+        "cpf-deterministic",
         "default",
         "derived-fluent",
         "discount",

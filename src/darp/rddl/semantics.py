@@ -1,8 +1,5 @@
 """Small semantic checks for RDDL requirements."""
 
-# TODO(phase-4.6): Implement `cpf-deterministic` as the next isolated
-# requirement feature after this reward-deterministic baseline.
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -53,9 +50,9 @@ REQUIREMENT_PLAN: dict[str, RequirementInfo] = {
     ),
     "cpf-deterministic": RequirementInfo(
         name="cpf-deterministic",
-        status="planned-next",
-        en="Transition CPFs must be deterministic; this will be implemented as the next small step.",
-        zh="转移 CPF 必须是确定性的；这是下一步准备单独实现的功能。",
+        status="supported",
+        en="Transition CPFs for state fluents must be deterministic; DARP rejects stochastic distribution calls there.",
+        zh="state-fluent 的转移 CPF 必须是确定性的；DARP 会拒绝其中的随机分布调用。",
     ),
     "partially-observed": RequirementInfo(
         name="partially-observed",
@@ -102,7 +99,7 @@ REQUIREMENT_PLAN: dict[str, RequirementInfo] = {
 }
 """Requirement rollout plan with bilingual notes. / 带中英文说明的 requirement 逐步实现计划。"""
 
-SUPPORTED_REQUIREMENTS = frozenset({"reward-deterministic"})
+SUPPORTED_REQUIREMENTS = frozenset({"reward-deterministic", "cpf-deterministic"})
 """Requirements supported in the current baseline. / 当前基线真正支持的 requirements。"""
 
 
@@ -125,6 +122,8 @@ def validate_rddl_semantics(document: RDDLDocument, requirements: frozenset[str]
     _validate_supported_requirements(requirements)
     if "reward-deterministic" in requirements:
         _validate_reward_deterministic(document.domain)
+    if "cpf-deterministic" in requirements:
+        _validate_cpf_deterministic(document.domain)
 
 
 def _validate_known_requirements(requirements: frozenset[str]) -> None:
@@ -139,7 +138,7 @@ def _validate_supported_requirements(requirements: frozenset[str]) -> None:
     unsupported = sorted(requirements - SUPPORTED_REQUIREMENTS)
     if unsupported:
         raise RDDLCompileError(
-            "Only 'reward-deterministic' is supported in this baseline; "
+            "Only 'reward-deterministic' and 'cpf-deterministic' are supported in this baseline; "
             f"unsupported requirement(s): {unsupported!r}."
         )
 
@@ -157,6 +156,55 @@ def _validate_reward_deterministic(domain: RDDLASTNode) -> None:
         raise RDDLCompileError(
             "reward-deterministic forbids stochastic distribution calls in reward."
         )
+
+
+def _validate_cpf_deterministic(domain: RDDLASTNode) -> None:
+    """Reject stochastic distribution calls in state CPFs. / 拒绝 state CPF 中的随机分布调用。"""
+    state_fluents = _state_fluent_names(domain)
+    for name, expression_text in _cpf_expressions(domain, state_fluents).items():
+        try:
+            expression = parse_expression(expression_text)
+        except RDDLExpressionError as exc:
+            raise RDDLCompileError(f"Unsupported RDDL CPF expression for {name!r}: {exc}") from exc
+        if expression_uses_distribution(expression):
+            raise RDDLCompileError(
+                f"cpf-deterministic forbids stochastic distribution calls in state CPF {name!r}."
+            )
+
+
+def _state_fluent_names(domain: RDDLASTNode) -> frozenset[str]:
+    """Return declared state-fluent pvariable names. / 返回声明为 state-fluent 的 pvariable 名称。"""
+    block = _child_block(domain, "pvariables")
+    if block is None:
+        return frozenset()
+    names: set[str] = set()
+    for statement in block.children:
+        name_part, _separator, spec_part = statement.label.partition(":")
+        roles = frozenset(_set_items(spec_part))
+        if "state-fluent" in roles:
+            names.add(_signature_name(name_part.strip()))
+    return frozenset(names)
+
+
+def _cpf_expressions(domain: RDDLASTNode, names: frozenset[str]) -> dict[str, str]:
+    """Return CPF expressions keyed by base fluent name. / 按基础 fluent 名称返回 CPF 表达式。"""
+    block = _child_block(domain, "cpfs")
+    if block is None:
+        return {}
+    expressions: dict[str, str] = {}
+    for statement in block.children:
+        left, separator, expression = statement.label.partition("=")
+        if not separator:
+            continue
+        base_name = _signature_name(left.strip()).rstrip("'")
+        if base_name in names:
+            expressions[base_name] = expression.strip()
+    return expressions
+
+
+def _signature_name(text: str) -> str:
+    """Return the name part of a pvariable or CPF signature. / 返回 pvariable 或 CPF 签名的名称部分。"""
+    return text.partition("(")[0].strip()
 
 
 def _assignment(node: RDDLASTNode, name: str) -> str | None:
