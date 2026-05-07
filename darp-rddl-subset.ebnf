@@ -1,0 +1,279 @@
+(* DARP RDDL subset EBNF.
+
+   This file documents the grammar shape currently handled by DARP's own
+   parser/compiler path. It is intentionally a readable engineering guide, not
+   a complete official RDDL specification.
+
+   中文说明：这个文件描述当前 DARP 自有 parser/compiler 已经处理的 RDDL
+   子集，帮助理解 basic_parser.py、expressions.py 和 semantics.py 之间的关系。
+   它不是完整官方 RDDL 规范。
+*)
+
+
+(*****************************************************************************)
+(* 1. Lexical conventions / 词法约定                                           *)
+(*****************************************************************************)
+
+rddl_inputs       = rddl_file, { rddl_file } ;
+rddl_file         = { top_level_block } ;
+
+comment           = "#", { any_character_except_newline }
+                  | "//", { any_character_except_newline } ;
+
+letter            = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I"
+                  | "J" | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R"
+                  | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z"
+                  | "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i"
+                  | "j" | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r"
+                  | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z" ;
+digit             = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+any_character_except_newline
+                  = character ;
+character         = letter | digit | "_" | "-" | "'" | "?" | "@" | "." | ":"
+                  | "," | ";" | "^" | "|" | "&" | "!" | "<" | ">" | "="
+                  | "+" | "*" | "/" | "~" | " " | "\t" | "{" | "}" | "("
+                  | ")" | "[" | "]" ;
+
+identifier        = identifier_start, { identifier_part } ;
+identifier_start  = letter | "_" ;
+identifier_part   = letter | digit | "_" | "-" | "'" ;
+
+variable          = "?", identifier ;
+object_literal    = "@", identifier ;
+
+number            = digit, { digit }, [ ".", digit, { digit } ] ;
+boolean           = "true" | "false" ;
+operator          = "==" | "!=" | "<=" | ">=" | "=>"
+                  | "=" | ":" | "," | ";" | "^" | "|" | "&" | "!"
+                  | "<" | ">" | "+" | "-" | "*" | "/" | "~" ;
+punctuation       = "{" | "}" | "(" | ")" | "[" | "]" ;
+token             = identifier | variable | object_literal | number | boolean
+                  | operator | punctuation ;
+token_sequence    = token, { token } ;
+
+(* DARP currently treats string literals as outside the supported subset. *)
+
+
+(*****************************************************************************)
+(* 2. Structural parser / 结构 parser                                          *)
+(*****************************************************************************)
+
+top_level_block   = domain_block | non_fluents_block | instance_block ;
+
+domain_block      = "domain", identifier, "{", { domain_item }, "}", [ ";" ] ;
+non_fluents_block = "non-fluents", identifier, "{", { non_fluents_item }, "}", [ ";" ] ;
+instance_block    = "instance", identifier, "{", { instance_item }, "}", [ ";" ] ;
+
+structural_item   = nested_block | assignment | raw_statement ;
+nested_block      = identifier, "{", { structural_item }, "}", [ ";" ] ;
+assignment        = identifier, "=", expression, ";" ;
+raw_statement     = token_sequence, ";" ;
+
+(* basic_parser.py accepts generic nested blocks and assignments first, then
+   compiler.py gives selected blocks semantic meaning.
+
+   中文说明：basic_parser.py 先接受通用 block 和 assignment；
+   compiler.py 再把 requirements、types、pvariables、cpfs、reward、objects、
+   init-state、horizon 等 block/statement 解释成规划模型。
+*)
+
+
+(*****************************************************************************)
+(* 3. Domain-level subset / domain 层当前子集                                  *)
+(*****************************************************************************)
+
+domain_item       = requirements_decl
+                  | types_block
+                  | pvariables_block
+                  | cpfs_block
+                  | reward_assignment
+                  | nested_block
+                  | raw_statement ;
+
+requirements_decl = requirements_assignment | requirements_block ;
+requirements_assignment
+                  = "requirements", "=", requirement_set, ";" ;
+requirements_block
+                  = "requirements", "{", requirement_list, "}", [ ";" ] ;
+requirement_set   = "{", requirement_list, "}" ;
+requirement_list  = requirement_name, { ",", requirement_name } ;
+
+requirement_name  = supported_requirement | planned_requirement ;
+supported_requirement
+                  = "reward-deterministic" ;
+planned_requirement
+                  = "cpf-deterministic"
+                  | "partially-observed"
+                  | "concurrent"
+                  | "constrained-state"
+                  | "integer-valued"
+                  | "continuous"
+                  | "multivalued"
+                  | "intermediate-nodes" ;
+
+types_block       = "types", "{", { type_decl }, "}", [ ";" ] ;
+type_decl         = identifier, ":", "{", object_literal, { ",", object_literal }, "}", ";" ;
+
+pvariables_block  = "pvariables", "{", { pvariable_decl }, "}", [ ";" ] ;
+pvariable_decl    = identifier, [ "(", parameter_list, ")" ], ":", "{",
+                    pvariable_role_list, [ ",", "default", "=", literal ],
+                    "}", ";" ;
+parameter_list    = identifier, { ",", identifier } ;
+pvariable_role_list
+                  = pvariable_role, { ",", pvariable_role } ;
+pvariable_role    = "state-fluent"
+                  | "action-fluent"
+                  | "observ-fluent"
+                  | "non-fluent"
+                  | "interm-fluent"
+                  | "derived-fluent"
+                  | value_type ;
+value_type        = "bool" | "int" | "real" | identifier ;
+
+cpfs_block        = "cpfs", "{", { cpf_decl }, "}", [ ";" ] ;
+cpf_decl          = cpf_head, "=", expression, ";" ;
+cpf_head          = identifier, "'", [ "(", term_list, ")" ]
+                  | identifier, [ "(", term_list, ")" ] ;
+
+reward_assignment = "reward", "=", expression, ";" ;
+
+
+(*****************************************************************************)
+(* 4. Non-fluents and instance subset / non-fluents 与 instance 当前子集       *)
+(*****************************************************************************)
+
+non_fluents_item  = "domain", "=", identifier, ";"
+                  | "objects", "{", { object_decl }, "}", [ ";" ]
+                  | "non-fluents", "{", { fluent_init }, "}", [ ";" ]
+                  | nested_block
+                  | raw_statement ;
+
+object_decl       = identifier, ":", "{", object_literal, { ",", object_literal }, "}", ";" ;
+fluent_init       = identifier, [ "(", term_list, ")" ], [ "=", literal ], ";" ;
+
+instance_item     = "domain", "=", identifier, ";"
+                  | "non-fluents", "=", identifier, ";"
+                  | "init-state", "{", { fluent_init }, "}", [ ";" ]
+                  | "horizon", "=", number, ";"
+                  | "discount", "=", number, ";"
+                  | "max-nondef-actions", "=", number, ";"
+                  | nested_block
+                  | raw_statement ;
+
+literal           = boolean | number | object_literal | identifier ;
+term_list         = term, { ",", term } ;
+term              = variable | object_literal | identifier | number | boolean ;
+
+
+(*****************************************************************************)
+(* 5. Expression parser / 表达式 parser                                        *)
+(*****************************************************************************)
+
+expression        = if_expression ;
+
+if_expression     = "if", "(", expression, ")", "then", expression, "else", expression
+                  | implication_expression ;
+
+implication_expression
+                  = or_expression, [ "=>", implication_expression ] ;
+
+or_expression     = and_expression, { ( "|" | "or" ), and_expression } ;
+and_expression    = comparison_expression, { ( "^" | "&" | "and" ), comparison_expression } ;
+
+comparison_expression
+                  = additive_expression,
+                    { ( "==" | "!=" | "=" | "<" | "<=" | ">" | ">=" ),
+                      additive_expression } ;
+
+additive_expression
+                  = multiplicative_expression,
+                    { ( "+" | "-" ), multiplicative_expression } ;
+
+multiplicative_expression
+                  = unary_expression,
+                    { ( "*" | "/" ), unary_expression } ;
+
+unary_expression  = ( "!" | "~" | "not" | "+" | "-" ), unary_expression
+                  | primary_expression ;
+
+primary_expression
+                  = aggregate_expression
+                  | builtin_call
+                  | fluent_call
+                  | "(", expression, ")"
+                  | literal
+                  | variable ;
+
+aggregate_expression
+                  = aggregate_name, "{", aggregate_binding,
+                    { ",", aggregate_binding }, "}", aggregate_body ;
+aggregate_name    = "sum" | "prod" | "avg" | "forall" | "exists" ;
+aggregate_binding = variable, ":", identifier ;
+aggregate_body    = "[", expression, "]" | "(", expression, ")" ;
+
+builtin_call      = builtin_name, "(", [ expression, { ",", expression } ], ")" ;
+builtin_name      = "Bernoulli"
+                  | "DiracDelta"
+                  | "KronDelta"
+                  | "abs"
+                  | "ceil"
+                  | "floor"
+                  | "max"
+                  | "min"
+                  | "round" ;
+
+fluent_call       = identifier, "(", [ expression, { ",", expression } ], ")" ;
+
+
+(*****************************************************************************)
+(* 6. Current semantic baseline / 当前语义基线                                 *)
+(*****************************************************************************)
+
+(* semantics.py currently enforces these rules:
+
+   1. Every declared requirement name must be known.
+      中文：requirements 中的名字必须是 DARP 已登记的标准名字，拼错会报错。
+
+   2. Only reward-deterministic is accepted as an implemented requirement.
+      中文：当前真正支持并允许启用的 requirement 只有 reward-deterministic。
+
+   3. If reward-deterministic is declared, reward must exist and must not call a
+      stochastic distribution such as Bernoulli.
+      中文：声明 reward-deterministic 后，domain 必须有 reward，并且 reward
+      不能调用 Bernoulli 这类随机分布。
+
+   4. Other requirements are planned rollout items, not enabled semantics yet.
+      中文：其它 requirements 会按 roadmap 一个一个实现、测试和提交。
+
+   5. compiler.py already grounds selected small discrete constructs such as
+      boolean state fluents, action fluents, non-fluents, CPFs, observations,
+      rewards, max-nondef-actions, and horizon. Requirement declarations are
+      still intentionally stricter than the grounding machinery so semantic
+      support can be added feature by feature.
+      中文：compiler.py 已经能 grounding 一些小规模离散结构，但 requirements
+      的语义开关会保持更严格，方便逐个功能实现和验证。
+*)
+
+
+(*****************************************************************************)
+(* 7. Code map / 代码对应关系                                                   *)
+(*****************************************************************************)
+
+(* src/darp/rddl/basic_parser.py
+     Structural lexer/parser: top-level blocks, nested blocks, assignments,
+     raw statements, and source spans.
+   中文：结构 parser，负责 block、assignment、statement 和源码位置。
+
+   src/darp/rddl/expressions.py
+     Expression parser/evaluator: if-then-else, logical/arithmetic operators,
+     aggregates, built-in calls, and grounded evaluation.
+   中文：表达式 parser/evaluator，负责条件、逻辑、算术、聚合和 grounding 求值。
+
+   src/darp/rddl/semantics.py
+     Requirement declarations and semantic checks.
+   中文：requirements 声明与语义检查。
+
+   src/darp/rddl/compiler.py
+     Converts ParsedRDDL plus semantic checks into PlanningProblem.
+   中文：把 ParsedRDDL 和语义检查结果编译为 PlanningProblem。
+*)

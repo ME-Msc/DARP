@@ -207,6 +207,7 @@ darp \
 DARP/
 ├── README.md                         # 中文主文档，面向开发和维护。
 ├── README-EN.md                      # 英文镜像文档，面向国际团队协作。
+├── darp-rddl-subset.ebnf             # 当前 DARP RDDL parser/semantic 子集的 EBNF 说明。
 ├── pyproject.toml                    # Python 包元数据、console script 和可选依赖。
 ├── requirements.txt                  # 运行时依赖记录；当前核心尽量保持轻量。
 ├── requirements-dev.txt              # 开发和测试依赖记录。
@@ -259,6 +260,10 @@ DARP/
     ├── test_online.py                # 本地 online solve loop 和 belief 更新测试。
     └── test_compiler_simulator_interaction.py # compiler 与 simulator 联动测试。
 ```
+
+## 维护规则
+
+每次实现功能更新时，必须同步检查并更新 `README.md`、`README-EN.md` 和 `darp-rddl-subset.ebnf`。尤其当 CLI 参数、RDDL parser、表达式 parser、semantic requirement 或用户可见行为发生变化时，文档与 EBNF 必须和代码进度保持一致。
 
 ## 开发路线图
 

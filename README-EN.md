@@ -207,6 +207,7 @@ Current frontends:
 DARP/
 ├── README.md                         # Chinese main documentation for development and maintenance.
 ├── README-EN.md                      # English mirror documentation for international collaborators.
+├── darp-rddl-subset.ebnf             # EBNF guide for DARP's current RDDL parser/semantic subset.
 ├── pyproject.toml                    # Python package metadata, console script, and optional dependencies.
 ├── requirements.txt                  # Runtime dependency record; the current core stays lightweight.
 ├── requirements-dev.txt              # Development and test dependency record.
@@ -259,6 +260,10 @@ DARP/
     ├── test_online.py                # Local online solve loop and belief-update tests.
     └── test_compiler_simulator_interaction.py # Compiler/simulator integration tests.
 ```
+
+## Maintenance Rule
+
+Every functional update must also check and update `README.md`, `README-EN.md`, and `darp-rddl-subset.ebnf`. This is especially required when CLI arguments, the RDDL parser, expression parser, semantic requirements, or user-visible behavior change, so documentation and EBNF stay aligned with code progress.
 
 ## Roadmap
 
