@@ -1,87 +1,78 @@
-"""RDDL loading through selectable parser frontends."""
+"""RDDL loading through pyRDDLGym."""
 
-# TODO(rddl-registry): Support repository names in addition to explicit domain
-# and instance file paths for every frontend that can handle them.
+# TODO(phase-9.1): Support pyRDDLGym repository names in addition to explicit
+# domain and instance file paths for benchmark runs.
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
+import tempfile
 
-from darp.rddl.extended import DARPExtendedFrontend
-from darp.rddl.frontend import ParsedRDDL, RDDLFrontend, RDDLFrontendError
-from darp.rddl.pyrddl_frontend import PyRDDLFrontend
-from darp.rddl.pyrddlgym_frontend import PyRDDLGymFrontend
-
-LoadedRDDL = ParsedRDDL
-FRONTEND_ALIASES = {
-    "pyrddlgym": "pyrddlgym",
-    "pyrddl_gym": "pyrddlgym",
-    "pyrddl": "pyrddl",
-    "darp": "darp",
-    "extended": "darp",
-    "darp_rddl": "darp",
-}
+from darp.rddl.artifacts import RDDLArtifacts, RDDLLoadError, rddl_load_error, rddl_path
 
 
 class RDDLLoader:
-    """Load RDDL through a selectable parser frontend. / 通过可选择的 parser frontend 加载 RDDL。"""
+    """Load standard RDDL with pyRDDLGym. / 使用 pyRDDLGym 加载标准 RDDL。"""
 
-    def __init__(self, frontend: str | RDDLFrontend = "pyrddlgym") -> None:
-        """Create a loader with the selected frontend. / 使用指定 frontend 创建加载器。"""
-        self.frontend = self._resolve_frontend(frontend)
+    def load(self, domain: str | Path, instance: str | Path) -> RDDLArtifacts:
+        """Load a domain/instance pair with pyRDDLGym. / 使用 pyRDDLGym 加载 domain/instance 文件对。"""
+        domain_path = rddl_path(domain)
+        instance_path = rddl_path(instance)
+        _ensure_matplotlib_cache_dir()
+        try:
+            import pyRDDLGym
+        except ImportError as exc:
+            raise RDDLLoadError(
+                "pyRDDLGym is required to load RDDL. "
+                "Install with `pip install -e .` or `pip install -r requirements.txt`."
+            ) from exc
 
-    def load(
-        self,
-        domain: str | Path,
-        instance: str | Path,
-        frontend: str | RDDLFrontend | None = None,
-    ) -> LoadedRDDL:
-        """Load a domain/instance pair through a frontend. / 通过 frontend 加载 domain/instance 文件对。"""
-        parser = self.frontend if frontend is None else self._resolve_frontend(frontend)
-        return parser.parse(domain, instance)
-
-    def _resolve_frontend(self, frontend: str | RDDLFrontend) -> RDDLFrontend:
-        """Convert a frontend name or object into a frontend instance. / 将 frontend 名称或对象解析为 frontend 实例。"""
-        if not isinstance(frontend, str):
-            return frontend
-        normalized = frontend.lower().replace("-", "_")
-        canonical = FRONTEND_ALIASES.get(normalized)
-        if canonical == "pyrddlgym":
-            return PyRDDLGymFrontend()
-        if canonical == "pyrddl":
-            return PyRDDLFrontend()
-        if canonical == "darp":
-            return DARPExtendedFrontend()
-        raise RDDLFrontendError(
-            f"Unknown RDDL frontend {frontend!r}. Expected pyrddlgym, pyrddl, or darp."
+        try:
+            env = pyRDDLGym.make(str(domain_path), str(instance_path))
+        except Exception as exc:
+            raise rddl_load_error(domain_path, instance_path, exc) from exc
+        model = getattr(env, "model", None)
+        native_ast = getattr(model, "ast", None)
+        return RDDLArtifacts(
+            domain=str(domain_path),
+            instance=str(instance_path),
+            native_ast=native_ast,
+            env=env,
+            model=model,
+            metadata={
+                "source": "pyRDDLGym",
+                "pyRDDLGym_version": getattr(pyRDDLGym, "__version__", None),
+                "native_ast_type": type(native_ast).__name__ if native_ast is not None else None,
+                "env_type": type(env).__name__,
+                "model_type": type(model).__name__ if model is not None else None,
+            },
         )
 
 
-def available_frontends() -> tuple[str, ...]:
-    """Return canonical frontend names for CLI choices. / 返回 CLI 可选的标准 frontend 名称。"""
-    return ("darp", "pyrddl", "pyrddlgym")
+def _ensure_matplotlib_cache_dir() -> None:
+    """Give pyRDDLGym's matplotlib import a writable cache. / 为 pyRDDLGym 的 matplotlib 导入提供可写缓存。"""
+    if "MPLCONFIGDIR" in os.environ:
+        return
+    cache_dir = Path(tempfile.gettempdir()) / "darp-matplotlib"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["MPLCONFIGDIR"] = str(cache_dir)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the command-line parser for frontend inspection. / 构建用于检查 frontend 的命令行 parser。"""
-    parser = argparse.ArgumentParser(description="Load RDDL through a selected frontend.")
+    """Build the command-line parser for RDDL inspection. / 构建用于检查 RDDL 加载结果的命令行 parser。"""
+    parser = argparse.ArgumentParser(description="Load standard RDDL through pyRDDLGym.")
     parser.add_argument("domain", help="RDDL domain file")
     parser.add_argument("instance", help="RDDL instance file")
-    parser.add_argument(
-        "--frontend",
-        default="darp",
-        choices=available_frontends(),
-        help="parser frontend to use",
-    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the frontend inspection command. / 运行 frontend 检查命令。"""
+    """Run the RDDL artifact inspection command. / 运行 RDDL 产物检查命令。"""
     args = build_parser().parse_args(argv)
-    loaded = RDDLLoader(args.frontend).load(args.domain, args.instance)
+    loaded = RDDLLoader().load(args.domain, args.instance)
     print(json.dumps(loaded.to_summary_dict(), indent=2, sort_keys=True, default=str))
     return 0
 

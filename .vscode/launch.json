@@ -2,43 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "DARP: RDDL loader",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "darp.rddl.loader",
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "python": "${workspaceFolder}/.venv/bin/python",
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}/src"
-      },
-      "args": [
-        "examples/rddl/tiny_grid_domain.rddl",
-        "examples/rddl/tiny_grid_instance.rddl",
-        "--frontend",
-        "darp"
-      ]
-    },
-    {
-      "name": "DARP: RDDL compiler",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "darp.rddl.compiler",
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "python": "${workspaceFolder}/.venv/bin/python",
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}/src"
-      },
-      "args": [
-        "examples/rddl/tiny_grid_domain.rddl",
-        "examples/rddl/tiny_grid_instance.rddl",
-        "--frontend",
-        "darp"
-      ]
-    },
-    {
-      "name": "DARP: online trace builtin",
+      "name": "DARP: RDDL tiny grid online",
       "type": "debugpy",
       "request": "launch",
       "module": "darp",
@@ -49,67 +13,28 @@
         "PYTHONPATH": "${workspaceFolder}/src"
       },
       "args": [
-        "--mode",
-        "online",
-        "--seed",
-        "7"
-      ]
-    },
-    {
-      "name": "DARP: online trace RDDL tiny grid",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "darp",
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "python": "${workspaceFolder}/.venv/bin/python",
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}/src"
-      },
-      "args": [
-        "--mode",
-        "online",
         "--domain",
         "examples/rddl/tiny_grid_domain.rddl",
         "--instance",
         "examples/rddl/tiny_grid_instance.rddl",
         "--seed",
-        "7"
+        "7",
+        "--lookahead-depth",
+        "4"
       ]
     },
     {
-      "name": "DARP: default live visualizer",
+      "name": "DARP: pytest",
       "type": "debugpy",
       "request": "launch",
-      "module": "darp",
+      "module": "pytest",
       "console": "integratedTerminal",
       "justMyCode": false,
       "python": "${workspaceFolder}/.venv/bin/python",
       "env": {
         "PYTHONPATH": "${workspaceFolder}/src"
       },
-      "args": [
-        "--visualizer",
-        "--domain",
-        "examples/rddl/tiny_grid_domain.rddl",
-        "--instance",
-        "examples/rddl/tiny_grid_instance.rddl",
-        "--no-open",
-        "--port",
-        "8080"
-      ]
-    },
-    {
-      "name": "Python: current file",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${file}",
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "python": "${workspaceFolder}/.venv/bin/python",
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}/src"
-      }
+      "args": []
     }
   ]
 }

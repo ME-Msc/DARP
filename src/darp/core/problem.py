@@ -1,6 +1,6 @@
 """Finite-horizon POMDP/(C)C-POMDP problem interface."""
 
-# TODO(phase-7.1): Move larger sparse transition/observation tables behind a
+# TODO(phase-4.2): Move larger sparse transition/observation tables behind a
 # backend-friendly matrix abstraction before ILP and benchmark scaling.
 
 from __future__ import annotations
@@ -231,64 +231,3 @@ class PlanningProblem:
             "max_nondef_actions": self.max_nondef_actions,
             "metadata": dict(self.metadata),
         }
-
-
-def make_tiny_grid_problem() -> PlanningProblem:
-    """Build a tiny hand-checkable problem used by CLI demos and tests. / 构建用于 demo 和测试的小型问题。"""
-
-    states: tuple[State, ...] = ("start", "safe", "risk", "goal")
-    actions: tuple[Action, ...] = ("safe_path", "risky_path")
-    observations: tuple[Observation, ...] = ("start", "safe", "risk", "goal")
-
-    transitions: dict[TransitionKey, float] = {}
-    for state in states:
-        for action in actions:
-            for target in states:
-                transitions[(state, action, target)] = 0.0
-
-    transitions[("start", "safe_path", "safe")] = 1.0
-    transitions[("safe", "safe_path", "goal")] = 1.0
-    transitions[("risk", "safe_path", "goal")] = 1.0
-    transitions[("goal", "safe_path", "goal")] = 1.0
-    transitions[("start", "risky_path", "goal")] = 0.8
-    transitions[("start", "risky_path", "risk")] = 0.2
-    transitions[("safe", "risky_path", "goal")] = 1.0
-    transitions[("risk", "risky_path", "risk")] = 1.0
-    transitions[("goal", "risky_path", "goal")] = 1.0
-
-    observation_model: dict[ObservationKey, float] = {}
-    for observation in observations:
-        for state in states:
-            for action in actions:
-                observation_model[(observation, state, action)] = 1.0 if observation == state else 0.0
-
-    rewards: dict[RewardKey, float] = {}
-    for state in states:
-        for action in actions:
-            rewards[(state, action)] = 0.0
-    rewards[("start", "safe_path")] = 4.0
-    rewards[("safe", "safe_path")] = 6.0
-    rewards[("start", "risky_path")] = 8.0
-    rewards[("goal", "safe_path")] = 0.0
-    rewards[("goal", "risky_path")] = 0.0
-
-    duration_model = FixedDurationModel({"safe_path": 1.0, "risky_path": 2.0})
-
-    return PlanningProblem(
-        states=states,
-        actions=actions,
-        observations=observations,
-        transitions=transitions,
-        observation_model=observation_model,
-        rewards=rewards,
-        initial_belief={"start": 1.0, "safe": 0.0, "risk": 0.0, "goal": 0.0},
-        horizon=2.0,
-        discount=1.0,
-        duration_model=duration_model,
-        zeta=0.0,
-        risk_states=frozenset({"risk"}),
-        risk_budget=0.25,
-        max_depth=4,
-        name="tiny_grid_builtin",
-        metadata={"source": "builtin"},
-    )

@@ -1,329 +1,172 @@
 # DARP
 
-Durative Action RDDL Planner is a Python research prototype for parsing RDDL problems, compiling them into finite-horizon POMDP / C-POMDP / CC-POMDP-style planning models, and incrementally implementing the full ILP and HILP search workflow from "Heuristic Search in Dual Space for Constrained Fixed-Horizon POMDPs with Durative Actions".
+Durative Action RDDL Planner is a Python research prototype for implementing fixed-horizon POMDP / constrained POMDP / durative-action planning algorithms on standard RDDL problems, with a staged path toward the AND-OR tree, full ILP, and HILP search workflow from "Heuristic Search in Dual Space for Constrained Fixed-Horizon POMDPs with Durative Actions".
 
-The current code focuses on the standard RDDL input pipeline, DARP's small internal simulator, an interactive HTML visualizer, and a local PROST-like online solve loop. External simulator protocols, AND-OR trees, full ILP, HILP, HiGHS/Gurobi backends, and durative-action interfaces will be added in later phases.
+The main branch now follows a **pyRDDLGym-first** architecture: pyRDDLGym owns standard RDDL parsing, baseline semantic handling, and simulation; DARP focuses on adapting pyRDDLGym `model/env` artifacts into planner runtimes, generating research-oriented `PlanningProblem` objects only for small enumerable cases, wiring `DurationModel`, and implementing online/offline planners. DARP's own parser, expression parser, AST visualizer, and EBNF have been preserved on the archive branch and are no longer maintained on main.
 
 ## Feature Status
 
-- Parse standard RDDL domain/instance files into DARP-owned `RDDLASTNode` ASTs.
-- Align the `darp`, `pyrddl`, and `pyrddlgym` parser frontends through `RDDLFrontend`.
-- Ground the currently supported RDDL CPF/reward expressions into a minimal `PlanningProblem`.
-- Support common expression forms: boolean/arithmetic composition, square-bracket grouping, finite `sum/prod/avg/forall/exists` aggregates, `=>`/`<=>` logical connectives, `Bernoulli/KronDelta/DiracDelta`, and leading-decimal literals such as `.45`.
-- The current requirement baseline supports `reward-deterministic`, `cpf-deterministic`, and `partially-observed`: reward determinism, state-fluent transition CPF determinism, and `observ-fluent` observation-model declarations are checked; other requirements will be implemented and committed one by one.
-- Support small boolean factored states: multiple state fluents are enumerated into explicit finite states that still work with the local planner/simulator.
-- Support `Bernoulli(p)` stochastic CPFs, `observ-fluent` noisy observations, explicit reset-observation models, and `max-nondef-actions` static action constraints.
-- Execute small explicit transition/observation/reward tables with DARP's internal simulator.
-- Run the default non-visual online solve loop with `darp --domain DOMAIN.rddl --instance INSTANCE.rddl` and print a readable terminal trace.
-- Carry belief across steps with Bayesian observation-model updates, and return traceable fallback actions when hard decision budgets expire.
-- Start the live HTML UI with `--visualizer` to inspect source, AST, and an execution state machine where DARP's planner selects actions and the internal simulator advances states.
+- Load standard RDDL domain/instance files through pyRDDLGym and return `RDDLEnv`, `RDDLLiftedModel`, and pyRDDLGym's native AST.
+- `darp --domain --instance` can now execute an online trace through pyRDDLGym; the current planner is a small rollout baseline used to validate the runtime path.
+- Provide a `PyRDDLGymPlanningAdapter` boundary; the next implementation step is a pyRDDLGym generative runtime wrapper, with explicit enumeration only for small finite problems.
+- Keep DARP's explicit `PlanningProblem`, `DurationModel`, and finite-horizon DP/belief helpers for future enumerable RDDL, ILP/HILP, and algorithm unit tests.
+- Current RDDL inputs first run through a pyRDDLGym generative runtime; converting pyRDDLGym models into DARP `PlanningProblem` objects is not implemented yet.
+- Native DARP-RDDL syntax extensions are not implemented on main; durative actions should first enter through YAML/JSON sidecars or Python plugins.
 
 ## Installation
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install --no-build-isolation --no-deps -e .
+python -m pip install -e .
 python -m pip install -r requirements-dev.txt
 ```
 
-If the system Python lacks `ensurepip`, use:
+Optional solver dependencies are reserved for future ILP backends:
 
 ```bash
-virtualenv --clear .venv
-source .venv/bin/activate
-python -m pip install --no-build-isolation --no-deps -e .
-python -m pip install -r requirements-dev.txt
-```
-
-Optional dependencies:
-
-```bash
-python -m pip install -e ".[rddl]"      # pyRDDLGym
-python -m pip install -e ".[pyrddl]"    # pyrddl
 python -m pip install -e ".[highs]"     # future HiGHS backend
 python -m pip install -e ".[gurobi]"    # future Gurobi backend
 ```
 
-## Command Line
+## CLI
 
-After editable installation, run:
+Show help:
 
 ```bash
 darp -h
 ```
 
-You can also avoid the console script and run:
-
-```bash
-python -m darp -h
-```
-
-There is only one primary command:
-
-```bash
-darp [--domain DOMAIN.rddl --instance INSTANCE.rddl] [--visualizer] [options]
-```
-
-Default behavior:
-
-| Default | Value | Description |
-| --- | --- | --- |
-| mode | `online` | Replan an action from the current belief at each step. |
-| visualizer | disabled | Print a readable terminal trace by default; only open the web UI when `--visualizer` is provided. |
-| simulator | `darp` | Use DARP's internal simulator to advance state, observation, and reward. |
-| frontend | `darp` | Use DARP's own parser/compiler path. |
-| host | `127.0.0.1` | Listen on localhost by default. |
-| port | `0` | Pick a free port automatically. |
-
-Primary command arguments:
-
-| Argument | Required | Description |
-| --- | --- | --- |
-| `--domain PATH` | no | RDDL domain file path; with `--instance`, compiles explicit RDDL, otherwise non-visual mode uses the built-in demo. |
-| `--instance PATH` | no | RDDL instance file path; must be provided with `--domain`. |
-| `--mode online` | no | Phase 3 currently supports the local online solve loop. Defaults to `online`. |
-| `--frontend {darp,pyrddl,pyrddlgym}` | no | RDDL parser/compiler frontend. Defaults to `darp`. |
-| `--simulator {darp,rddlgym,pyrddlgym}` | no | Visualizer runtime simulator. Defaults to `darp`; non-visual mode currently supports only DARP's internal simulator. |
-| `--seed N` | no | Random seed for DARP's internal simulator. Defaults to `0`. |
-| `--host HOST` | no | Visualizer HTTP host. Defaults to `127.0.0.1`. |
-| `--port PORT` | no | Visualizer HTTP port. Defaults to `0`, which chooses a free port. |
-| `--no-open` | no | Serve without opening a browser. |
-| `--visualizer` | no | Start the live HTML visualizer; requires `--domain` and `--instance`. |
-| `--time-budget-ms MS` | no | Hard per-decision time budget; timeout returns a fallback action and is marked in the trace. |
-| `--output PATH` | no | In non-visual mode, write the full JSON trace to a file; without this option, no JSON is emitted. |
-| `-h`, `--help` | no | Show help text. |
-
-`--frontend` and `--simulator` are not duplicates: `--frontend` controls how RDDL text is parsed/compiled into a DARP model, while `--simulator` controls who receives actions and advances state/observation/reward in the visual runtime. Most users can omit both because both default to `darp`.
-
-The online solve length comes from the RDDL `horizon` compiled into `problem.max_depth`; it is not manually truncated from the command line.
-
-`--seed` controls stochastic sampling in DARP's internal simulator. The current tiny grid is deterministic, so the seed does not change the trajectory; once random initial beliefs, random transitions, or random observations are supported, the seed will make debugging, tests, and benchmarks reproducible.
-
-## Examples
-
-Print a non-visual terminal trace from the RDDL tiny grid:
+Load standard RDDL and execute an online trace through pyRDDLGym:
 
 ```bash
 darp \
-  --domain examples/rddl/tiny_grid_domain.rddl \
-  --instance examples/rddl/tiny_grid_instance.rddl \
-  --seed 7
-```
-
-Run the Phase 4 factored-door example with multiple state fluents, stochastic CPFs, and noisy observations:
-
-```bash
-darp \
-  --domain examples/rddl/factored_door_domain.rddl \
-  --instance examples/rddl/factored_door_instance.rddl \
-  --seed 1
-```
-
-Print a non-visual terminal trace from the built-in demo:
-
-```bash
-darp --seed 7
-```
-
-Write the full JSON trace to a file:
-
-```bash
-darp \
-  --domain examples/rddl/tiny_grid_domain.rddl \
-  --instance examples/rddl/tiny_grid_instance.rddl \
-  --seed 7 \
-  --output tiny_grid_trace.json
-```
-
-Start the live visualizer: DARP chooses actions, the internal simulator advances state, and the browser shows RDDL text, AST, and the runtime state machine.
-
-```bash
-darp \
-  --visualizer \
   --domain examples/rddl/tiny_grid_domain.rddl \
   --instance examples/rddl/tiny_grid_instance.rddl
 ```
 
-Serve the visualizer on a fixed port without opening a browser:
+Set rollout lookahead:
 
 ```bash
 darp \
-  --visualizer \
   --domain examples/rddl/tiny_grid_domain.rddl \
   --instance examples/rddl/tiny_grid_instance.rddl \
-  --host 127.0.0.1 \
-  --port 8080 \
-  --no-open
+  --lookahead-depth 4 \
+  --particles 32
 ```
 
-Compile with a selected frontend while still using DARP's internal simulator:
+Write the online trace as JSON:
 
 ```bash
 darp \
   --domain examples/rddl/tiny_grid_domain.rddl \
   --instance examples/rddl/tiny_grid_instance.rddl \
-  --frontend darp
+  --output tiny_grid_pyrddlgym_trace.json
 ```
 
-Load pyRDDLGym in visualizer mode while hiding DARP's internal state machine:
+Inspect pyRDDLGym artifacts directly:
 
 ```bash
-darp \
-  --visualizer \
-  --domain examples/rddl/tiny_grid_domain.rddl \
-  --instance examples/rddl/tiny_grid_instance.rddl \
-  --simulator rddlgym
+python -m darp.rddl.compiler \
+  examples/rddl/tiny_grid_domain.rddl \
+  examples/rddl/tiny_grid_instance.rddl
 ```
 
 ## Architecture
 
-- `rddl/`: RDDL parser frontends, loading, ASTs, expression grounding, and `PlanningProblem` compilation.
-- `core/`: Minimal planning-problem, type, and duration structures for the current phase.
-- `online.py`: Local PROST-like online solve loop, terminal traces, optional JSON traces, and finite-horizon online planner.
-- `sim/`: DARP's internal simulator and future external simulator adapters.
-- `search/`: Future AND-OR tree, Expand, full ILP, and HILP search algorithms.
-- `ilp/`: Future internal, HiGHS, and Gurobi ILP backends.
+- pyRDDLGym: standard RDDL parser, semantic handling, Gym-style environment, and simulator capability.
+- DARP `rddl/`: loads pyRDDLGym artifacts and reserves both the pyRDDLGym runtime boundary and the small-scale `model/env -> PlanningProblem` adapter boundary.
+- DARP `core/`: explicit finite-horizon model, typed identifiers, and duration abstractions used by planners.
+- DARP `online.py`: DP and belief helpers over explicit `PlanningProblem` objects for future enumerable RDDL and algorithm tests.
+- Future planner interface: first support pyRDDLGym generative reset/step, then build explicit `PlanningProblem` objects only for enumerable small discrete cases.
+- Future `search/` / `ilp/`: AND-OR tree, full ILP, HILP, and HiGHS/Gurobi backends on top of stable planner interfaces.
 
-`search/` and `ilp/` are separate layers: `search/` decides how to explore policy trees, while `ilp/` solves the ILP/p-ILP subproblems constructed during search. HiGHS and Gurobi are lower-level ILP backends, not alternatives to HILP.
-
-## RDDLFrontend
-
-`RDDLFrontend` is DARP's parser protocol. Each frontend returns `ParsedRDDL`:
-
-- `ast`: DARP's own `RDDLASTNode`, used by the compiler and visualizer.
-- `native_ast`: Third-party parser-native ASTs for debugging or future subclassing.
-- `env/model`: Executable artifacts from frontends such as pyRDDLGym.
-- `metadata`: Frontend, version, and parsing details.
-
-Current frontends:
-
-- `darp`: DARP's own basic parser, currently the default internal path.
-- `pyrddl`: Reuses `pyrddl.parser.RDDLParser`.
-- `pyrddlgym`: Reuses pyRDDLGym's parser/simulator ecosystem.
-
-## Repository Layout
+## File Layout
 
 ```text
 DARP/
-├── README.md                         # Chinese main documentation for development and maintenance.
-├── README-EN.md                      # English mirror documentation for international collaborators.
-├── darp-rddl-subset.ebnf             # EBNF guide for DARP's current RDDL parser/semantic subset.
-├── pyproject.toml                    # Python package metadata, console script, and optional dependencies.
-├── requirements.txt                  # Runtime dependency record; the current core stays lightweight.
-├── requirements-dev.txt              # Development and test dependency record.
+├── README.md                         # Chinese primary documentation.
+├── README-EN.md                      # English mirror documentation.
+├── pyproject.toml                    # Python package metadata and optional solver dependencies.
+├── requirements.txt                  # Runtime dependencies, including pyRDDLGym.
+├── requirements-dev.txt              # Development/test dependencies.
 │
-├── examples/                         # Example input directory.
-│   ├── benchmarks/                   # PROST/IPC RDDL MDP benchmark corpus for parser compatibility and future experiments.
-│   │   ├── README.md                 # Benchmark source, directory conventions, and current import inventory.
-│   │   └── <domain-year>/            # Individual benchmark domain directory with domain and instance RDDL files.
-│   └── rddl/                         # RDDL example files.
-│       ├── tiny_grid_domain.rddl     # 3x3 tiny-grid domain with CPF/reward dynamics.
-│       ├── tiny_grid_instance.rddl   # 3x3 tiny-grid instance with objects and horizon settings.
-│       ├── factored_door_domain.rddl # Phase 4 factored-state/partially-observed example with stochastic CPFs and an observ-fluent.
-│       └── factored_door_instance.rddl # Phase 4 factored-state example instance.
+├── examples/
+│   ├── benchmarks/                   # PROST/IPC RDDL MDP benchmark corpus.
+│   │   ├── README.md                 # Benchmark source notes and import list.
+│   │   └── <domain-year>/            # Individual benchmark domain directory.
+│   └── rddl/                         # Small hand-written RDDL examples.
+│       ├── tiny_grid_domain.rddl     # Tiny-grid standard RDDL domain.
+│       ├── tiny_grid_instance.rddl   # Tiny-grid instance.
+│       ├── factored_door_domain.rddl # Partial-observation toy domain for future adapter regression.
+│       └── factored_door_instance.rddl # Factored-door instance.
 │
-├── src/
-│   └── darp/                         # Main DARP Python package.
-│       ├── __init__.py               # Package version and top-level metadata.
-│       ├── __main__.py               # Top-level `darp` entrypoint for terminal traces and optional `--visualizer` UI.
-│       ├── online.py                 # Local online solve loop, terminal traces, optional JSON traces, and finite-horizon dynamic-programming planner.
-│       │
-│       ├── core/                     # Minimal planning model for the current phase.
-│       │   ├── __init__.py           # core package entrypoint.
-│       │   ├── types.py              # Shared aliases for states, actions, observations, and transitions.
-│       │   ├── duration.py           # Action-duration interface and fixed-duration model.
-│       │   └── problem.py            # `PlanningProblem` data structure and built-in tiny-grid model.
-│       │
-│       ├── rddl/                     # RDDL parsing, loading, compilation, and visualization.
-│       │   ├── __init__.py           # rddl package entrypoint.
-│       │   ├── ast.py                # DARP-owned `RDDLASTNode` AST node.
-│       │   ├── basic_parser.py       # Dependency-free basic structural RDDL parser.
-│       │   ├── lexicon.py            # RDDL keywords, block names, and lexical symbols.
-│       │   ├── expressions.py        # Standard RDDL expression parsing and evaluation for grounding.
-│       │   ├── semantics.py          # RDDL requirement rollout plan and current semantic checks.
-│       │   ├── frontend.py           # `RDDLFrontend` protocol and `ParsedRDDL` container.
-│       │   ├── extended.py           # DARP-owned frontend with future extension-syntax hooks.
-│       │   ├── pyrddl_frontend.py    # `pyrddl` frontend adapter.
-│       │   ├── pyrddlgym_frontend.py # `pyRDDLGym` frontend adapter.
-│       │   ├── loader.py             # Loads RDDL through a selected frontend name.
-│       │   ├── compiler.py           # Compiles `ParsedRDDL` into `PlanningProblem`.
-│       │   └── visualizer.py         # Live HTML visualizer and internal-simulator state-machine panel.
-│       │
-│       └── sim/                      # Simulator adapter layer.
-│           ├── __init__.py           # sim package entrypoint.
-│           └── local.py              # DARP internal small simulator backed by explicit tables.
-│
-└── tests/                            # Current phase tests.
-    ├── test_basic_rddl_parser.py     # Parser and HTML visualizer tests.
-    ├── test_darp_entrypoint.py       # Top-level `darp` CLI argument and `-h` tests.
-    ├── test_rddl_frontends.py        # Frontend loader and third-party parser adapter tests.
-    ├── test_rddl_expressions.py      # RDDL expression parser and evaluator tests.
-    ├── test_rddl_compiler.py         # RDDL-to-`PlanningProblem` compiler tests.
-    ├── test_rddl_grounding.py        # CPF/reward grounding behavior tests.
-    ├── test_local_simulator.py       # DARP internal simulator tests.
-    ├── test_online.py                # Local online solve loop and belief-update tests.
-    └── test_compiler_simulator_interaction.py # Compiler/simulator integration tests.
+├── src/darp/
+│   ├── __init__.py                   # Package version entrypoint.
+│   ├── __main__.py                   # Top-level `darp` CLI.
+│   ├── online.py                     # Finite-horizon online replanning over explicit PlanningProblem objects.
+│   │
+│   ├── core/
+│   │   ├── __init__.py               # core package entrypoint.
+│   │   ├── duration.py               # DurationModel interface and fixed/expected/Gaussian duration models.
+│   │   ├── problem.py                # DARP explicit PlanningProblem model.
+│   │   └── types.py                  # State, Action, Observation, and related aliases.
+│   │
+│   ├── rddl/
+│   │   ├── __init__.py               # pyRDDLGym-backed RDDL package entrypoint.
+│   │   ├── artifacts.py              # RDDLArtifacts container and RDDLLoadError.
+│   │   ├── loader.py                 # Loads standard RDDL with pyRDDLGym and returns artifacts.
+│   │   ├── runtime.py                # pyRDDLGym reset/step runtime and rollout online trace.
+│   │   └── compiler.py               # Future pyRDDLGym runtime and optional PlanningProblem enumeration boundary.
+└── tests/
+    ├── test_darp_entrypoint.py       # Top-level CLI and pyRDDLGym online-trace tests.
+    ├── test_online.py                # Online replanning and belief-update tests.
+    ├── test_pyrddlgym_runtime.py     # pyRDDLGym runtime and simple online-trace tests.
+    └── test_rddl_loader.py           # pyRDDLGym loader and future adapter-boundary tests.
 ```
-
-## Maintenance Rule
-
-Every functional update must also check and update `README.md`, `README-EN.md`, and `darp-rddl-subset.ebnf`. This is especially required when CLI arguments, the RDDL parser, expression parser, semantic requirements, or user-visible behavior change, so documentation and EBNF stay aligned with code progress.
 
 ## Roadmap
 
-DARP should not hard-code a policy for tiny grid. The roadmap below is already ordered by implementation priority: first make the local solve loop reliable, then expand general RDDL modeling, then implement verifiable baselines, then implement the paper search algorithms, then add external simulators, and finally extend durative actions and DARP-RDDL syntax.
-
 - [x] Phase 1: Project foundation
-  - [x] 1.1: Project plan, README/README-EN, and file structure notes
-  - [x] 1.2: Python packaging, requirements, and `.venv` workflow
-  - [x] 1.3: Minimal RDDL examples and pytest entrypoint
-- [x] Phase 2: RDDL input pipeline
-  - [x] 2.1: Basic RDDL parser and interactive HTML AST visualizer
-  - [x] 2.2: Align `darp`, `pyrddl`, and `pyrddlgym` through `RDDLFrontend`
-  - [x] 2.3: Structurally compile `ParsedRDDL` into a minimal `PlanningProblem`
-  - [x] 2.4: Complete standard RDDL CPF/reward expression grounding and verify state progression with DARP's internal simulator
-    - [x] 2.4.1: Ground tiny-grid CPF/reward dynamics
-    - [x] 2.4.2: Implement DARP's internal simulator and run the tiny-grid experiment
-    - [x] 2.4.3: Complete common standard RDDL CPF/reward expression grounding: square-bracket grouping, finite aggregates, complex boolean expressions, and leading decimals
-- [x] Phase 3: PROST-like realtime execution
-  - [x] 3.1: Implement a local online solve loop: replan each step, return actions, receive observations
-  - [x] 3.2: Unify the top-level `darp` entrypoint: default to non-visual terminal traces, use `--visualizer` for the web UI, and write JSON through `--output`
-  - [x] 3.3: Refine Bayesian cross-step belief carryover, initial-observation sampling, and hard-budget fallback decisions
-- [x] Phase 4: General RDDL problem modeling
-  - [x] 4.1: Stabilize `PlanningProblem`, typed identifiers, and model validation
-  - [x] 4.2: Support multiple state fluents and factored states, replacing the current one-hot compact-state assumption
-  - [x] 4.3: Support stochastic CPFs, non-identity observations, initial belief distributions, and action constraints
-  - [x] 4.4: Validate compiler, simulator, and online-belief semantics with the tiny-grid and factored-door domains; rddlsim protocol integration remains in Phase 8
-  - [x] 4.5: Implement the `reward-deterministic` requirement baseline
-  - [x] 4.6: Implement `cpf-deterministic` by checking deterministic state-fluent transition CPFs
-  - [x] 4.7: Implement `partially-observed` by checking `observ-fluent` and observation CPF consistency
-- [ ] Phase 5: Verifiable baseline solvers
-  - [ ] 5.1: Refine the explicit-state finite-horizon DP baseline for offline policies and online replanning
-  - [ ] 5.2: Add planner registry, unified trace output, and algorithm-selection parameters
-  - [ ] 5.3: Add stochastic/tie-break policies and seed-driven reproducibility tests
-- [ ] Phase 6: Paper search algorithms
-  - [ ] 6.1: Refine the AND-OR history tree in `and_or_tree.py`
-  - [ ] 6.2: Implement paper `Expand` and full-tree preprocessing
-  - [ ] 6.3: Implement the full ILP baseline
-  - [ ] 6.4: Implement HILP partial-ILP search
-- [ ] Phase 7: ILP solving layer
-  - [ ] 7.1: Implement the ILP model/backend protocol and internal backend
-  - [ ] 7.2: Add optional HiGHS backend
-  - [ ] 7.3: Add optional Gurobi backend
-- [ ] Phase 8: External simulators and PROST compatibility
-  - [ ] 8.1: Design the rddlsim/PROST-style online protocol adapter
-  - [ ] 8.2: Implement an external simulator client sharing the local action/observation interface
-  - [ ] 8.3: Add external simulator integration tests and benchmark runner
-- [ ] Phase 9: Durative actions and DARP-RDDL syntax
-  - [ ] 9.1: Design YAML/JSON sidecar schema and compiler/runtime interfaces
-  - [ ] 9.2: Wire fixed, expected, and Gaussian duration models
-  - [ ] 9.3: Connect paper duration/smoothed-belief constraints to HILP
-  - [ ] 9.4: Design and implement native DARP-RDDL syntax extensions
-- [ ] Phase 10: Output, interfaces, and experiments
-  - [ ] 10.1: Refine offline policy JSON and trace output
-  - [ ] 10.2: Add benchmarks and paper-style experiments
-  - [ ] 10.3: Clean up public APIs and algorithm registry
+  - [x] 1.1: README/README-EN, package metadata, and test entrypoint
+  - [x] 1.2: Explicit `PlanningProblem`, belief helpers, and online DP unit tests
+  - [x] 1.3: Import PROST/IPC benchmark corpus
+- [x] Phase 2: pyRDDLGym-first RDDL input
+  - [x] 2.1: Move standard RDDL parser/simulator responsibility to pyRDDLGym
+  - [x] 2.2: Remove DARP-owned parser/AST/expression/visualizer maintenance from main and preserve it on the archive branch
+  - [x] 2.3: Provide pyRDDLGym artifact summaries and adapter-boundary tests
+- [x] Phase 3: pyRDDLGym generative runtime adapter
+  - [x] 3.1: Define a DARP planner-facing runtime protocol around pyRDDLGym `reset/step/model`
+  - [x] 3.2: Extract type/object/fluent/action metadata while keeping native pyRDDLGym references
+  - [x] 3.3: Implement initial bool action candidates, noop/default actions, and action-constraint error propagation
+  - [x] 3.4: Define MDP/POMDP observation/state/belief boundaries, with sampling/particle interfaces when states are not enumerable
+  - [x] 3.5: Make `darp --domain --instance` execute an online step trace through the pyRDDLGym runtime
+- [ ] Phase 4: Small finite RDDL to explicit `PlanningProblem`
+  - [ ] 4.1: Add finite-discrete enumerability checks with clear errors for continuous, too-large, or unsupported structures
+  - [ ] 4.2: Extract reward, transition, and observation tables for deterministic and supported finite stochastic structures
+  - [ ] 4.3: Convert enumerable RDDL into `PlanningProblem` and regression-test tiny/factored examples
+- [ ] Phase 5: Verifiable baseline solver
+  - [ ] 5.1: Let baseline planners work over both pyRDDLGym generative runtime and explicit `PlanningProblem`
+  - [ ] 5.2: Add planner registry, unified trace output, and time-budget fallback
+  - [ ] 5.3: Add offline policy JSON plus replay/evaluation workflow
+- [ ] Phase 6: DurationModel and DARP sidecars
+  - [ ] 6.1: Design YAML/JSON duration sidecar schema
+  - [ ] 6.2: Wire fixed, expected, and Gaussian durations into the runtime adapter and explicit `PlanningProblem`
+  - [ ] 6.3: Reserve a Python plugin interface without changing standard RDDL grammar
+- [ ] Phase 7: Paper search algorithms
+  - [ ] 7.1: Implement AND-OR history tree
+  - [ ] 7.2: Implement paper `Expand` and preprocessing
+  - [ ] 7.3: Implement full ILP baseline
+  - [ ] 7.4: Implement HILP partial-ILP search
+- [ ] Phase 8: ILP backend
+  - [ ] 8.1: Implement ILP model/backend protocol and internal backend
+  - [ ] 8.2: Add HiGHS
+  - [ ] 8.3: Add Gurobi
+- [ ] Phase 9: Benchmarks and PROST/rddlsim compatibility
+  - [ ] 9.1: Implement benchmark runner and pyRDDLGym/rddlrepository import checks
+  - [ ] 9.2: Implement rddlsim/PROST-style online protocol adapter
+  - [ ] 9.3: Add paper-style experiment scripts
+  - [ ] 9.4: Evaluate integration between pyRDDLGym visualizers and DARP planner traces
 
 ## Testing
 
@@ -333,8 +176,10 @@ python -m pytest
 
 ## Current Limitations
 
-- The compiler currently targets small, discrete RDDL problems; it supports compact one-hot states and explicitly enumerated boolean factored states.
-- Current requirement semantic checks support `reward-deterministic`, `cpf-deterministic`, and `partially-observed`; all other requirements are recorded as a staged rollout plan in `rddl/semantics.py`.
-- The expression layer is still not full RDDL: `switch/case`, unparenthesized `if` variants, the full stochastic-distribution set, vector/matrix/enum numeric operations, and full action/state constraint semantics remain unsupported.
-- The internal simulator runs explicit transition/observation/reward tables and is not a general high-performance RDDL simulator.
-- Large/continuous belief representations, external rddlsim/PROST protocols, DARP-RDDL syntax extensions, native durative-action syntax, HILP, and HiGHS/Gurobi backends remain later phases.
+- RDDL inputs currently execute online traces through a pyRDDLGym generative runtime; they do not yet produce DARP `PlanningProblem` objects.
+- The pyRDDLGym rollout baseline currently enumerates noop and single bool actions only; action combinations and non-bool actions are future planner/action-space work.
+- Current POMDP belief uses a lightweight particle approximation for debugging runtime boundaries; benchmark-quality POMDP evaluation needs later likelihood weighting/resampling.
+- General RDDL cannot be assumed to enumerate into a full table MDP/POMDP; main will first support a generative runtime, with explicit enumeration only for small finite discrete cases.
+- Explicit `PlanningProblem` DP helpers are for algorithm unit tests and future small-scale enumeration paths, not replacements for the pyRDDLGym runtime.
+- Native DARP-RDDL syntax is not maintained on main; durative actions should first use sidecars/plugins.
+- AND-OR tree, full ILP, HILP, and HiGHS/Gurobi backends remain future phases.

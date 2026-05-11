@@ -1,3 +1,5 @@
+"""Tests for the top-level DARP entrypoint."""
+
 import json
 
 import pytest
@@ -15,121 +17,87 @@ def test_darp_help_exits_successfully(capsys):
     assert exc_info.value.code == 0
     help_text = capsys.readouterr().out
     assert "--domain" in help_text
-    assert "--visualizer" in help_text
-    assert "--simulator" in help_text
-    assert "solve" not in help_text
+    assert "--instance" in help_text
+    assert "--lookahead-depth" in help_text
+    assert "--particles" in help_text
 
 
-def test_darp_default_trace_arguments_parse():
-    """Check top-level trace arguments parse cleanly. / 检查顶层 trace 参数能正确解析。"""
+def test_darp_rddl_arguments_parse():
+    """Check top-level RDDL trace arguments parse cleanly. / 检查顶层 RDDL trace 参数能正确解析。"""
     args = build_parser().parse_args(
         [
             "--domain",
             "domain.rddl",
             "--instance",
             "instance.rddl",
-            "--simulator",
-            "darp",
-            "--frontend",
-            "darp",
             "--seed",
             "3",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "8080",
-            "--no-open",
         ]
     )
 
-    assert args.visualizer is False
-    assert args.mode == "online"
     assert args.domain == "domain.rddl"
     assert args.instance == "instance.rddl"
-    assert args.simulator == "darp"
-    assert args.frontend == "darp"
     assert args.seed == 3
-    assert args.port == 8080
-    assert args.no_open is True
+    assert args.lookahead_depth == 4
+    assert args.particles == 32
 
 
-def test_darp_legacy_with_simulator_alias_parse():
-    """Check legacy simulator alias still maps to the runtime simulator. / 检查旧 simulator 别名仍会映射到运行时 simulator。"""
-    args = build_parser().parse_args(
-        [
-            "--domain",
-            "domain.rddl",
-            "--instance",
-            "instance.rddl",
-            "--with-simulator",
-            "rddlgym",
-        ]
-    )
-
-    assert args.simulator == "rddlgym"
-
-
-def test_darp_visualizer_invokes_visualizer(monkeypatch):
-    """Check `--visualizer` starts the live UI. / 检查 `--visualizer` 会启动实时界面。"""
-    called = {}
-
-    def fake_serve_visualizer(**kwargs):
-        """Capture visualizer arguments without opening a server. / 捕获 visualizer 参数而不启动服务。"""
-        called.update(kwargs)
-        return 0
-
-    monkeypatch.setattr("darp.__main__.serve_visualizer", fake_serve_visualizer)
-    exit_code = main(
-        [
-            "--visualizer",
-            "--domain",
-            "domain.rddl",
-            "--instance",
-            "instance.rddl",
-            "--no-open",
-        ]
-    )
-
-    assert exit_code == 0
-    assert called["domain"] == "domain.rddl"
-    assert called["instance"] == "instance.rddl"
-    assert called["simulator"] == "darp"
-    assert called["frontend"] == "darp"
-    assert called["seed"] == 0
-    assert called["open_browser"] is False
-
-
-def test_darp_typo_visualizer_argument_errors():
-    """Check misspelled visualizer arguments fail clearly. / 检查拼错的 visualizer 参数会明确报错。"""
+def test_darp_requires_rddl_files():
+    """Check DARP requires explicit RDDL domain and instance files. / 检查 DARP 需要显式 RDDL domain 和 instance。"""
     with pytest.raises(SystemExit) as exc_info:
-        build_parser().parse_args(["--visulaizer"])
+        main([])
 
     assert exc_info.value.code == 2
 
 
-def test_darp_top_level_outputs_trace(capsys):
-    """Check top-level DARP prints a terminal trace without JSON. / 检查顶层 DARP 默认打印非 JSON 终端轨迹。"""
-    exit_code = main(["--mode", "online", "--seed", "7"])
+def test_darp_unknown_argument_errors():
+    """Check unknown CLI arguments fail clearly. / 检查未知 CLI 参数会明确报错。"""
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["--unknown"])
+
+    assert exc_info.value.code == 2
+
+
+def test_darp_runs_rddl_online_through_pyrddlgym(capsys):
+    """Check RDDL inputs run through pyRDDLGym online execution. / 检查 RDDL 输入会通过 pyRDDLGym 在线执行。"""
+    pytest.importorskip("pyRDDLGym")
+
+    exit_code = main(
+        [
+            "--domain",
+            "examples/rddl/tiny_grid_domain.rddl",
+            "--instance",
+            "examples/rddl/tiny_grid_instance.rddl",
+        ]
+    )
     captured = capsys.readouterr()
 
     assert exit_code == 0
-    assert captured.out.startswith("DARP online trace")
-    assert "action=safe_path" in captured.out
-    assert "Total reward:" in captured.out
-    with pytest.raises(json.JSONDecodeError):
-        json.loads(captured.out)
+    assert captured.out.startswith("DARP pyRDDLGym online trace")
+    assert "Planner: pyrddlgym-rollout" in captured.out
+    assert "action=move-east" in captured.out
+    assert "next=at___c33" in captured.out
 
 
-def test_darp_output_writes_json_file(tmp_path, capsys):
-    """Check JSON is written only when `--output` is provided. / 检查只有提供 `--output` 时才写 JSON。"""
-    output = tmp_path / "trace.json"
-    exit_code = main(["--mode", "online", "--seed", "7", "--output", str(output)])
+def test_darp_rddl_output_writes_json_trace(tmp_path, capsys):
+    """Check RDDL online execution writes JSON when requested. / 检查 RDDL 在线执行按需写入 JSON。"""
+    pytest.importorskip("pyRDDLGym")
+    output = tmp_path / "rddl-trace.json"
+    exit_code = main(
+        [
+            "--domain",
+            "examples/rddl/tiny_grid_domain.rddl",
+            "--instance",
+            "examples/rddl/tiny_grid_instance.rddl",
+            "--output",
+            str(output),
+        ]
+    )
     captured = capsys.readouterr()
     payload = json.loads(output.read_text(encoding="utf-8"))
 
     assert exit_code == 0
-    assert captured.out.startswith("DARP online trace")
-    assert payload["mode"] == "online"
-    assert payload["planner"] == "finite-horizon-dp"
-    assert len(payload["steps"]) == payload["max_depth"]
-    assert payload["steps"][0]["action"] == "safe_path"
+    assert captured.out.startswith("DARP pyRDDLGym online trace")
+    assert payload["planner"] == "pyrddlgym-rollout"
+    assert payload["rddl"]["artifacts"]["env"] == "RDDLEnv"
+    assert payload["steps"][3]["next_state"]["at___c33"] is True

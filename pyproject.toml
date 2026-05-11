@@ -12,15 +12,13 @@ license = { text = "Apache-2.0" }
 authors = [
   { name = "DARP contributors" }
 ]
-dependencies = []
+dependencies = ["pyRDDLGym>=2.0"]
 
 [project.scripts]
 darp = "darp.__main__:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
-rddl = ["pyRDDLGym>=2.0"]
-pyrddl = ["pyrddl"]
 highs = ["scipy>=1.11"]
 gurobi = ["gurobipy>=10.0"]
 

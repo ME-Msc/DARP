@@ -1,17 +1,16 @@
-"""Local PROST-like online execution loop."""
+"""Explicit PlanningProblem dynamic-programming helpers."""
 
-# TODO(phase-5.2): Let future anytime/search planners return their best partial
-# policy when a hard deadline expires.
+# TODO(phase-5.2): Move explicit DP planning behind the shared planner registry
+# and reuse the same trace formatter as the pyRDDLGym runtime.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Mapping
 
 from darp.core.problem import PlanningProblem
 from darp.core.types import Action, Distribution, Observation, State
-from darp.sim.local import LocalSimulator
 
 
 @dataclass(frozen=True)
@@ -42,63 +41,6 @@ class OnlineDecision:
             "fallback_reason": self.fallback_reason,
             "over_time_budget": self.timed_out
             or (self.time_budget_ms is not None and self.elapsed_ms > self.time_budget_ms),
-        }
-
-
-@dataclass(frozen=True)
-class OnlineStep:
-    """Store one online interaction step. / 保存一次在线交互步骤。"""
-
-    step: int
-    observation: Observation
-    belief: Distribution
-    decision: OnlineDecision
-    reward: float
-    next_observation: Observation
-    next_belief: Distribution
-    done: bool
-    info: Mapping[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-friendly step record. / 返回适合 JSON 的步骤记录。"""
-        return {
-            "step": self.step,
-            "observation": self.observation,
-            "belief": dict(self.belief),
-            "action": self.decision.action,
-            "decision": self.decision.to_dict(),
-            "reward": self.reward,
-            "next_observation": self.next_observation,
-            "next_belief": dict(self.next_belief),
-            "done": self.done,
-            "info": dict(self.info),
-        }
-
-
-@dataclass(frozen=True)
-class OnlineSessionResult:
-    """Store a complete local online session. / 保存一次完整本地在线会话。"""
-
-    mode: str
-    problem: str
-    planner: str
-    seed: int
-    horizon: float
-    max_depth: int
-    total_reward: float
-    steps: tuple[OnlineStep, ...]
-
-    def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-friendly session record. / 返回适合 JSON 的会话记录。"""
-        return {
-            "mode": self.mode,
-            "problem": self.problem,
-            "planner": self.planner,
-            "seed": self.seed,
-            "horizon": self.horizon,
-            "max_depth": self.max_depth,
-            "total_reward": self.total_reward,
-            "steps": [step.to_dict() for step in self.steps],
         }
 
 
@@ -206,61 +148,6 @@ class FiniteHorizonOnlinePlanner:
                 )
             )
         return value
-
-
-def run_local_online_session(
-    problem: PlanningProblem,
-    *,
-    seed: int = 0,
-    time_budget_ms: float | None = None,
-) -> OnlineSessionResult:
-    """Run DARP against the local simulator step by step. / 逐步运行 DARP 与本地 simulator 的交互。"""
-    simulator = LocalSimulator(problem, seed=seed)
-    planner = FiniteHorizonOnlinePlanner(problem)
-    observation = simulator.reset()
-    belief = initial_belief_from_observation(problem, observation)
-    trace: list[OnlineStep] = []
-    total_reward = 0.0
-
-    for step in range(problem.max_depth):
-        remaining_depth = max(1, problem.max_depth - step)
-        decision = planner.choose_action(
-            belief,
-            remaining_depth=remaining_depth,
-            time_budget_ms=time_budget_ms,
-        )
-        next_observation, reward, done, info = simulator.step(decision.action)
-        next_belief = update_belief(problem, belief, decision.action, next_observation)
-        total_reward += reward
-        trace.append(
-            OnlineStep(
-                step=step,
-                observation=observation,
-                belief=belief,
-                decision=decision,
-                reward=reward,
-                next_observation=next_observation,
-                next_belief=next_belief,
-                done=done,
-                info=info,
-            )
-        )
-        observation = next_observation
-        belief = next_belief
-        if done:
-            break
-
-    return OnlineSessionResult(
-        mode="online",
-        problem=problem.name,
-        planner=planner.name,
-        seed=seed,
-        horizon=problem.horizon,
-        max_depth=problem.max_depth,
-        total_reward=total_reward,
-        steps=tuple(trace),
-    )
-
 
 def initial_belief_from_observation(
     problem: PlanningProblem, observation: Observation

@@ -1,6 +1,6 @@
 """Shared type aliases for DARP planning models."""
 
-# TODO(phase-10.3): Promote these aliases to public dataclasses if downstream
+# TODO(phase-4.3): Promote these aliases to public dataclasses if downstream
 # integrations need runtime type metadata instead of hashable IDs.
 
 from __future__ import annotations

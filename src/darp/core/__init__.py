@@ -1,6 +1,6 @@
 """Solver-independent planning data structures."""
 
-from darp.core.problem import PlanningProblem, make_tiny_grid_problem
+from darp.core.problem import PlanningProblem
 from darp.core.types import Action, Distribution, GroundAtom, Observation, State
 
 __all__ = [
@@ -10,5 +10,4 @@ __all__ = [
     "Observation",
     "PlanningProblem",
     "State",
-    "make_tiny_grid_problem",
 ]
