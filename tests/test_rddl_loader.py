@@ -2,28 +2,27 @@
 
 import pytest
 
-from darp.rddl.artifacts import RDDLArtifacts, RDDLLoadError
-from darp.rddl.compiler import PyRDDLGymPlanningAdapter, RDDLCompileError, summarize_pyrddlgym_artifacts
-from darp.rddl.loader import RDDLLoader
+from darp.loaded import LoadedRDDL, RDDLLoadError
+from darp.loader import RDDLLoader
 
 DOMAIN = "examples/rddl/tiny_grid_domain.rddl"
 INSTANCE = "examples/rddl/tiny_grid_instance.rddl"
 
 
 def test_pyrddlgym_loader_returns_model_and_env_when_installed():
-    """Check pyRDDLGym loading returns model/env artifacts. / 检查 pyRDDLGym 加载会返回 model/env 产物。"""
+    """Check pyRDDLGym loading returns model/env components. / 检查 pyRDDLGym 加载会返回 model/env 组件。"""
     pytest.importorskip("pyRDDLGym")
 
     loaded = RDDLLoader().load(DOMAIN, INSTANCE)
 
-    assert isinstance(loaded, RDDLArtifacts)
+    assert isinstance(loaded, LoadedRDDL)
     assert loaded.native_ast is not None
     assert loaded.model is not None
     assert loaded.env is not None
     assert loaded.metadata["source"] == "pyRDDLGym"
-    assert loaded.artifact_summary()["native_ast"] == "RDDL"
-    assert loaded.artifact_summary()["model"] == "RDDLLiftedModel"
-    assert loaded.artifact_summary()["env"] == "RDDLEnv"
+    assert loaded.component_summary()["native_ast"] == "RDDL"
+    assert loaded.component_summary()["model"] == "RDDLLiftedModel"
+    assert loaded.component_summary()["env"] == "RDDLEnv"
 
 
 def test_pyrddlgym_loader_gives_clear_file_errors():
@@ -34,24 +33,26 @@ def test_pyrddlgym_loader_gives_clear_file_errors():
         RDDLLoader().load("missing-domain.rddl", "missing-instance.rddl")
 
 
-def test_pyrddlgym_summary_exposes_future_extraction_fields():
-    """Check pyRDDLGym artifacts expose the future adapter boundary. / 检查 pyRDDLGym 产物暴露未来适配边界。"""
+def test_loaded_rddl_summary_exposes_future_search_boundaries():
+    """Check loaded RDDL exposes the future search boundary. / 检查 loaded RDDL 暴露未来搜索边界。"""
     pytest.importorskip("pyRDDLGym")
     loaded = RDDLLoader().load(DOMAIN, INSTANCE)
-    summary = summarize_pyrddlgym_artifacts(loaded)
+    summary = loaded.to_summary_dict()
 
     assert summary["source"] == "pyRDDLGym"
-    assert summary["planning_problem"] is None
-    assert "pyRDDLGym generative runtime interface" in summary["planned_extraction"]
-    assert "DurationModel sidecar hook" in summary["planned_extraction"]
+    assert "pyRDDLGym grounded model view" in summary["future_interfaces"]
+    assert "ILP/HILP search over the grounded model and duration sidecars" in summary["future_interfaces"]
     assert "at" in summary["model"]["state_fluents"]
     assert "move-east" in summary["model"]["action_fluents"]
 
 
-def test_pyrddlgym_planning_adapter_is_explicitly_future_work():
-    """Check planning extraction fails as clear future work. / 检查规划模型抽取以清晰 future work 失败。"""
+def test_loaded_rddl_reuses_pyrddlgym_grounder():
+    """Check grounding is delegated to pyRDDLGym. / 检查 grounding 委托给 pyRDDLGym。"""
     pytest.importorskip("pyRDDLGym")
     loaded = RDDLLoader().load(DOMAIN, INSTANCE)
+    with pytest.warns(UserWarning):
+        grounded = loaded.build_grounded_model()
 
-    with pytest.raises(RDDLCompileError, match="planned but not implemented"):
-        PyRDDLGymPlanningAdapter().compile(loaded)
+    assert type(grounded).__name__ == "RDDLGroundedModel"
+    assert "at___c11" in grounded.state_fluents
+    assert "move-east" in grounded.action_fluents

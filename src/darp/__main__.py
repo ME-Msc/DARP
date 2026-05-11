@@ -1,7 +1,7 @@
 """Top-level command-line entrypoint for DARP."""
 
-# TODO(phase-5.2): Route pyRDDLGym and explicit planners through a shared
-# planner registry and trace formatter.
+# TODO(phase-5.2): Route rollout, AND-OR, full ILP, and HILP planners through a
+# shared planner registry and trace formatter.
 
 from __future__ import annotations
 
@@ -9,9 +9,8 @@ import argparse
 import json
 from pathlib import Path
 
-from darp.rddl.compiler import summarize_pyrddlgym_artifacts
-from darp.rddl.loader import RDDLLoader
-from darp.rddl.runtime import run_pyrddlgym_online_session
+from darp.loader import RDDLLoader
+from darp.session import run_online_session
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -60,7 +59,7 @@ def _run_rddl_online(args: argparse.Namespace) -> int:
     if args.particles < 1:
         raise ValueError("--particles must be at least 1.")
     loaded = RDDLLoader().load(args.domain, args.instance)
-    result = run_pyrddlgym_online_session(
+    result = run_online_session(
         loaded,
         seed=args.seed,
         lookahead_depth=args.lookahead_depth,
@@ -68,7 +67,7 @@ def _run_rddl_online(args: argparse.Namespace) -> int:
         particle_count=args.particles,
     )
     payload = result.to_dict()
-    payload["rddl"] = summarize_pyrddlgym_artifacts(loaded)
+    payload["rddl"] = loaded.to_summary_dict()
     if args.output:
         Path(args.output).write_text(
             json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n",

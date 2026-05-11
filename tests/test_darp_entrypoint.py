@@ -99,5 +99,5 @@ def test_darp_rddl_output_writes_json_trace(tmp_path, capsys):
     assert exit_code == 0
     assert captured.out.startswith("DARP pyRDDLGym online trace")
     assert payload["planner"] == "pyrddlgym-rollout"
-    assert payload["rddl"]["artifacts"]["env"] == "RDDLEnv"
+    assert payload["rddl"]["components"]["env"] == "RDDLEnv"
     assert payload["steps"][3]["next_state"]["at___c33"] is True

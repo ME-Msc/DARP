@@ -7,10 +7,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Hashable
 from math import erf, sqrt
 from typing import Mapping
 
-from darp.core.types import Action, Distribution, State
+ActionName = str
+StateKey = Hashable
+Belief = Mapping[StateKey, float]
 
 
 @dataclass(frozen=True)
@@ -41,7 +44,7 @@ class DurationModel:
 
     kind = "base"
 
-    def estimate(self, belief: Distribution, action: Action) -> DurationEstimate:
+    def estimate(self, belief: Belief, action: ActionName) -> DurationEstimate:
         """Estimate duration for an action under a belief. / 在给定 belief 下估计动作时长。"""
         raise NotImplementedError
 
@@ -58,11 +61,11 @@ class DurationModel:
 class FixedDurationModel(DurationModel):
     """Fixed action durations, where tau is remaining time. / 固定动作时长模型，tau 表示剩余时间。"""
 
-    durations: Mapping[Action, float]
+    durations: Mapping[ActionName, float]
     default: float = 1.0
     kind: str = "fixed"
 
-    def estimate(self, belief: Distribution, action: Action) -> DurationEstimate:
+    def estimate(self, belief: Belief, action: ActionName) -> DurationEstimate:
         """Return the configured fixed duration. / 返回配置中的固定动作时长。"""
         return DurationEstimate(mean=float(self.durations.get(action, self.default)))
 
@@ -75,11 +78,11 @@ class FixedDurationModel(DurationModel):
 class StateDependentDurationModel(DurationModel):
     """Expected duration under the current belief. / 当前 belief 下的期望动作时长。"""
 
-    durations: Mapping[tuple[State, Action], float]
+    durations: Mapping[tuple[StateKey, ActionName], float]
     default: float = 1.0
     kind: str = "expected"
 
-    def estimate(self, belief: Distribution, action: Action) -> DurationEstimate:
+    def estimate(self, belief: Belief, action: ActionName) -> DurationEstimate:
         """Return belief-weighted expected duration. / 返回 belief 加权的期望时长。"""
         mean = sum(
             prob * float(self.durations.get((state, action), self.default))
@@ -96,13 +99,13 @@ class StateDependentDurationModel(DurationModel):
 class GaussianDurationModel(DurationModel):
     """Gaussian percentile duration model. / Gaussian 百分位动作时长模型。"""
 
-    means: Mapping[tuple[State, Action], float]
-    variances: Mapping[tuple[State, Action], float]
+    means: Mapping[tuple[StateKey, ActionName], float]
+    variances: Mapping[tuple[StateKey, ActionName], float]
     default_mean: float = 1.0
     default_variance: float = 0.0
     kind: str = "gaussian"
 
-    def estimate(self, belief: Distribution, action: Action) -> DurationEstimate:
+    def estimate(self, belief: Belief, action: ActionName) -> DurationEstimate:
         """Return belief-weighted Gaussian mean and variance. / 返回 belief 加权的 Gaussian 均值与方差。"""
         mean = 0.0
         variance = 0.0

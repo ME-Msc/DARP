@@ -4,8 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from darp.rddl.loader import RDDLLoader
-from darp.rddl.runtime import PyRDDLGymRuntime, action_label, run_pyrddlgym_online_session
+from darp.loader import RDDLLoader
+from darp.planner import action_label
+from darp.runtime import PyRDDLGymRuntime
+from darp.session import run_online_session
 
 DOMAIN = "examples/rddl/tiny_grid_domain.rddl"
 INSTANCE = "examples/rddl/tiny_grid_instance.rddl"
@@ -42,7 +44,7 @@ def test_pyrddlgym_online_session_reaches_tiny_grid_goal():
     """Check DARP can run a simple RDDL online loop through pyRDDLGym. / 检查 DARP 能通过 pyRDDLGym 运行简单 RDDL 在线循环。"""
     pytest.importorskip("pyRDDLGym")
     loaded = RDDLLoader().load(DOMAIN, INSTANCE)
-    result = run_pyrddlgym_online_session(loaded, seed=7, lookahead_depth=4)
+    result = run_online_session(loaded, seed=7, lookahead_depth=4)
     payload = result.to_dict()
 
     assert payload["planner"] == "pyrddlgym-rollout"
