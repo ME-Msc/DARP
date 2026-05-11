@@ -18,7 +18,8 @@ from darp.rddl.ast import RDDLASTNode
 ExpressionValue = bool | float | str
 
 TOKEN_RE = re.compile(
-    r"\s+|==|!=|<=|>=|=>|\d+(?:\.\d+)?|@[A-Za-z0-9_-]+|\?[A-Za-z0-9_-]+|"
+    r"\s+|<=>|==|!=|<=|>=|=>|(?:\d+(?:\.\d*)?|\.\d+)|"
+    r"@[A-Za-z0-9_-]+|\?[A-Za-z0-9_-]+|"
     r"[A-Za-z_][A-Za-z0-9_'\-]*|[{}\[\]():^|&!<>+\-*/~,=]|."
 )
 
@@ -161,6 +162,8 @@ class BinaryExpression:
             return _truthy(self.left.evaluate(context)) and _truthy(self.right.evaluate(context))
         if self.operator == "=>":
             return (not _truthy(self.left.evaluate(context))) or _truthy(self.right.evaluate(context))
+        if self.operator == "<=>":
+            return _truthy(self.left.evaluate(context)) == _truthy(self.right.evaluate(context))
         left = self.left.evaluate(context)
         right = self.right.evaluate(context)
         if self.operator in {"==", "="}:
@@ -329,7 +332,7 @@ def _parse_if(stream: "_ExpressionStream") -> Expression:
 def _parse_implies(stream: "_ExpressionStream") -> Expression:
     """Parse implication expressions. / 解析蕴含表达式。"""
     expression = _parse_or(stream)
-    if stream.peek() == "=>":
+    if stream.peek() in {"=>", "<=>"}:
         expression = BinaryExpression(stream.expect_any(), expression, _parse_implies(stream))
     return expression
 
@@ -396,6 +399,16 @@ def _parse_primary(stream: "_ExpressionStream") -> Expression:
         expression = _parse_if(stream)
         stream.expect(")")
         return expression
+    if token == "[":
+        next_token = stream.peek()
+        next_name = next_token.rstrip("_") if next_token is not None else ""
+        if next_name in AGGREGATE_NAMES and stream.peek_at(1) == "{":
+            stream.expect_any()
+            expression = _parse_aggregate(stream, next_name, body_terminator="]")
+        else:
+            expression = _parse_if(stream)
+        stream.expect("]")
+        return expression
     if token in {"true", "false"}:
         return LiteralExpression(token == "true")
     if _is_number(token):
@@ -412,7 +425,9 @@ def _parse_primary(stream: "_ExpressionStream") -> Expression:
     return LiteralExpression(_object_name(token) if token.startswith("@") else token)
 
 
-def _parse_aggregate(stream: "_ExpressionStream", kind: str) -> Expression:
+def _parse_aggregate(
+    stream: "_ExpressionStream", kind: str, *, body_terminator: str | None = None
+) -> Expression:
     """Parse a finite-object aggregate expression. / 解析有限对象聚合表达式。"""
     stream.expect("{")
     bindings: list[tuple[str, str]] = []
@@ -432,8 +447,10 @@ def _parse_aggregate(stream: "_ExpressionStream", kind: str) -> Expression:
     elif stream.consume_if("("):
         body = _parse_if(stream)
         stream.expect(")")
+    elif body_terminator is not None:
+        body = _parse_if(stream)
     else:
-        raise RDDLExpressionError("Aggregate body must be wrapped in [] or ().")
+        body = _parse_unary(stream)
     return AggregateExpression(kind=kind, bindings=tuple(bindings), body=body)
 
 
@@ -453,6 +470,13 @@ class _ExpressionStream:
     def peek(self) -> str | None:
         """Return the next token without consuming it. / 返回但不消耗下一个 token。"""
         return None if self.done else self.tokens[self.index]
+
+    def peek_at(self, offset: int) -> str | None:
+        """Return a lookahead token without consuming it. / 返回但不消耗一个向前看的 token。"""
+        position = self.index + offset
+        if position >= len(self.tokens):
+            return None
+        return self.tokens[position]
 
     def consume_if(self, value: str) -> bool:
         """Consume the next token if it matches. / 如果下一个 token 匹配则消耗它。"""

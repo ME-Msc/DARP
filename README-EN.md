@@ -9,6 +9,7 @@ The current code focuses on the standard RDDL input pipeline, DARP's small inter
 - Parse standard RDDL domain/instance files into DARP-owned `RDDLASTNode` ASTs.
 - Align the `darp`, `pyrddl`, and `pyrddlgym` parser frontends through `RDDLFrontend`.
 - Ground the currently supported RDDL CPF/reward expressions into a minimal `PlanningProblem`.
+- Support common expression forms: boolean/arithmetic composition, square-bracket grouping, finite `sum/prod/avg/forall/exists` aggregates, `=>`/`<=>` logical connectives, `Bernoulli/KronDelta/DiracDelta`, and leading-decimal literals such as `.45`.
 - The current requirement baseline supports `reward-deterministic`, `cpf-deterministic`, and `partially-observed`: reward determinism, state-fluent transition CPF determinism, and `observ-fluent` observation-model declarations are checked; other requirements will be implemented and committed one by one.
 - Support small boolean factored states: multiple state fluents are enumerated into explicit finite states that still work with the local planner/simulator.
 - Support `Bernoulli(p)` stochastic CPFs, `observ-fluent` noisy observations, explicit reset-observation models, and `max-nondef-actions` static action constraints.
@@ -257,6 +258,7 @@ DARP/
     ├── test_basic_rddl_parser.py     # Parser and HTML visualizer tests.
     ├── test_darp_entrypoint.py       # Top-level `darp` CLI argument and `-h` tests.
     ├── test_rddl_frontends.py        # Frontend loader and third-party parser adapter tests.
+    ├── test_rddl_expressions.py      # RDDL expression parser and evaluator tests.
     ├── test_rddl_compiler.py         # RDDL-to-`PlanningProblem` compiler tests.
     ├── test_rddl_grounding.py        # CPF/reward grounding behavior tests.
     ├── test_local_simulator.py       # DARP internal simulator tests.
@@ -283,7 +285,7 @@ DARP should not hard-code a policy for tiny grid. The roadmap below is already o
   - [x] 2.4: Complete standard RDDL CPF/reward expression grounding and verify state progression with DARP's internal simulator
     - [x] 2.4.1: Ground tiny-grid CPF/reward dynamics
     - [x] 2.4.2: Implement DARP's internal simulator and run the tiny-grid experiment
-    - [x] 2.4.3: Complete general standard RDDL CPF/reward expression grounding without adding new syntax
+    - [x] 2.4.3: Complete common standard RDDL CPF/reward expression grounding: square-bracket grouping, finite aggregates, complex boolean expressions, and leading decimals
 - [x] Phase 3: PROST-like realtime execution
   - [x] 3.1: Implement a local online solve loop: replan each step, return actions, receive observations
   - [x] 3.2: Unify the top-level `darp` entrypoint: default to non-visual terminal traces, use `--visualizer` for the web UI, and write JSON through `--output`
@@ -333,5 +335,6 @@ python -m pytest
 
 - The compiler currently targets small, discrete RDDL problems; it supports compact one-hot states and explicitly enumerated boolean factored states.
 - Current requirement semantic checks support `reward-deterministic`, `cpf-deterministic`, and `partially-observed`; all other requirements are recorded as a staged rollout plan in `rddl/semantics.py`.
+- The expression layer is still not full RDDL: `switch/case`, unparenthesized `if` variants, the full stochastic-distribution set, vector/matrix/enum numeric operations, and full action/state constraint semantics remain unsupported.
 - The internal simulator runs explicit transition/observation/reward tables and is not a general high-performance RDDL simulator.
 - Large/continuous belief representations, external rddlsim/PROST protocols, DARP-RDDL syntax extensions, native durative-action syntax, HILP, and HiGHS/Gurobi backends remain later phases.

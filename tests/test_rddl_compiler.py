@@ -67,6 +67,49 @@ def test_compiler_builds_factored_boolean_problem():
     assert problem.metadata["requirements"] == ["partially-observed", "reward-deterministic"]
 
 
+def test_compiler_accepts_common_rddl_aggregates(tmp_path):
+    """Check sum/exists-style expression grounding. / 检查 sum/exists 风格表达式 grounding。"""
+    domain, instance = _write_rddl_pair(
+        tmp_path,
+        """
+        domain aggregate_cells {
+          requirements { reward-deterministic };
+          types {
+            cell : { @c1, @c2 };
+            slot : { @s };
+          };
+          pvariables {
+            alive(cell, slot) : { state-fluent, bool, default = false };
+            set(cell, slot) : { action-fluent, bool, default = false };
+          };
+          cpfs {
+            alive'(?c, ?slot) =
+              if ([sum_{?n : cell} alive(?n, ?slot)] >= 1 | set(?c, ?slot))
+              then Bernoulli(.9)
+              else Bernoulli(0.1);
+          };
+          reward = [sum_{?c : cell} alive(?c, s) - set(?c, s)];
+        }
+        """,
+        """
+        instance aggregate_cells_inst {
+          domain = aggregate_cells;
+          init-state { alive(c1, s); };
+          horizon = 1;
+          discount = 1;
+          max-nondef-actions = 1;
+        }
+        """,
+    )
+
+    problem = RDDLCompiler().compile(RDDLLoader("darp").load(domain, instance))
+
+    assert problem.metadata["compiler_mode"] == "factored-grounded-rddl-expressions"
+    assert problem.actions == ("set(c1,s)", "set(c2,s)")
+    assert problem.rewards[("{alive(c1,s)}", "set(c2,s)")] == 0.0
+    assert problem.transition_prob("{}", "set(c1,s)", "{alive(c1,s)}") == pytest.approx(0.81)
+
+
 def test_compiler_rejects_missing_canonical_ast():
     """Check that compilation requires the canonical DARP AST. / 检查编译必须使用 DARP 标准 AST。"""
     loaded = ParsedRDDL(frontend="bad", domain=DOMAIN, instance=INSTANCE, ast=None)

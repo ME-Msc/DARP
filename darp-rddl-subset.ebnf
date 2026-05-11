@@ -41,9 +41,10 @@ identifier_part   = letter | digit | "_" | "-" | "'" ;
 variable          = "?", identifier ;
 object_literal    = "@", identifier ;
 
-number            = digit, { digit }, [ ".", digit, { digit } ] ;
+number            = digit, { digit }, [ ".", { digit } ]
+                  | ".", digit, { digit } ;
 boolean           = "true" | "false" ;
-operator          = "==" | "!=" | "<=" | ">=" | "=>"
+operator          = "==" | "!=" | "<=" | ">=" | "=>" | "<=>"
                   | "=" | ":" | "," | ";" | "^" | "|" | "&" | "!"
                   | "<" | ">" | "+" | "-" | "*" | "/" | "~" ;
 punctuation       = "{" | "}" | "(" | ")" | "[" | "]" ;
@@ -175,7 +176,7 @@ if_expression     = "if", "(", expression, ")", "then", expression, "else", expr
                   | implication_expression ;
 
 implication_expression
-                  = or_expression, [ "=>", implication_expression ] ;
+                  = or_expression, [ ( "=>" | "<=>" ), implication_expression ] ;
 
 or_expression     = and_expression, { ( "|" | "or" ), and_expression } ;
 and_expression    = comparison_expression, { ( "^" | "&" | "and" ), comparison_expression } ;
@@ -201,15 +202,24 @@ primary_expression
                   | builtin_call
                   | fluent_call
                   | "(", expression, ")"
+                  | "[", expression, "]"
                   | literal
                   | variable ;
 
 aggregate_expression
+                  = direct_aggregate_expression
+                  | bracketed_aggregate_expression ;
+direct_aggregate_expression
                   = aggregate_name, "{", aggregate_binding,
                     { ",", aggregate_binding }, "}", aggregate_body ;
+bracketed_aggregate_expression
+                  = "[", aggregate_name, "{", aggregate_binding,
+                    { ",", aggregate_binding }, "}", expression, "]" ;
 aggregate_name    = "sum" | "prod" | "avg" | "forall" | "exists" ;
 aggregate_binding = variable, ":", identifier ;
-aggregate_body    = "[", expression, "]" | "(", expression, ")" ;
+aggregate_body    = "[", expression, "]"
+                  | "(", expression, ")"
+                  | unary_expression ;
 
 builtin_call      = builtin_name, "(", [ expression, { ",", expression } ], ")" ;
 builtin_name      = "Bernoulli"
