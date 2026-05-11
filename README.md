@@ -213,6 +213,9 @@ DARP/
 ├── requirements-dev.txt              # 开发和测试依赖记录。
 │
 ├── examples/                         # 示例输入目录。
+│   ├── benchmarks/                   # PROST/IPC RDDL MDP benchmark 数据集，用于 parser 兼容性和未来实验。
+│   │   ├── README.md                 # benchmark 来源、目录约定和当前导入清单。
+│   │   └── <domain-year>/            # 单个 benchmark domain 目录，包含 domain 与 instance RDDL 文件。
 │   └── rddl/                         # RDDL 示例文件。
 │       ├── tiny_grid_domain.rddl     # 3x3 tiny-grid domain，包含 CPF/reward 动态。
 │       ├── tiny_grid_instance.rddl   # 3x3 tiny-grid instance，包含对象和 horizon 等配置。
