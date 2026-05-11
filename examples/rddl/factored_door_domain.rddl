@@ -1,5 +1,5 @@
 domain factored_door {
-  requirements = { reward-deterministic };
+  requirements = { reward-deterministic, partially-observed };
   pvariables {
     has-key : { state-fluent, bool, default = false };
     door-open : { state-fluent, bool, default = false };

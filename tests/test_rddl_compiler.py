@@ -64,6 +64,7 @@ def test_compiler_builds_factored_boolean_problem():
     assert problem.metadata["compiler_mode"] == "factored-grounded-rddl-expressions"
     assert problem.metadata["state_fluents"] == ["has-key", "door-open"]
     assert problem.metadata["observation_fluents"] == ["heard-open"]
+    assert problem.metadata["requirements"] == ["partially-observed", "reward-deterministic"]
 
 
 def test_compiler_rejects_missing_canonical_ast():
@@ -165,13 +166,108 @@ def test_compiler_rejects_stochastic_state_cpf_when_cpf_deterministic(tmp_path):
         RDDLCompiler().compile(RDDLLoader("darp").load(domain, instance))
 
 
+def test_compiler_rejects_observ_fluent_without_partially_observed(tmp_path):
+    """Check observ-fluent requires the matching requirement. / 检查 observ-fluent 必须声明对应 requirement。"""
+    domain, instance = _write_rddl_pair(
+        tmp_path,
+        """
+        domain missing_partial_requirement {
+          requirements { reward-deterministic };
+          pvariables {
+            ok : { state-fluent, bool, default = false };
+            seen-ok : { observ-fluent, bool, default = false };
+            wait : { action-fluent, bool, default = false };
+          };
+          cpfs {
+            ok' = ok;
+            seen-ok' = ok;
+          };
+          reward = 0;
+        }
+        """,
+        """
+        instance missing_partial_requirement_inst {
+          domain = missing_partial_requirement;
+          init-state { };
+          horizon = 1;
+          discount = 1;
+          max-nondef-actions = 1;
+        }
+        """,
+    )
+
+    with pytest.raises(RDDLCompileError, match="observ-fluent.*partially-observed"):
+        RDDLCompiler().compile(RDDLLoader("darp").load(domain, instance))
+
+
+def test_compiler_rejects_partially_observed_without_observ_fluent(tmp_path):
+    """Check partially-observed must expose an observation model. / 检查 partially-observed 必须暴露观测模型。"""
+    domain, instance = _write_rddl_pair(
+        tmp_path,
+        """
+        domain missing_observ_fluent {
+          requirements { reward-deterministic, partially-observed };
+          pvariables {
+            ok : { state-fluent, bool, default = false };
+            wait : { action-fluent, bool, default = false };
+          };
+          cpfs { ok' = ok; };
+          reward = 0;
+        }
+        """,
+        """
+        instance missing_observ_fluent_inst {
+          domain = missing_observ_fluent;
+          init-state { };
+          horizon = 1;
+          discount = 1;
+          max-nondef-actions = 1;
+        }
+        """,
+    )
+
+    with pytest.raises(RDDLCompileError, match="at least one observ-fluent"):
+        RDDLCompiler().compile(RDDLLoader("darp").load(domain, instance))
+
+
+def test_compiler_rejects_partially_observed_missing_observation_cpf(tmp_path):
+    """Check observation fluents need CPFs. / 检查观测 fluent 必须有 CPF。"""
+    domain, instance = _write_rddl_pair(
+        tmp_path,
+        """
+        domain missing_observation_cpf {
+          requirements { reward-deterministic, partially-observed };
+          pvariables {
+            ok : { state-fluent, bool, default = false };
+            seen-ok : { observ-fluent, bool, default = false };
+            wait : { action-fluent, bool, default = false };
+          };
+          cpfs { ok' = ok; };
+          reward = 0;
+        }
+        """,
+        """
+        instance missing_observation_cpf_inst {
+          domain = missing_observation_cpf;
+          init-state { };
+          horizon = 1;
+          discount = 1;
+          max-nondef-actions = 1;
+        }
+        """,
+    )
+
+    with pytest.raises(RDDLCompileError, match="observ-fluent"):
+        RDDLCompiler().compile(RDDLLoader("darp").load(domain, instance))
+
+
 def test_compiler_still_rejects_other_unimplemented_requirements(tmp_path):
     """Check future requirements are still added one by one. / 检查未来 requirements 仍会逐个加入。"""
     domain, instance = _write_rddl_pair(
         tmp_path,
         """
         domain unsupported_requirement {
-          requirements { reward-deterministic, partially-observed };
+          requirements { reward-deterministic, concurrent };
           pvariables {
             ok : { state-fluent, bool, default = false };
             wait : { action-fluent, bool, default = false };
@@ -191,7 +287,10 @@ def test_compiler_still_rejects_other_unimplemented_requirements(tmp_path):
         """,
     )
 
-    with pytest.raises(RDDLCompileError, match="Only 'reward-deterministic' and 'cpf-deterministic'"):
+    with pytest.raises(
+        RDDLCompileError,
+        match="Only 'reward-deterministic', 'cpf-deterministic', and 'partially-observed'",
+    ):
         RDDLCompiler().compile(RDDLLoader("darp").load(domain, instance))
 
 

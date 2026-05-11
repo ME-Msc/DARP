@@ -56,9 +56,9 @@ REQUIREMENT_PLAN: dict[str, RequirementInfo] = {
     ),
     "partially-observed": RequirementInfo(
         name="partially-observed",
-        status="planned",
-        en="Observation fluents define a POMDP observation model; planned as a separate step.",
-        zh="观测 fluent 定义 POMDP 观测模型；后续会作为独立步骤实现。",
+        status="supported",
+        en="Observation fluents define a POMDP observation model; DARP requires each observ-fluent to have a CPF.",
+        zh="观测 fluent 定义 POMDP 观测模型；DARP 要求每个 observ-fluent 都有 CPF。",
     ),
     "concurrent": RequirementInfo(
         name="concurrent",
@@ -99,7 +99,9 @@ REQUIREMENT_PLAN: dict[str, RequirementInfo] = {
 }
 """Requirement rollout plan with bilingual notes. / 带中英文说明的 requirement 逐步实现计划。"""
 
-SUPPORTED_REQUIREMENTS = frozenset({"reward-deterministic", "cpf-deterministic"})
+SUPPORTED_REQUIREMENTS = frozenset(
+    {"reward-deterministic", "cpf-deterministic", "partially-observed"}
+)
 """Requirements supported in the current baseline. / 当前基线真正支持的 requirements。"""
 
 
@@ -120,10 +122,13 @@ def validate_rddl_semantics(document: RDDLDocument, requirements: frozenset[str]
     """Validate only the current requirement baseline. / 只校验当前基线支持的 requirement。"""
     _validate_known_requirements(requirements)
     _validate_supported_requirements(requirements)
+    _validate_observ_fluent_requirement(document.domain, requirements)
     if "reward-deterministic" in requirements:
         _validate_reward_deterministic(document.domain)
     if "cpf-deterministic" in requirements:
         _validate_cpf_deterministic(document.domain)
+    if "partially-observed" in requirements:
+        _validate_partially_observed(document.domain)
 
 
 def _validate_known_requirements(requirements: frozenset[str]) -> None:
@@ -138,7 +143,8 @@ def _validate_supported_requirements(requirements: frozenset[str]) -> None:
     unsupported = sorted(requirements - SUPPORTED_REQUIREMENTS)
     if unsupported:
         raise RDDLCompileError(
-            "Only 'reward-deterministic' and 'cpf-deterministic' are supported in this baseline; "
+            "Only 'reward-deterministic', 'cpf-deterministic', and 'partially-observed' "
+            "are supported in this baseline; "
             f"unsupported requirement(s): {unsupported!r}."
         )
 
@@ -160,7 +166,7 @@ def _validate_reward_deterministic(domain: RDDLASTNode) -> None:
 
 def _validate_cpf_deterministic(domain: RDDLASTNode) -> None:
     """Reject stochastic distribution calls in state CPFs. / 拒绝 state CPF 中的随机分布调用。"""
-    state_fluents = _state_fluent_names(domain)
+    state_fluents = _pvariable_names_with_role(domain, "state-fluent")
     for name, expression_text in _cpf_expressions(domain, state_fluents).items():
         try:
             expression = parse_expression(expression_text)
@@ -172,8 +178,39 @@ def _validate_cpf_deterministic(domain: RDDLASTNode) -> None:
             )
 
 
-def _state_fluent_names(domain: RDDLASTNode) -> frozenset[str]:
-    """Return declared state-fluent pvariable names. / 返回声明为 state-fluent 的 pvariable 名称。"""
+def _validate_observ_fluent_requirement(domain: RDDLASTNode, requirements: frozenset[str]) -> None:
+    """Require partially-observed when observ-fluents are used. / 使用 observ-fluent 时要求声明 partially-observed。"""
+    observation_fluents = _pvariable_names_with_role(domain, "observ-fluent")
+    if observation_fluents and "partially-observed" not in requirements:
+        raise RDDLCompileError(
+            "observ-fluent pvariables require the 'partially-observed' requirement."
+        )
+
+
+def _validate_partially_observed(domain: RDDLASTNode) -> None:
+    """Validate the observation-fluent model. / 校验观测 fluent 模型。"""
+    observation_fluents = _pvariable_names_with_role(domain, "observ-fluent")
+    if not observation_fluents:
+        raise RDDLCompileError(
+            "partially-observed requires at least one observ-fluent pvariable."
+        )
+    observation_cpfs = _cpf_expressions(domain, observation_fluents)
+    missing = sorted(observation_fluents - frozenset(observation_cpfs))
+    if missing:
+        raise RDDLCompileError(
+            f"partially-observed requires CPF(s) for observ-fluent(s): {missing!r}."
+        )
+    for name, expression_text in observation_cpfs.items():
+        try:
+            parse_expression(expression_text)
+        except RDDLExpressionError as exc:
+            raise RDDLCompileError(
+                f"Unsupported RDDL observation CPF expression for {name!r}: {exc}"
+            ) from exc
+
+
+def _pvariable_names_with_role(domain: RDDLASTNode, role: str) -> frozenset[str]:
+    """Return pvariable names with one declared role. / 返回带有指定 role 的 pvariable 名称。"""
     block = _child_block(domain, "pvariables")
     if block is None:
         return frozenset()
@@ -181,7 +218,7 @@ def _state_fluent_names(domain: RDDLASTNode) -> frozenset[str]:
     for statement in block.children:
         name_part, _separator, spec_part = statement.label.partition(":")
         roles = frozenset(_set_items(spec_part))
-        if "state-fluent" in roles:
+        if role in roles:
             names.add(_signature_name(name_part.strip()))
     return frozenset(names)
 

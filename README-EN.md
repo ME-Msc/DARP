@@ -9,7 +9,7 @@ The current code focuses on the standard RDDL input pipeline, DARP's small inter
 - Parse standard RDDL domain/instance files into DARP-owned `RDDLASTNode` ASTs.
 - Align the `darp`, `pyrddl`, and `pyrddlgym` parser frontends through `RDDLFrontend`.
 - Ground the currently supported RDDL CPF/reward expressions into a minimal `PlanningProblem`.
-- The current requirement baseline supports `reward-deterministic` and `cpf-deterministic`: reward expressions and state-fluent transition CPFs cannot call stochastic distributions; other requirements will be implemented and committed one by one.
+- The current requirement baseline supports `reward-deterministic`, `cpf-deterministic`, and `partially-observed`: reward determinism, state-fluent transition CPF determinism, and `observ-fluent` observation-model declarations are checked; other requirements will be implemented and committed one by one.
 - Support small boolean factored states: multiple state fluents are enumerated into explicit finite states that still work with the local planner/simulator.
 - Support `Bernoulli(p)` stochastic CPFs, `observ-fluent` noisy observations, explicit reset-observation models, and `max-nondef-actions` static action constraints.
 - Execute small explicit transition/observation/reward tables with DARP's internal simulator.
@@ -216,7 +216,7 @@ DARP/
 │   └── rddl/                         # RDDL example files.
 │       ├── tiny_grid_domain.rddl     # 3x3 tiny-grid domain with CPF/reward dynamics.
 │       ├── tiny_grid_instance.rddl   # 3x3 tiny-grid instance with objects and horizon settings.
-│       ├── factored_door_domain.rddl # Phase 4 factored-state example with stochastic CPFs and an observ-fluent.
+│       ├── factored_door_domain.rddl # Phase 4 factored-state/partially-observed example with stochastic CPFs and an observ-fluent.
 │       └── factored_door_instance.rddl # Phase 4 factored-state example instance.
 │
 ├── src/
@@ -292,6 +292,7 @@ DARP should not hard-code a policy for tiny grid. The roadmap below is already o
   - [x] 4.4: Validate compiler, simulator, and online-belief semantics with the tiny-grid and factored-door domains; rddlsim protocol integration remains in Phase 8
   - [x] 4.5: Implement the `reward-deterministic` requirement baseline
   - [x] 4.6: Implement `cpf-deterministic` by checking deterministic state-fluent transition CPFs
+  - [x] 4.7: Implement `partially-observed` by checking `observ-fluent` and observation CPF consistency
 - [ ] Phase 5: Verifiable baseline solvers
   - [ ] 5.1: Refine the explicit-state finite-horizon DP baseline for offline policies and online replanning
   - [ ] 5.2: Add planner registry, unified trace output, and algorithm-selection parameters
@@ -328,6 +329,6 @@ python -m pytest
 ## Current Limitations
 
 - The compiler currently targets small, discrete RDDL problems; it supports compact one-hot states and explicitly enumerated boolean factored states.
-- Current requirement semantic checks support `reward-deterministic` and `cpf-deterministic`; all other requirements are recorded as a staged rollout plan in `rddl/semantics.py`.
+- Current requirement semantic checks support `reward-deterministic`, `cpf-deterministic`, and `partially-observed`; all other requirements are recorded as a staged rollout plan in `rddl/semantics.py`.
 - The internal simulator runs explicit transition/observation/reward tables and is not a general high-performance RDDL simulator.
 - Large/continuous belief representations, external rddlsim/PROST protocols, DARP-RDDL syntax extensions, native durative-action syntax, HILP, and HiGHS/Gurobi backends remain later phases.

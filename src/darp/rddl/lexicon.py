@@ -31,6 +31,7 @@ RDDL_KEYWORDS = frozenset(
         "object",
         "objects",
         "observ-fluent",
+        "partially-observed",
         "pvariables",
         "real",
         "requirements",

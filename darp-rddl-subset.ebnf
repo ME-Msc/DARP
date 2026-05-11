@@ -101,10 +101,10 @@ requirement_list  = requirement_name, { ",", requirement_name } ;
 requirement_name  = supported_requirement | planned_requirement ;
 supported_requirement
                   = "reward-deterministic"
-                  | "cpf-deterministic" ;
+                  | "cpf-deterministic"
+                  | "partially-observed" ;
 planned_requirement
-                  = "partially-observed"
-                  | "concurrent"
+                  = "concurrent"
                   | "constrained-state"
                   | "integer-valued"
                   | "continuous"
@@ -234,10 +234,10 @@ fluent_call       = identifier, "(", [ expression, { ",", expression } ], ")" ;
    1. Every declared requirement name must be known.
       中文：requirements 中的名字必须是 DARP 已登记的标准名字，拼错会报错。
 
-   2. reward-deterministic and cpf-deterministic are accepted as implemented
-      requirements.
-      中文：当前真正支持并允许启用的 requirements 是 reward-deterministic
-      和 cpf-deterministic。
+   2. reward-deterministic, cpf-deterministic, and partially-observed are
+      accepted as implemented requirements.
+      中文：当前真正支持并允许启用的 requirements 是 reward-deterministic、
+      cpf-deterministic 和 partially-observed。
 
    3. If reward-deterministic is declared, reward must exist and must not call a
       stochastic distribution such as Bernoulli.
@@ -245,16 +245,21 @@ fluent_call       = identifier, "(", [ expression, { ",", expression } ], ")" ;
       不能调用 Bernoulli 这类随机分布。
 
    4. If cpf-deterministic is declared, state-fluent transition CPFs must not
-      call stochastic distributions such as Bernoulli. Observation CPFs remain
-      separate and will be governed by partially-observed later.
+      call stochastic distributions such as Bernoulli. Observation CPFs are
+      separate and may remain stochastic under partially-observed.
       中文：声明 cpf-deterministic 后，state-fluent 的转移 CPF 不能调用
-      Bernoulli 这类随机分布；observ-fluent 的观测 CPF 后续由
-      partially-observed 单独约束。
+      Bernoulli 这类随机分布；observ-fluent 的观测 CPF 由 partially-observed
+      单独约束，允许保持随机性。
 
-   5. Other requirements are planned rollout items, not enabled semantics yet.
+   5. observ-fluent pvariables require partially-observed, and each declared
+      observ-fluent must have a CPF.
+      中文：使用 observ-fluent 时必须声明 partially-observed，并且每个
+      observ-fluent 都必须有 CPF。
+
+   6. Other requirements are planned rollout items, not enabled semantics yet.
       中文：其它 requirements 会按 roadmap 一个一个实现、测试和提交。
 
-   6. compiler.py already grounds selected small discrete constructs such as
+   7. compiler.py already grounds selected small discrete constructs such as
       boolean state fluents, action fluents, non-fluents, CPFs, observations,
       rewards, max-nondef-actions, and horizon. Requirement declarations are
       still intentionally stricter than the grounding machinery so semantic
