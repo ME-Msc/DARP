@@ -9,8 +9,8 @@ import argparse
 import json
 from pathlib import Path
 
-from darp.loader import RDDLLoader
-from darp.session import run_online_session
+from darp.adapter.loader import RDDLLoader
+from darp.planning.session import run_online_session
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,16 +58,16 @@ def _run_rddl_online(args: argparse.Namespace) -> int:
         raise ValueError("--lookahead-depth must be at least 1.")
     if args.particles < 1:
         raise ValueError("--particles must be at least 1.")
-    loaded = RDDLLoader().load(args.domain, args.instance)
+    problem = RDDLLoader().load(args.domain, args.instance)
     result = run_online_session(
-        loaded,
+        problem,
         seed=args.seed,
         lookahead_depth=args.lookahead_depth,
         time_budget_ms=args.time_budget_ms,
         particle_count=args.particles,
     )
     payload = result.to_dict()
-    payload["rddl"] = loaded.to_summary_dict()
+    payload["rddl"] = problem.to_summary_dict()
     if args.output:
         Path(args.output).write_text(
             json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n",

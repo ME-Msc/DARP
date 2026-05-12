@@ -4,10 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from darp.loader import RDDLLoader
-from darp.planner import action_label
-from darp.runtime import PyRDDLGymRuntime
-from darp.session import run_online_session
+from darp.adapter.loader import RDDLLoader
+from darp.adapter.runtime import PyRDDLGymRuntime
+from darp.planning.rollout import action_label
+from darp.planning.session import run_online_session
 
 DOMAIN = "examples/rddl/tiny_grid_domain.rddl"
 INSTANCE = "examples/rddl/tiny_grid_instance.rddl"
@@ -16,8 +16,8 @@ INSTANCE = "examples/rddl/tiny_grid_instance.rddl"
 def test_pyrddlgym_runtime_exposes_noop_and_single_action_candidates():
     """Check runtime action candidates come from pyRDDLGym. / 检查 runtime 动作候选来自 pyRDDLGym。"""
     pytest.importorskip("pyRDDLGym")
-    loaded = RDDLLoader().load(DOMAIN, INSTANCE)
-    runtime = PyRDDLGymRuntime.from_loaded(loaded)
+    problem = RDDLLoader().load(DOMAIN, INSTANCE)
+    runtime = PyRDDLGymRuntime.from_problem(problem)
     runtime.reset(seed=7)
 
     labels = [action_label(action) for action in runtime.action_candidates()]
@@ -28,8 +28,8 @@ def test_pyrddlgym_runtime_exposes_noop_and_single_action_candidates():
 def test_pyrddlgym_runtime_builds_exact_mdp_belief():
     """Check MDP observations create an exact singleton belief. / 检查 MDP observation 会创建精确单粒子 belief。"""
     pytest.importorskip("pyRDDLGym")
-    loaded = RDDLLoader().load(DOMAIN, INSTANCE)
-    runtime = PyRDDLGymRuntime.from_loaded(loaded)
+    problem = RDDLLoader().load(DOMAIN, INSTANCE)
+    runtime = PyRDDLGymRuntime.from_problem(problem)
     observation = runtime.reset(seed=7)
     belief = runtime.initial_belief(observation, seed=7)
 
@@ -43,8 +43,8 @@ def test_pyrddlgym_runtime_builds_exact_mdp_belief():
 def test_pyrddlgym_online_session_reaches_tiny_grid_goal():
     """Check DARP can run a simple RDDL online loop through pyRDDLGym. / 检查 DARP 能通过 pyRDDLGym 运行简单 RDDL 在线循环。"""
     pytest.importorskip("pyRDDLGym")
-    loaded = RDDLLoader().load(DOMAIN, INSTANCE)
-    result = run_online_session(loaded, seed=7, lookahead_depth=4)
+    problem = RDDLLoader().load(DOMAIN, INSTANCE)
+    result = run_online_session(problem, seed=7, lookahead_depth=4)
     payload = result.to_dict()
 
     assert payload["planner"] == "pyrddlgym-rollout"

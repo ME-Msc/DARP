@@ -1,13 +1,17 @@
-"""Loaded standard RDDL objects from pyRDDLGym."""
+"""pyRDDLGym problem bundle for standard RDDL inputs."""
 
-# TODO(phase-4.1): Add a GroundedRDDLView wrapper over pyRDDLGym's grounded
-# model so search/ILP code never reimplements grounding.
+# TODO(phase-7.2): Feed GroundedRDDLView into paper Expand and ILP encoders.
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from darp.adapter.grounded import GroundedRDDLView
+
+if TYPE_CHECKING:
+    from pyRDDLGym.core.compiler.model import RDDLGroundedModel
 
 
 class RDDLLoadError(RuntimeError):
@@ -15,8 +19,8 @@ class RDDLLoadError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class LoadedRDDL:
-    """Carry a pyRDDLGym-loaded RDDL environment. / 承载 pyRDDLGym 加载后的 RDDL 环境。"""
+class PyRDDLGymProblem:
+    """Carry pyRDDLGym env/model/AST for one RDDL problem. / 承载一个 RDDL 问题的 pyRDDLGym env/model/AST。"""
 
     domain: str
     instance: str
@@ -26,22 +30,26 @@ class LoadedRDDL:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def component_summary(self) -> dict[str, str | None]:
-        """Summarize loaded pyRDDLGym components by type. / 按类型汇总 pyRDDLGym 组件。"""
+        """Summarize pyRDDLGym problem components by type. / 按类型汇总 pyRDDLGym problem 组件。"""
         return {
             "native_ast": type(self.native_ast).__name__ if self.native_ast is not None else None,
             "model": type(self.model).__name__ if self.model is not None else None,
             "env": type(self.env).__name__ if self.env is not None else None,
         }
 
-    def build_grounded_model(self) -> Any:
-        """Ground the native AST with pyRDDLGym's grounder. / 使用 pyRDDLGym grounder 对原生 AST 做 grounding。"""
+    def build_grounded_model(self) -> "RDDLGroundedModel":
+        """Return pyRDDLGym's RDDLGroundedModel from the native AST. / 从原生 AST 返回 pyRDDLGym 的 RDDLGroundedModel。"""
         if self.native_ast is None:
-            raise RDDLLoadError("LoadedRDDL has no native AST to ground.")
+            raise RDDLLoadError("PyRDDLGymProblem has no native AST to ground.")
         try:
             from pyRDDLGym.core.grounder import RDDLGrounder
         except ImportError as exc:
             raise RDDLLoadError("pyRDDLGym grounder is required to ground RDDL.") from exc
         return RDDLGrounder(self.native_ast).ground()
+
+    def build_grounded_view(self) -> GroundedRDDLView:
+        """Return DARP's stable view over the pyRDDLGym grounded model. / 返回 pyRDDLGym grounded model 的 DARP 稳定视图。"""
+        return GroundedRDDLView(self.build_grounded_model())
 
     def to_summary_dict(self) -> dict[str, Any]:
         """Return a JSON-friendly summary for CLI inspection. / 返回适合 CLI 检查的 JSON 友好摘要。"""

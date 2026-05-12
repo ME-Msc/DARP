@@ -8,9 +8,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from darp.loaded import LoadedRDDL
-from darp.planner import ActionDecision, RolloutPlanner
-from darp.runtime import ParticleBelief, PyRDDLGymRuntime, _json_ready
+from darp.adapter.problem import PyRDDLGymProblem
+from darp.adapter.runtime import ParticleBelief, PyRDDLGymRuntime, _json_ready
+from darp.planning.rollout import ActionDecision, RolloutPlanner
 
 
 @dataclass(frozen=True)
@@ -92,7 +92,7 @@ class OnlineSessionResult:
 
 
 def run_online_session(
-    loaded: LoadedRDDL,
+    problem: PyRDDLGymProblem,
     *,
     seed: int = 0,
     lookahead_depth: int = 4,
@@ -100,7 +100,7 @@ def run_online_session(
     particle_count: int = 32,
 ) -> OnlineSessionResult:
     """Run a PROST-like online loop against pyRDDLGym. / 基于 pyRDDLGym 运行 PROST 风格在线循环。"""
-    runtime = PyRDDLGymRuntime.from_loaded(loaded)
+    runtime = PyRDDLGymRuntime.from_problem(problem)
     planner = RolloutPlanner(lookahead_depth=lookahead_depth)
     observation = runtime.reset(seed=seed)
     belief = runtime.initial_belief(

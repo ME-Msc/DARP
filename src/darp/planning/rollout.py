@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Mapping
 
-from darp.runtime import ActionDict, PyRDDLGymRuntime, _json_ready
+from darp.adapter.runtime import ActionDict, PyRDDLGymRuntime, _json_ready
 
 
 @dataclass(frozen=True)

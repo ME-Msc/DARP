@@ -6,10 +6,11 @@ The main branch now follows a **pyRDDLGym-first** architecture: pyRDDLGym owns s
 
 ## Feature Status
 
-- Load standard RDDL domain/instance files through pyRDDLGym and return `LoadedRDDL(env, model, native_ast)`.
-- `LoadedRDDL.build_grounded_model()` directly reuses pyRDDLGym's `RDDLGrounder`; DARP no longer implements grounding itself.
+- `adapter/` loads standard RDDL domain/instance files through pyRDDLGym and returns `PyRDDLGymProblem(env, model, native_ast)`.
+- `PyRDDLGymProblem.build_grounded_model()` directly reuses pyRDDLGym's `RDDLGrounder(...).ground()` and returns pyRDDLGym's `RDDLGroundedModel`; `GroundedRDDLView` wraps it, so DARP no longer implements grounding itself.
+- `GroundedRDDLView.build_and_or_interface()` now turns grounded actions, observation scope, and root history into an AND-OR search interface.
 - `darp --domain --instance` can now execute an online trace through pyRDDLGym; the current planner is a small rollout baseline used to validate the runtime/session path.
-- Keep DARP's `DurationModel` for later durative-action sidecars and HILP `tau(q)` calculations.
+- `model/` keeps DARP-native `DurationModel` and AND-OR tree data structures for later durative-action sidecars and HILP `tau(q)` calculations.
 - Future AND-OR tree / ILP / HILP code should consume pyRDDLGym runtime and grounded-model views directly instead of compiling into a separate DARP `PlanningProblem`.
 - Native DARP-RDDL syntax extensions are not implemented on main; durative actions should first enter through YAML/JSON sidecars or Python plugins.
 
@@ -64,10 +65,10 @@ darp \
   --output tiny_grid_pyrddlgym_trace.json
 ```
 
-Inspect the loaded pyRDDLGym components and future search boundary:
+Inspect the pyRDDLGym problem components and future search boundary:
 
 ```bash
-python -m darp.loader \
+python -m darp.adapter.loader \
   examples/rddl/tiny_grid_domain.rddl \
   examples/rddl/tiny_grid_instance.rddl
 ```
@@ -78,20 +79,21 @@ The current main path is deliberately small:
 
 ```text
 darp CLI
-  -> RDDLLoader.load(domain, instance)
+  -> adapter.RDDLLoader.load(domain, instance)
   -> pyRDDLGym.make(...)
-  -> LoadedRDDL(env, model, native_ast)
-  -> PyRDDLGymRuntime.reset/step
-  -> RolloutPlanner.choose_action
-  -> run_online_session manages action, observation, state, belief, and trace
+  -> PyRDDLGymProblem(env, model, native_ast)
+  -> adapter.PyRDDLGymRuntime.reset/step
+  -> planning.RolloutPlanner.choose_action
+  -> planning.run_online_session manages action, observation, state, belief, and trace
 ```
 
 The future paper-aligned path is:
 
 ```text
-LoadedRDDL.build_grounded_model()
-  -> GroundedRDDLView (reusing pyRDDLGym grounding)
-  -> AND-OR history tree
+PyRDDLGymProblem.build_grounded_model()
+  -> pyRDDLGym.core.compiler.model.RDDLGroundedModel
+  -> adapter.GroundedRDDLView (reusing pyRDDLGym grounding)
+  -> model.ANDORNode / History
   -> ILP/full ILP/HILP planner
   -> OnlineSession takes one action and receives observation/reward/state from pyRDDLGym env
 ```
@@ -99,13 +101,10 @@ LoadedRDDL.build_grounded_model()
 ## Architecture
 
 - pyRDDLGym: standard RDDL parser, semantic handling, grounder, Gym-style environment, and simulator.
-- DARP `loader.py`: loads RDDL files into `LoadedRDDL`.
-- DARP `loaded.py`: stores `env/model/native_ast`, provides the pyRDDLGym grounder entrypoint, and summarizes loaded components.
-- DARP `runtime.py`: wraps `reset/step/action_candidates/belief`.
-- DARP `planner.py`: holds the current rollout baseline before it moves behind a planner registry.
-- DARP `session.py`: manages online interaction and traces between planners and the pyRDDLGym env.
-- DARP `duration.py`: stores duration abstractions without defining a second RDDL state/action/problem model.
-- Future `search/` / `ilp/`: AND-OR tree, full ILP, HILP, and HiGHS/Gurobi backends directly over pyRDDLGym grounded-model views and runtime.
+- DARP `adapter/`: isolates the pyRDDLGym dependency and owns loading, grounded-model views, runtime reset/step, and lightweight belief helpers; split this package only if another external system is added later.
+- DARP `model/`: stores DARP-native planning data structures such as duration models, histories, and AND-OR tree nodes; this package does not directly depend on pyRDDLGym.
+- DARP `planning/`: stores planners, online sessions, traces, and the future planner registry; this package reaches external simulators through adapters/runtimes.
+- Future `search/` / `ilp/` or `planning/search/` / `planning/ilp/`: AND-OR tree, full ILP, HILP, and HiGHS/Gurobi backends directly over `GroundedRDDLView`, runtime, and `model/` structures.
 
 ## File Layout
 
@@ -130,14 +129,23 @@ DARP/
 ├── src/darp/
 │   ├── __init__.py                   # Package version entrypoint.
 │   ├── __main__.py                   # Top-level `darp` CLI.
-│   ├── duration.py                   # DurationModel interface and fixed/expected/Gaussian duration models.
-│   ├── loaded.py                     # LoadedRDDL container, load errors, and pyRDDLGym grounder entrypoint.
-│   ├── loader.py                     # Loads standard RDDL with pyRDDLGym.
-│   ├── planner.py                    # Current rollout baseline planner.
-│   ├── runtime.py                    # pyRDDLGym reset/step/action/belief runtime.
-│   └── session.py                    # Online session loop and trace structures.
+│   ├── adapter/                      # Adapter layer for the current single external system, pyRDDLGym.
+│   │   ├── __init__.py               # Adapter package entrypoint.
+│   │   ├── problem.py                # PyRDDLGymProblem container, load errors, and pyRDDLGym grounder entrypoint.
+│   │   ├── loader.py                 # Loads standard RDDL with pyRDDLGym.
+│   │   ├── grounded.py               # GroundedRDDLView wrapper over pyRDDLGym grounded models.
+│   │   └── runtime.py                # pyRDDLGym reset/step/action/belief runtime.
+│   ├── model/                        # DARP-native planning data structures.
+│   │   ├── __init__.py               # Model package entrypoint.
+│   │   ├── and_or_tree.py            # Base AND-OR history tree nodes and history structures.
+│   │   └── duration.py               # DurationModel interface and fixed/expected/Gaussian duration models.
+│   └── planning/                     # Planners and online execution orchestration.
+│       ├── __init__.py               # Planning package entrypoint.
+│       ├── rollout.py                # Current pyRDDLGym rollout baseline planner.
+│       └── session.py                # Online session loop and trace structures.
 └── tests/
     ├── test_darp_entrypoint.py       # Top-level CLI and pyRDDLGym online-trace tests.
+    ├── test_and_or_tree.py           # DARP AND-OR tree base-structure tests.
     ├── test_pyrddlgym_runtime.py     # pyRDDLGym runtime and simple online-trace tests.
     └── test_rddl_loader.py           # pyRDDLGym loader, summary, and grounder-reuse tests.
 ```
@@ -151,19 +159,19 @@ DARP/
 - [x] Phase 2: pyRDDLGym-first RDDL input
   - [x] 2.1: Move standard RDDL parser/simulator responsibility to pyRDDLGym
   - [x] 2.2: Remove DARP-owned parser/AST/expression/visualizer maintenance from main and preserve it on the archive branch
-  - [x] 2.3: Provide `LoadedRDDL` summaries and pyRDDLGym grounder-reuse tests
+  - [x] 2.3: Provide `PyRDDLGymProblem` summaries and pyRDDLGym grounder-reuse tests
 - [x] Phase 3: pyRDDLGym generative runtime adapter
   - [x] 3.1: Define a DARP planner-facing runtime protocol around pyRDDLGym `reset/step/model`
   - [x] 3.2: Extract type/object/fluent/action metadata while keeping native pyRDDLGym references
   - [x] 3.3: Implement initial bool action candidates, noop/default actions, and action-constraint error propagation
   - [x] 3.4: Define MDP/POMDP observation/state/belief boundaries, with sampling/particle interfaces when states are not enumerable
   - [x] 3.5: Make `darp --domain --instance` execute an online step trace through the pyRDDLGym runtime
-- [ ] Phase 4: pyRDDLGym grounded-model view
-  - [ ] 4.1: Wrap pyRDDLGym `RDDLGroundedModel` behind state/action/observation/reward/CPF accessors
-  - [ ] 4.2: Build the action/observation/history interface required by the AND-OR tree from the grounded model and runtime
-  - [ ] 4.3: Report unsupported RDDL structures clearly
+- [x] Phase 4: pyRDDLGym grounded-model view
+  - [x] 4.1: Wrap pyRDDLGym `RDDLGroundedModel` behind state/action/observation/reward/CPF accessors
+  - [x] 4.2: Build the action/observation/history interface required by the AND-OR tree from the grounded model and runtime
+  - [x] 4.3: Report unsupported RDDL structures clearly
 - [ ] Phase 5: Verifiable baseline solver
-  - [ ] 5.1: Move the rollout baseline out of `runtime.py` and behind a planner registry
+  - [ ] 5.1: Add a planner registry for rollout, AND-OR, full ILP, and HILP
   - [ ] 5.2: Add unified trace output and time-budget fallback
   - [ ] 5.3: Add offline policy JSON plus replay/evaluation workflow
 - [ ] Phase 6: DurationModel and DARP sidecars
@@ -194,7 +202,7 @@ python -m pytest
 ## Current Limitations
 
 - RDDL inputs currently execute online traces through a pyRDDLGym generative runtime; DARP no longer maintains a separate `PlanningProblem` compilation path.
-- The pyRDDLGym rollout baseline currently enumerates noop and single bool actions only; action combinations and non-bool actions are future planner/action-space work.
+- The grounded AND-OR interface and pyRDDLGym rollout baseline currently enumerate noop and single bool actions only; action combinations and non-bool actions produce clear unsupported errors and remain future planner/action-space work.
 - Current POMDP belief uses a lightweight particle approximation for debugging runtime boundaries; benchmark-quality POMDP evaluation needs later likelihood weighting/resampling.
 - DARP reuses pyRDDLGym grounding and does not reimplement RDDL grounding or finite-state enumeration.
 - Native DARP-RDDL syntax is not maintained on main; durative actions should first use sidecars/plugins.

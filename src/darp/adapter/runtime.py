@@ -11,7 +11,7 @@ import copy
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from darp.loaded import LoadedRDDL
+from darp.adapter.problem import PyRDDLGymProblem
 
 
 ActionDict = dict[str, Any]
@@ -24,11 +24,11 @@ class PyRDDLGymRuntime:
     env: Any
 
     @classmethod
-    def from_loaded(cls, loaded: LoadedRDDL) -> "PyRDDLGymRuntime":
-        """Build a runtime from loaded pyRDDLGym components. / 从已加载的 pyRDDLGym 组件创建 runtime。"""
-        if loaded.env is None:
-            raise ValueError("PyRDDLGymRuntime requires pyRDDLGym LoadedRDDL with an env.")
-        return cls(loaded.env)
+    def from_problem(cls, problem: PyRDDLGymProblem) -> "PyRDDLGymRuntime":
+        """Build a runtime from a pyRDDLGym problem bundle. / 从 pyRDDLGym problem bundle 创建 runtime。"""
+        if problem.env is None:
+            raise ValueError("PyRDDLGymRuntime requires a PyRDDLGymProblem with an env.")
+        return cls(problem.env)
 
     @property
     def problem_name(self) -> str:

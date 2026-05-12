@@ -11,13 +11,13 @@ import os
 from pathlib import Path
 import tempfile
 
-from darp.loaded import LoadedRDDL, RDDLLoadError, rddl_load_error, rddl_path
+from darp.adapter.problem import PyRDDLGymProblem, RDDLLoadError, rddl_load_error, rddl_path
 
 
 class RDDLLoader:
     """Load standard RDDL with pyRDDLGym. / 使用 pyRDDLGym 加载标准 RDDL。"""
 
-    def load(self, domain: str | Path, instance: str | Path) -> LoadedRDDL:
+    def load(self, domain: str | Path, instance: str | Path) -> PyRDDLGymProblem:
         """Load a domain/instance pair with pyRDDLGym. / 使用 pyRDDLGym 加载 domain/instance 文件对。"""
         domain_path = rddl_path(domain)
         instance_path = rddl_path(instance)
@@ -36,7 +36,7 @@ class RDDLLoader:
             raise rddl_load_error(domain_path, instance_path, exc) from exc
         model = getattr(env, "model", None)
         native_ast = getattr(model, "ast", None)
-        return LoadedRDDL(
+        return PyRDDLGymProblem(
             domain=str(domain_path),
             instance=str(instance_path),
             native_ast=native_ast,
@@ -70,10 +70,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the loaded RDDL inspection command. / 运行已加载 RDDL 的检查命令。"""
+    """Run the pyRDDLGym problem inspection command. / 运行 pyRDDLGym problem 检查命令。"""
     args = build_parser().parse_args(argv)
-    loaded = RDDLLoader().load(args.domain, args.instance)
-    print(json.dumps(loaded.to_summary_dict(), indent=2, sort_keys=True, default=str))
+    problem = RDDLLoader().load(args.domain, args.instance)
+    print(json.dumps(problem.to_summary_dict(), indent=2, sort_keys=True, default=str))
     return 0
 
 
