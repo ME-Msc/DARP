@@ -1,6 +1,6 @@
 """Online sessions that connect DARP planners to pyRDDLGym environments."""
 
-# TODO(phase-5.2): Generalize this session loop for rollout, AND-OR, full ILP,
+# TODO(phase-9.2): Generalize this session loop for rollout, AND-OR, full ILP,
 # and HILP planners behind one trace format.
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """Top-level command-line entrypoint for DARP."""
 
-# TODO(phase-5.2): Route rollout, AND-OR, full ILP, and HILP planners through a
+# TODO(phase-9.2): Route rollout, AND-OR, full ILP, and HILP planners through a
 # shared planner registry and trace formatter.
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """Baseline planners over pyRDDLGym runtime copies."""
 
-# TODO(phase-5.1): Move RolloutPlanner behind a shared planner registry before
+# TODO(phase-9.1): Move RolloutPlanner behind a shared planner registry before
 # adding AND-OR tree, full ILP, and HILP planners.
 
 from __future__ import annotations

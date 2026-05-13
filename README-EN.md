@@ -170,10 +170,8 @@ DARP/
   - [x] 4.1: Wrap pyRDDLGym `RDDLGroundedModel` behind state/action/observation/reward/CPF accessors
   - [x] 4.2: Build the action/observation/history interface required by the AND-OR tree from the grounded model and runtime
   - [x] 4.3: Report unsupported RDDL structures clearly
-- [ ] Phase 5: Verifiable baseline solver
-  - [ ] 5.1: Add a planner registry for rollout, AND-OR, full ILP, and HILP
-  - [ ] 5.2: Add unified trace output and time-budget fallback
-  - [ ] 5.3: Add offline policy JSON plus replay/evaluation workflow
+- [ ] Phase 5: Deferred and folded into Phase 9
+  - [ ] Reason: with only the rollout baseline available, a planner registry and offline replay/evaluation workflow would be premature; they become useful once AND-OR, full ILP, and HILP exist.
 - [ ] Phase 6: DurationModel and DARP sidecars
   - [ ] 6.1: Design YAML/JSON duration sidecar schema
   - [ ] 6.2: Wire fixed, expected, and Gaussian durations into runtime, history tree, and HILP `tau(q)`
@@ -188,10 +186,13 @@ DARP/
   - [ ] 8.2: Add HiGHS
   - [ ] 8.3: Add Gurobi
 - [ ] Phase 9: Benchmarks and PROST/rddlsim compatibility
-  - [ ] 9.1: Implement benchmark runner and pyRDDLGym/rddlrepository import checks
-  - [ ] 9.2: Implement rddlsim/PROST-style online protocol adapter
-  - [ ] 9.3: Add paper-style experiment scripts
-  - [ ] 9.4: Evaluate integration between pyRDDLGym visualizers and DARP planner traces
+  - [ ] 9.1: Add a planner registry for rollout, AND-OR, full ILP, and HILP
+  - [ ] 9.2: Add unified trace output, time-budget fallback, and trace formatting
+  - [ ] 9.3: Add offline policy JSON plus replay/evaluation workflow
+  - [ ] 9.4: Implement benchmark runner and pyRDDLGym/rddlrepository import checks
+  - [ ] 9.5: Implement rddlsim/PROST-style online protocol adapter
+  - [ ] 9.6: Add paper-style experiment scripts
+  - [ ] 9.7: Evaluate integration between pyRDDLGym visualizers and DARP planner traces
 
 ## Testing
 

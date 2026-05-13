@@ -170,10 +170,8 @@ DARP/
   - [x] 4.1：封装 pyRDDLGym `RDDLGroundedModel`，暴露 state/action/observation/reward/cpf 读取接口
   - [x] 4.2：从 grounded model 和 runtime 构造 AND-OR tree 所需的 action/observation/history 接口
   - [x] 4.3：明确不支持或暂不支持的 RDDL 结构，并给出清晰错误
-- [ ] Phase 5：可验证 baseline solver
-  - [ ] 5.1：为 rollout、AND-OR、full ILP、HILP 增加 planner registry
-  - [ ] 5.2：实现统一 trace 输出和 time-budget fallback
-  - [ ] 5.3：实现 offline policy JSON 与 replay/evaluation 流程
+- [ ] Phase 5：暂缓，已并入 Phase 9
+  - [ ] 原因：目前只有 rollout baseline，一个 planner registry、offline replay/evaluation 会过早工程化；等 AND-OR/full ILP/HILP 出现后再统一更合理。
 - [ ] Phase 6：DurationModel 与 DARP sidecar
   - [ ] 6.1：设计 YAML/JSON duration sidecar schema
   - [ ] 6.2：把 fixed、expected、Gaussian duration 接入 runtime、history tree 和 HILP `tau(q)`
@@ -188,10 +186,13 @@ DARP/
   - [ ] 8.2：接入 HiGHS
   - [ ] 8.3：接入 Gurobi
 - [ ] Phase 9：benchmark 与 PROST/rddlsim 兼容
-  - [ ] 9.1：实现 benchmark runner 和 pyRDDLGym/rddlrepository 导入检查
-  - [ ] 9.2：实现 rddlsim/PROST 风格 online protocol adapter
-  - [ ] 9.3：补充论文风格实验脚本
-  - [ ] 9.4：评估 pyRDDLGym visualizer 与 DARP planner trace 的集成方式
+  - [ ] 9.1：为 rollout、AND-OR、full ILP、HILP 增加 planner registry
+  - [ ] 9.2：实现统一 trace 输出、time-budget fallback 和 trace formatter
+  - [ ] 9.3：实现 offline policy JSON、replay 和 evaluation 流程
+  - [ ] 9.4：实现 benchmark runner 和 pyRDDLGym/rddlrepository 导入检查
+  - [ ] 9.5：实现 rddlsim/PROST 风格 online protocol adapter
+  - [ ] 9.6：补充论文风格实验脚本
+  - [ ] 9.7：评估 pyRDDLGym visualizer 与 DARP planner trace 的集成方式
 
 ## 测试
 
