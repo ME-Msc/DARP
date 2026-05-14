@@ -1,7 +1,7 @@
 """Top-level command-line entrypoint for DARP."""
 
-# TODO(phase-9.2): Route rollout, AND-OR, full ILP, and HILP planners through a
-# shared planner registry and trace formatter.
+# TODO(phase-9.2): Replace the rollout smoke-test path with the HILP/Gurobi
+# planner once the ILP workflow is available from the CLI.
 
 from __future__ import annotations
 

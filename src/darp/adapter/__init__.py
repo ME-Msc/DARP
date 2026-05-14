@@ -1,6 +1,6 @@
 """Adapter for loading, grounding, and simulating standard RDDL through pyRDDLGym."""
 
-# TODO(phase-9.2): Split this adapter only if a second external simulator is added.
+# pyRDDLGym is the only supported standard-RDDL parser/runtime path.
 
 from typing import Any
 

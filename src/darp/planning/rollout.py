@@ -1,7 +1,7 @@
 """Baseline planners over pyRDDLGym runtime copies."""
 
-# TODO(phase-9.1): Move RolloutPlanner behind a shared planner registry before
-# adding AND-OR tree, full ILP, and HILP planners.
+# TODO(phase-9.1): Retire RolloutPlanner from the default CLI once the
+# HILP/Gurobi planner is wired end to end.
 
 from __future__ import annotations
 

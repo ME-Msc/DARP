@@ -1,11 +1,10 @@
 """Load DurationModel definitions from JSON/YAML sidecars."""
 
-# TODO(phase-7.4): Feed DurationSidecar.evaluator into HILP frontier expansion.
+# TODO(phase-8.1): Add risk/cost fields for the Gurobi constrained ILP rows.
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import importlib
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -94,8 +93,6 @@ def build_duration_model(config: Mapping[str, Any]) -> DurationModel:
             default_mean=float(config.get("default_mean", config.get("default", 1.0))),
             default_variance=float(config.get("default_variance", 0.0)),
         )
-    if kind == "plugin":
-        return _build_plugin_model(config)
     raise DurationSpecError(f"Unsupported duration model kind: {kind}")
 
 
@@ -257,21 +254,6 @@ def _state_action_gaussians(value: Any) -> tuple[dict[tuple[str, str], float], d
                 means[key] = float(entry)
                 variances[key] = 0.0
     return means, variances
-
-
-def _build_plugin_model(config: Mapping[str, Any]) -> DurationModel:
-    """Build a duration model from a Python plugin factory. / 从 Python plugin factory 构建 duration model。"""
-    module_name = str(_required(config, "module"))
-    factory_name = str(config.get("factory", "build_duration_model"))
-    plugin_config = config.get("config", {})
-    if not isinstance(plugin_config, Mapping):
-        raise DurationSpecError("plugin config must be a mapping.")
-    module = importlib.import_module(module_name)
-    factory = getattr(module, factory_name)
-    model = factory(dict(plugin_config))
-    if not isinstance(model, DurationModel):
-        raise DurationSpecError(f"Plugin {module_name}.{factory_name} did not return a DurationModel.")
-    return model
 
 
 def _required(config: Mapping[str, Any], key: str) -> Any:

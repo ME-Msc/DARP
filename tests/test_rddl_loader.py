@@ -38,15 +38,16 @@ def test_pyrddlgym_loader_gives_clear_file_errors():
         RDDLLoader().load("missing-domain.rddl", "missing-instance.rddl")
 
 
-def test_pyrddlgym_problem_summary_exposes_future_search_boundaries():
-    """Check PyRDDLGymProblem exposes the future search boundary. / 检查 PyRDDLGymProblem 暴露未来搜索边界。"""
+def test_pyrddlgym_problem_summary_exposes_planner_interfaces():
+    """Check PyRDDLGymProblem exposes planner interface boundaries. / 检查 PyRDDLGymProblem 暴露 planner interface 边界。"""
     pytest.importorskip("pyRDDLGym")
     problem = RDDLLoader().load(DOMAIN, INSTANCE)
     summary = problem.to_summary_dict()
 
     assert summary["source"] == "pyRDDLGym"
-    assert "pyRDDLGym grounded model view" in summary["future_interfaces"]
-    assert "ILP/HILP search over the grounded model and duration sidecars" in summary["future_interfaces"]
+    assert "pyRDDLGym grounded model view" in summary["planner_interfaces"]
+    assert "Phase 7 full-tree/HILP search over the grounded model and duration sidecars" in summary["planner_interfaces"]
+    assert "Phase 8 Gurobi full-ILP/p-ILP solver" in summary["planner_interfaces"]
     assert "at" in summary["model"]["state_fluents"]
     assert "move-east" in summary["model"]["action_fluents"]
 

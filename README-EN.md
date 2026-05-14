@@ -1,8 +1,8 @@
 # DARP
 
-Durative Action RDDL Planner is a Python research prototype for implementing fixed-horizon POMDP / constrained POMDP / durative-action planning algorithms on standard RDDL problems, with a staged path toward the AND-OR tree, full ILP, and HILP search workflow from "Heuristic Search in Dual Space for Constrained Fixed-Horizon POMDPs with Durative Actions".
+Durative Action RDDL Planner is a Python research prototype for implementing fixed-horizon POMDP / constrained POMDP / durative-action planning algorithms on standard RDDL problems, with a staged path toward the AND-OR tree, full-tree baseline, and HILP search workflow from "Heuristic Search in Dual Space for Constrained Fixed-Horizon POMDPs with Durative Actions".
 
-The main branch now follows a **pyRDDLGym-first** architecture: pyRDDLGym owns standard RDDL parsing, semantic checks, grounding, and simulation; DARP focuses on turning pyRDDLGym `model/env/grounded_model` objects into planner-facing runtime and search inputs, then wiring `DurationModel`, AND-OR trees, ILP/full ILP/HILP, and online sessions. DARP's own parser, expression parser, AST visualizer, and EBNF have been preserved on the archive branch and are no longer maintained on main.
+The main branch keeps one implementation path: pyRDDLGym owns standard RDDL parsing, grounding, and simulation; DARP uses its own data structures for the AND-OR history tree, converts the fixed-horizon CC-POMDP search problem into the paper's full ILP / HILP p-ILP form, and targets Gurobi as the only ILP solver. Durative actions are currently defined through YAML/JSON sidecars; future native RDDL syntax should extend the pyRDDLGym parser instead of adding a second parser.
 
 ## Feature Status
 
@@ -10,9 +10,9 @@ The main branch now follows a **pyRDDLGym-first** architecture: pyRDDLGym owns s
 - `PyRDDLGymProblem.build_grounded_model()` directly reuses pyRDDLGym's `RDDLGrounder(...).ground()` and returns pyRDDLGym's `RDDLGroundedModel`; `GroundedRDDLView` wraps it, so DARP no longer implements grounding itself.
 - `GroundedRDDLView.build_and_or_interface()` now turns grounded actions, observation scope, and root history into an AND-OR search interface.
 - `darp --domain --instance` can now execute an online trace through pyRDDLGym; the current planner is a small rollout baseline used to validate the runtime/session path.
-- `model/` keeps DARP-native `DurationModel`, duration sidecars, and AND-OR tree data structures for later HILP `tau(q)` calculations.
-- Future AND-OR tree / ILP / HILP code should consume pyRDDLGym runtime and grounded-model views directly instead of compiling into a separate DARP `PlanningProblem`.
-- Native DARP-RDDL syntax extensions are not implemented on main; durative actions should first enter through YAML/JSON sidecars or Python plugins.
+- `model/` keeps DARP-native `DurationModel`, duration sidecars, and AND-OR tree data structures, now wired into Phase 7 `tau(q)` pruning.
+- `planning/` provides paper-aligned `preprocess`, `Expand`, full-tree baseline, and HILP-style partial frontier search. HILP currently uses a readable heuristic/DP scoring proxy; the Gurobi p-ILP is Phase 8 work.
+- Durative actions are currently defined only through YAML/JSON sidecars. Future native syntax should extend the pyRDDLGym parser by inheritance.
 
 ## Installation
 
@@ -23,11 +23,10 @@ python -m pip install -e .
 python -m pip install -r requirements-dev.txt
 ```
 
-Optional solver dependencies are reserved for future ILP backends:
+Gurobi is the only solver target for the paper ILP/HILP path. Install it when running the Phase 8 ILP workflow:
 
 ```bash
-python -m pip install -e ".[highs]"     # future HiGHS backend
-python -m pip install -e ".[gurobi]"    # future Gurobi backend
+python -m pip install -e ".[gurobi]"
 ```
 
 ## CLI
@@ -65,45 +64,12 @@ darp \
   --output tiny_grid_pyrddlgym_trace.json
 ```
 
-Inspect the pyRDDLGym problem components and future search boundary:
+Inspect pyRDDLGym problem components and planner-interface boundaries:
 
 ```bash
 python -m darp.adapter.loader \
   examples/rddl/tiny_grid_domain.rddl \
   examples/rddl/tiny_grid_instance.rddl
-```
-
-## Duration Sidecars
-
-Phase 6 does not change standard RDDL grammar. It describes action durations through YAML/JSON sidecars. Current model kinds are:
-
-- `fixed`: one fixed duration per action.
-- `expected`: belief-weighted `(state, action)` durations.
-- `gaussian`: belief-weighted mean/variance with `tau(q)` horizon feasibility.
-- `plugin`: a Python factory returning a custom `DurationModel`.
-
-When PyYAML is installed, DARP uses it for YAML loading; otherwise it falls back to a built-in mapping-only YAML subset parser that is sufficient for the sidecar schema.
-
-Example:
-
-```yaml
-version: 1
-duration_model:
-  kind: fixed
-  horizon: 8
-  default: 1
-  actions:
-    move-east: 1
-    move-south: 1
-```
-
-Load it from Python:
-
-```python
-from darp.model.duration_sidecar import load_duration_sidecar
-
-sidecar = load_duration_sidecar("examples/durations/tiny_grid.yaml")
-evaluator = sidecar.evaluator()
 ```
 
 ## Execution Flow
@@ -120,24 +86,26 @@ darp CLI
   -> planning.run_online_session manages action, observation, state, belief, and trace
 ```
 
-The future paper-aligned path is:
+The paper-aligned path is:
 
 ```text
 PyRDDLGymProblem.build_grounded_model()
   -> pyRDDLGym.core.compiler.model.RDDLGroundedModel
   -> adapter.GroundedRDDLView (reusing pyRDDLGym grounding)
   -> model.ANDORNode / History
-  -> ILP/full ILP/HILP planner
+  -> planning.preprocess / planning.expand
+  -> planning.FullILPPlanner / planning.HILPPlanner
+  -> Gurobi full ILP / p-ILP solve
   -> OnlineSession takes one action and receives observation/reward/state from pyRDDLGym env
 ```
 
 ## Architecture
 
 - pyRDDLGym: standard RDDL parser, semantic handling, grounder, Gym-style environment, and simulator.
-- DARP `adapter/`: isolates the pyRDDLGym dependency and owns loading, grounded-model views, runtime reset/step, and lightweight belief helpers; split this package only if another external system is added later.
+- DARP `adapter/`: fixed pyRDDLGym adapter for loading, grounded-model views, runtime reset/step, and lightweight belief helpers.
 - DARP `model/`: stores DARP-native planning data structures such as duration models, histories, and AND-OR tree nodes; this package does not directly depend on pyRDDLGym.
-- DARP `planning/`: stores planners, online sessions, traces, and the future planner registry; this package reaches external simulators through adapters/runtimes.
-- Future `search/` / `ilp/` or `planning/search/` / `planning/ilp/`: AND-OR tree, full ILP, HILP, and HiGHS/Gurobi backends directly over `GroundedRDDLView`, runtime, and `model/` structures.
+- DARP `planning/`: stores the rollout smoke test, paper search scaffolding, HILP/full-tree planners, online sessions, and traces; this package reaches the simulator through the pyRDDLGym runtime.
+- Gurobi ILP: exact full ILP and HILP p-ILP directly over `GroundedRDDLView`, runtime, and `model/` structures.
 
 ## File Layout
 
@@ -145,7 +113,7 @@ PyRDDLGymProblem.build_grounded_model()
 DARP/
 ├── README.md                         # Chinese primary documentation.
 ├── README-EN.md                      # English mirror documentation.
-├── pyproject.toml                    # Python package metadata and optional solver dependencies.
+├── pyproject.toml                    # Python package metadata and the Gurobi solver extra.
 ├── requirements.txt                  # Runtime dependencies, including pyRDDLGym.
 ├── requirements-dev.txt              # Development/test dependencies.
 │
@@ -174,15 +142,20 @@ DARP/
 │   │   ├── __init__.py               # Model package entrypoint.
 │   │   ├── and_or_tree.py            # Base AND-OR history tree nodes and history structures.
 │   │   ├── duration.py               # DurationModel, HistoryDurationEvaluator, and tau(q) calculations.
-│   │   └── duration_sidecar.py       # JSON/YAML duration sidecar loader and plugin entrypoint.
+│   │   └── duration_sidecar.py       # JSON/YAML duration sidecar loader.
 │   └── planning/                     # Planners and online execution orchestration.
 │       ├── __init__.py               # Planning package entrypoint.
+│       ├── preprocess.py             # Paper-search preprocessing; initializes root and frontier.
+│       ├── expand.py                 # Paper Expand operation; computes rho/u/r/tau-style metrics.
+│       ├── full_ilp.py               # Full-tree baseline; Phase 8 replaces it with Gurobi full ILP.
+│       ├── hilp.py                   # HILP-style partial frontier search; Phase 8 replaces it with Gurobi p-ILP.
 │       ├── rollout.py                # Current pyRDDLGym rollout baseline planner.
 │       └── session.py                # Online session loop and trace structures.
 └── tests/
     ├── test_darp_entrypoint.py       # Top-level CLI and pyRDDLGym online-trace tests.
     ├── test_and_or_tree.py           # DARP AND-OR tree base-structure tests.
-    ├── test_duration_sidecar.py      # Duration sidecar, plugin, and history-duration tests.
+    ├── test_duration_sidecar.py      # Duration sidecar and history-duration tests.
+    ├── test_phase7_search.py         # Phase 7 preprocess, Expand, full-tree, and HILP tests.
     ├── test_pyrddlgym_runtime.py     # pyRDDLGym runtime and simple online-trace tests.
     └── test_rddl_loader.py           # pyRDDLGym loader, summary, and grounder-reuse tests.
 ```
@@ -195,7 +168,7 @@ DARP/
   - [x] 1.3: Import PROST/IPC benchmark corpus
 - [x] Phase 2: pyRDDLGym-first RDDL input
   - [x] 2.1: Move standard RDDL parser/simulator responsibility to pyRDDLGym
-  - [x] 2.2: Remove DARP-owned parser/AST/expression/visualizer maintenance from main and preserve it on the archive branch
+  - [x] 2.2: Remove the DARP-owned parser path and standardize on the pyRDDLGym parser
   - [x] 2.3: Provide `PyRDDLGymProblem` summaries and pyRDDLGym grounder-reuse tests
 - [x] Phase 3: pyRDDLGym generative runtime adapter
   - [x] 3.1: Define a DARP planner-facing runtime protocol around pyRDDLGym `reset/step/model`
@@ -207,29 +180,30 @@ DARP/
   - [x] 4.1: Wrap pyRDDLGym `RDDLGroundedModel` behind state/action/observation/reward/CPF accessors
   - [x] 4.2: Build the action/observation/history interface required by the AND-OR tree from the grounded model and runtime
   - [x] 4.3: Report unsupported RDDL structures clearly
-- [ ] Phase 5: Verifiable baseline solver (vNext, not blocking Phase 6/7)
-  - [ ] 5.1: Add a planner registry for rollout, AND-OR, full ILP, and HILP
+- [ ] Phase 5: Verifiable execution workflow (vNext)
+  - [ ] 5.1: Replace the current rollout smoke test with the default HILP/Gurobi planner
   - [ ] 5.2: Add unified trace output, time-budget fallback, and trace formatting
   - [ ] 5.3: Add offline policy JSON plus replay/evaluation workflow
-  - [ ] Note: Phase 5 should move forward after at least one new planner among AND-OR, full ILP, and HILP exists, avoiding premature engineering while rollout is the only baseline.
+  - [ ] Note: Phase 5 should move forward once the Gurobi ILP workflow is available, keeping the CLI on one default solver path.
 - [x] Phase 6: DurationModel and DARP sidecars
   - [x] 6.1: Design YAML/JSON duration sidecar schema
   - [x] 6.2: Wire fixed, expected, and Gaussian durations into history tree and HILP `tau(q)` evaluation
-  - [x] 6.3: Reserve a Python plugin interface without changing standard RDDL grammar
-- [ ] Phase 7: Paper search algorithms
-  - [ ] 7.1: Implement AND-OR history tree
-  - [ ] 7.2: Implement paper `Expand` and preprocessing
-  - [ ] 7.3: Implement full ILP baseline
-  - [ ] 7.4: Implement HILP partial-ILP search
-- [ ] Phase 8: ILP backend
-  - [ ] 8.1: Implement ILP model/backend protocol and internal backend
-  - [ ] 8.2: Add HiGHS
-  - [ ] 8.3: Add Gurobi
-- [ ] Phase 9: Benchmarks and PROST/rddlsim compatibility
+  - [x] 6.3: Keep durations in YAML/JSON sidecars without changing standard RDDL grammar
+- [x] Phase 7: Paper search algorithm scaffolding
+  - [x] 7.1: Implement AND-OR history tree
+  - [x] 7.2: Implement paper `Expand` and preprocessing
+  - [x] 7.3: Implement a full-tree baseline and keep a Phase 8 replacement point for exact full ILP
+  - [x] 7.4: Implement HILP-style partial frontier search and keep a replacement point for Gurobi p-ILP
+- [ ] Phase 8: Gurobi ILP solving
+  - [ ] 8.1: Encode CC-POMDP-to-full-ILP / p-ILP variables, objective, and constraints
+  - [ ] 8.2: Solve exact full ILP with Gurobi
+  - [ ] 8.3: Solve each HILP p-ILP iteration with Gurobi
+  - [ ] 8.4: Record Gurobi status, time limit, MIP gap, and infeasibility details in traces
+- [ ] Phase 9: Benchmarks, experiments, and syntax extension
   - [ ] 9.1: Implement benchmark runner and pyRDDLGym/rddlrepository import checks
-  - [ ] 9.2: Implement rddlsim/PROST-style online protocol adapter
+  - [ ] 9.2: Implement PROST/rddlsim-style online protocol compatibility
   - [ ] 9.3: Add paper-style experiment scripts
-  - [ ] 9.4: Evaluate integration between pyRDDLGym visualizers and DARP planner traces
+  - [ ] 9.4: If native durative-action syntax is needed, extend the pyRDDLGym parser by inheritance
 
 ## Testing
 
@@ -243,5 +217,5 @@ python -m pytest
 - The grounded AND-OR interface and pyRDDLGym rollout baseline currently enumerate noop and single bool actions only; action combinations and non-bool actions produce clear unsupported errors and remain future planner/action-space work.
 - Current POMDP belief uses a lightweight particle approximation for debugging runtime boundaries; benchmark-quality POMDP evaluation needs later likelihood weighting/resampling.
 - DARP reuses pyRDDLGym grounding and does not reimplement RDDL grounding or finite-state enumeration.
-- Native DARP-RDDL syntax is not maintained on main; durative actions are currently integrated through sidecars/plugins.
-- AND-OR tree, full ILP, HILP, and HiGHS/Gurobi backends remain future phases.
+- Native DARP-RDDL syntax is not maintained on main; durative actions currently enter only through YAML/JSON sidecars.
+- Phase 7 provides AND-OR/Expand/full-tree/HILP-style search scaffolding; exact full ILP and p-ILP will use Gurobi in Phase 8.

@@ -1,6 +1,6 @@
 """pyRDDLGym problem bundle for standard RDDL inputs."""
 
-# TODO(phase-7.2): Feed GroundedRDDLView into paper Expand and ILP encoders.
+# TODO(phase-8.1): Feed GroundedRDDLView into Gurobi ILP encoders.
 
 from __future__ import annotations
 
@@ -71,10 +71,11 @@ class PyRDDLGymProblem:
                 "non_fluents": _keys(getattr(model, "non_fluents", None)),
                 "types": _keys(getattr(model, "type_to_objects", None)),
             },
-            "future_interfaces": [
+            "planner_interfaces": [
                 "pyRDDLGym grounded model view",
                 "AND-OR history tree over action/observation histories",
-                "ILP/HILP search over the grounded model and duration sidecars",
+                "Phase 7 full-tree/HILP search over the grounded model and duration sidecars",
+                "Phase 8 Gurobi full-ILP/p-ILP solver",
             ],
         }
 

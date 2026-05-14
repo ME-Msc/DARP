@@ -1,6 +1,6 @@
 """DARP view over pyRDDLGym grounded models."""
 
-# TODO(phase-7.2): Add expression-level transition support for paper Expand.
+# TODO(phase-8.2): Add expression-level transition rows for Gurobi full ILP.
 
 from __future__ import annotations
 

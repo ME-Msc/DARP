@@ -19,7 +19,6 @@ darp = "darp.__main__:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
-highs = ["scipy>=1.11"]
 gurobi = ["gurobipy>=10.0"]
 
 [tool.setuptools.packages.find]

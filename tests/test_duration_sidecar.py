@@ -1,7 +1,6 @@
 """Tests for DARP duration sidecars and history-duration evaluation."""
 
 import json
-import sys
 
 import pytest
 
@@ -124,33 +123,41 @@ def test_duration_sidecar_rejects_unknown_actions():
         sidecar.validate_actions({"known-action"})
 
 
-def test_plugin_duration_sidecar_reserves_python_extension_point(tmp_path, monkeypatch):
-    """Check plugin sidecars can construct custom DurationModel objects. / 检查 plugin sidecar 能构造自定义 DurationModel。"""
-    plugin = tmp_path / "duration_plugin.py"
-    plugin.write_text(
-        "\n".join(
-            [
-                "from darp.model.duration import FixedDurationModel",
-                "",
-                "def build_duration_model(config):",
-                "    return FixedDurationModel(durations={'act': config['duration']}, default=1)",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    sys.modules.pop("duration_plugin", None)
+def test_duration_sidecar_rejects_plugin_kind():
+    """Check duration sidecars stay YAML/JSON data only. / 检查 duration sidecar 仅保留 YAML/JSON 数据定义。"""
+    with pytest.raises(DurationSpecError, match="Unsupported duration model kind"):
+        build_duration_sidecar(
+            {
+                "duration_model": {
+                    "kind": "plugin",
+                    "module": "duration_plugin",
+                }
+            }
+        )
 
+
+def test_duration_sidecar_rejects_unknown_kind():
+    """Check unknown duration kinds fail clearly. / 检查未知 duration kind 会清晰报错。"""
+    with pytest.raises(DurationSpecError, match="Unsupported duration model kind"):
+        build_duration_sidecar(
+            {
+                "duration_model": {
+                    "kind": "custom",
+                }
+            }
+        )
+
+
+def test_duration_sidecar_accepts_flat_json_mapping():
+    """Check JSON sidecars can use duration_model fields at the root. / 检查 JSON sidecar 可直接在根部写 duration_model 字段。"""
     sidecar = build_duration_sidecar(
         {
-            "duration_model": {
-                "kind": "plugin",
-                "module": "duration_plugin",
-                "factory": "build_duration_model",
-                "config": {"duration": 3},
-            }
+            "kind": "fixed",
+            "horizon": 3,
+            "actions": {"act": 2},
         }
     )
 
     assert isinstance(sidecar.model, FixedDurationModel)
-    assert sidecar.model.estimate({}, "act").mean == 3
+    assert sidecar.model.estimate({}, "act").mean == 2
+    assert sidecar.evaluator().horizon == 3

@@ -1,7 +1,7 @@
 """AND-OR history tree data structures for DARP search."""
 
-# TODO(phase-7.1): Add expansion bookkeeping from the paper once the grounded
-# model view exposes transition and observation support.
+# TODO(phase-8.1): Add Gurobi variable IDs to nodes once the ILP encoders are
+# available.
 
 from __future__ import annotations
 

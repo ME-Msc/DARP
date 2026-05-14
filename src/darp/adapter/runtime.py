@@ -1,6 +1,6 @@
 """pyRDDLGym environment runtime wrapper and belief helpers."""
 
-# TODO(phase-7.1): Prefer public pyRDDLGym action-space metadata once a stable
+# TODO(phase-9.1): Prefer public pyRDDLGym action-space metadata once a stable
 # API is available, instead of relying on private env fields.
 # TODO(phase-9.3): Replace rejected-particle fallback with likelihood weighting
 # before using particle belief for benchmark-quality POMDP evaluation.

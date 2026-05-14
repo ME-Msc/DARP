@@ -1,6 +1,6 @@
 """DARP-native planning data structures."""
 
-# TODO(phase-7.1): Promote AND-OR tree structures into the paper search code.
+# TODO(phase-8.1): Export Gurobi ILP-facing model structures after encoders land.
 
 from darp.model.and_or_tree import (
     ANDORNode,

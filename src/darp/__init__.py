@@ -1,6 +1,6 @@
 """Durative Action RDDL Planner research prototype."""
 
-# TODO(phase-9.1): Expose stable public APIs once the benchmark workflow settles.
+# TODO(phase-9.1): Expose a stable HILP/Gurobi public API once the ILP workflow settles.
 
 __all__ = ["__version__"]
 
