@@ -10,7 +10,7 @@ main 分支采用 **pyRDDLGym-first** 架构：标准 RDDL 的解析、语义检
 - `PyRDDLGymProblem.build_grounded_model()` 直接复用 pyRDDLGym `RDDLGrounder(...).ground()`，返回 pyRDDLGym 的 `RDDLGroundedModel`；`GroundedRDDLView` 封装它，DARP 不再自己实现 grounding。
 - `GroundedRDDLView.build_and_or_interface()` 已能把 grounded action、observation scope 和 root history 组织成 AND-OR search interface。
 - `darp --domain --instance` 已能通过 pyRDDLGym 执行 online trace；当前 planner 是小规模 rollout baseline，用于验证 runtime/session 主路径。
-- `model/` 保留 DARP 自己的 `DurationModel` 和 AND-OR tree 数据结构，为后续 durative action sidecar 和 HILP 的 `tau(q)` 计算服务。
+- `model/` 保留 DARP 自己的 `DurationModel`、duration sidecar 和 AND-OR tree 数据结构，为后续 HILP 的 `tau(q)` 计算服务。
 - 后续 AND-OR tree / ILP / HILP 将直接消费 pyRDDLGym runtime 与 grounded model view，而不是先转换成 DARP 自有 `PlanningProblem`。
 - DARP-RDDL 原生扩展语法暂不在 main 实现；durative action 优先通过 YAML/JSON sidecar 或 Python plugin 接入。
 
@@ -73,6 +73,39 @@ python -m darp.adapter.loader \
   examples/rddl/tiny_grid_instance.rddl
 ```
 
+## Duration Sidecar
+
+Phase 6 不修改标准 RDDL grammar，而是用 YAML/JSON sidecar 描述动作时长。当前支持：
+
+- `fixed`：每个 action 一个固定 duration。
+- `expected`：按 belief 对 `(state, action)` duration 做期望。
+- `gaussian`：按 belief 累计 mean/variance，并用 `tau(q)` 计算 horizon 可行度。
+- `plugin`：通过 Python factory 返回自定义 `DurationModel`。
+
+如果环境安装了 PyYAML，DARP 会用 PyYAML 读取 YAML；否则使用内置的 mapping-only YAML 子集解析器，足够读取项目 sidecar schema。
+
+示例：
+
+```yaml
+version: 1
+duration_model:
+  kind: fixed
+  horizon: 8
+  default: 1
+  actions:
+    move-east: 1
+    move-south: 1
+```
+
+Python 中加载：
+
+```python
+from darp.model.duration_sidecar import load_duration_sidecar
+
+sidecar = load_duration_sidecar("examples/durations/tiny_grid.yaml")
+evaluator = sidecar.evaluator()
+```
+
 ## 执行流程
 
 当前主路径刻意保持简单：
@@ -120,6 +153,8 @@ DARP/
 │   ├── benchmarks/                   # PROST/IPC RDDL MDP benchmark 数据集。
 │   │   ├── README.md                 # benchmark 来源、目录约定和导入清单。
 │   │   └── <domain-year>/            # 单个 benchmark domain 目录。
+│   ├── durations/                    # DARP duration sidecar 示例。
+│   │   └── tiny_grid.yaml            # tiny grid fixed-duration sidecar。
 │   └── rddl/                         # 小型手写 RDDL 示例。
 │       ├── tiny_grid_domain.rddl     # tiny grid 标准 RDDL domain。
 │       ├── tiny_grid_instance.rddl   # tiny grid instance。
@@ -138,7 +173,8 @@ DARP/
 │   ├── model/                        # DARP 自己的规划数据结构。
 │   │   ├── __init__.py               # model package 入口。
 │   │   ├── and_or_tree.py            # AND-OR history tree 的基础节点和 history 结构。
-│   │   └── duration.py               # DurationModel 接口和 fixed/expected/Gaussian duration 模型。
+│   │   ├── duration.py               # DurationModel、HistoryDurationEvaluator 和 tau(q) 计算。
+│   │   └── duration_sidecar.py       # JSON/YAML duration sidecar loader 和 plugin 入口。
 │   └── planning/                     # planner 与在线执行编排。
 │       ├── __init__.py               # planning package 入口。
 │       ├── rollout.py                # 当前 pyRDDLGym rollout baseline planner。
@@ -146,6 +182,7 @@ DARP/
 └── tests/
     ├── test_darp_entrypoint.py       # 顶层 CLI 和 pyRDDLGym online trace 测试。
     ├── test_and_or_tree.py           # DARP AND-OR tree 基础结构测试。
+    ├── test_duration_sidecar.py      # duration sidecar、plugin 和 history duration 测试。
     ├── test_pyrddlgym_runtime.py     # pyRDDLGym runtime 与 simple online trace 测试。
     └── test_rddl_loader.py           # pyRDDLGym loader、summary 和 grounder 复用测试。
 ```
@@ -170,12 +207,15 @@ DARP/
   - [x] 4.1：封装 pyRDDLGym `RDDLGroundedModel`，暴露 state/action/observation/reward/cpf 读取接口
   - [x] 4.2：从 grounded model 和 runtime 构造 AND-OR tree 所需的 action/observation/history 接口
   - [x] 4.3：明确不支持或暂不支持的 RDDL 结构，并给出清晰错误
-- [ ] Phase 5：暂缓，已并入 Phase 9
-  - [ ] 原因：目前只有 rollout baseline，一个 planner registry、offline replay/evaluation 会过早工程化；等 AND-OR/full ILP/HILP 出现后再统一更合理。
-- [ ] Phase 6：DurationModel 与 DARP sidecar
-  - [ ] 6.1：设计 YAML/JSON duration sidecar schema
-  - [ ] 6.2：把 fixed、expected、Gaussian duration 接入 runtime、history tree 和 HILP `tau(q)`
-  - [ ] 6.3：预留 Python plugin 接口，不修改标准 RDDL grammar
+- [ ] Phase 5：可验证 baseline solver（vNext，当前不阻塞 Phase 6/7）
+  - [ ] 5.1：为 rollout、AND-OR、full ILP、HILP 增加 planner registry
+  - [ ] 5.2：实现统一 trace 输出、time-budget fallback 和 trace formatter
+  - [ ] 5.3：实现 offline policy JSON、replay 和 evaluation 流程
+  - [ ] 说明：Phase 5 会在至少出现 AND-OR/full ILP/HILP 中的一个新 planner 后推进，避免当前只有 rollout baseline 时过早工程化。
+- [x] Phase 6：DurationModel 与 DARP sidecar
+  - [x] 6.1：设计 YAML/JSON duration sidecar schema
+  - [x] 6.2：把 fixed、expected、Gaussian duration 接入 history tree 和 HILP `tau(q)` evaluator
+  - [x] 6.3：预留 Python plugin 接口，不修改标准 RDDL grammar
 - [ ] Phase 7：论文搜索算法
   - [ ] 7.1：实现 AND-OR history tree
   - [ ] 7.2：实现论文 `Expand` 与 preprocessing
@@ -186,13 +226,10 @@ DARP/
   - [ ] 8.2：接入 HiGHS
   - [ ] 8.3：接入 Gurobi
 - [ ] Phase 9：benchmark 与 PROST/rddlsim 兼容
-  - [ ] 9.1：为 rollout、AND-OR、full ILP、HILP 增加 planner registry
-  - [ ] 9.2：实现统一 trace 输出、time-budget fallback 和 trace formatter
-  - [ ] 9.3：实现 offline policy JSON、replay 和 evaluation 流程
-  - [ ] 9.4：实现 benchmark runner 和 pyRDDLGym/rddlrepository 导入检查
-  - [ ] 9.5：实现 rddlsim/PROST 风格 online protocol adapter
-  - [ ] 9.6：补充论文风格实验脚本
-  - [ ] 9.7：评估 pyRDDLGym visualizer 与 DARP planner trace 的集成方式
+  - [ ] 9.1：实现 benchmark runner 和 pyRDDLGym/rddlrepository 导入检查
+  - [ ] 9.2：实现 rddlsim/PROST 风格 online protocol adapter
+  - [ ] 9.3：补充论文风格实验脚本
+  - [ ] 9.4：评估 pyRDDLGym visualizer 与 DARP planner trace 的集成方式
 
 ## 测试
 
@@ -206,5 +243,5 @@ python -m pytest
 - 当前 grounded AND-OR 接口和 pyRDDLGym rollout baseline 只枚举 noop 与单个 bool action；多 action 组合和非 bool action 会给出清晰 unsupported 错误，是后续 planner/action-space 工作。
 - 当前 POMDP belief 采用轻量粒子近似，适合调试 runtime 边界；benchmark 级 POMDP 评估需要后续 likelihood weighting/resampling。
 - DARP 复用 pyRDDLGym grounding，不重新实现 RDDL grounding 或有限状态枚举。
-- DARP-RDDL 原生新语法暂不在 main 分支维护；durative action 优先通过 sidecar/plugin 实现。
+- DARP-RDDL 原生新语法暂不在 main 分支维护；durative action 已通过 sidecar/plugin 接入。
 - AND-OR tree、full ILP、HILP、HiGHS/Gurobi backend 仍是后续阶段。

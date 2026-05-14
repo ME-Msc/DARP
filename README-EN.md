@@ -10,7 +10,7 @@ The main branch now follows a **pyRDDLGym-first** architecture: pyRDDLGym owns s
 - `PyRDDLGymProblem.build_grounded_model()` directly reuses pyRDDLGym's `RDDLGrounder(...).ground()` and returns pyRDDLGym's `RDDLGroundedModel`; `GroundedRDDLView` wraps it, so DARP no longer implements grounding itself.
 - `GroundedRDDLView.build_and_or_interface()` now turns grounded actions, observation scope, and root history into an AND-OR search interface.
 - `darp --domain --instance` can now execute an online trace through pyRDDLGym; the current planner is a small rollout baseline used to validate the runtime/session path.
-- `model/` keeps DARP-native `DurationModel` and AND-OR tree data structures for later durative-action sidecars and HILP `tau(q)` calculations.
+- `model/` keeps DARP-native `DurationModel`, duration sidecars, and AND-OR tree data structures for later HILP `tau(q)` calculations.
 - Future AND-OR tree / ILP / HILP code should consume pyRDDLGym runtime and grounded-model views directly instead of compiling into a separate DARP `PlanningProblem`.
 - Native DARP-RDDL syntax extensions are not implemented on main; durative actions should first enter through YAML/JSON sidecars or Python plugins.
 
@@ -73,6 +73,39 @@ python -m darp.adapter.loader \
   examples/rddl/tiny_grid_instance.rddl
 ```
 
+## Duration Sidecars
+
+Phase 6 does not change standard RDDL grammar. It describes action durations through YAML/JSON sidecars. Current model kinds are:
+
+- `fixed`: one fixed duration per action.
+- `expected`: belief-weighted `(state, action)` durations.
+- `gaussian`: belief-weighted mean/variance with `tau(q)` horizon feasibility.
+- `plugin`: a Python factory returning a custom `DurationModel`.
+
+When PyYAML is installed, DARP uses it for YAML loading; otherwise it falls back to a built-in mapping-only YAML subset parser that is sufficient for the sidecar schema.
+
+Example:
+
+```yaml
+version: 1
+duration_model:
+  kind: fixed
+  horizon: 8
+  default: 1
+  actions:
+    move-east: 1
+    move-south: 1
+```
+
+Load it from Python:
+
+```python
+from darp.model.duration_sidecar import load_duration_sidecar
+
+sidecar = load_duration_sidecar("examples/durations/tiny_grid.yaml")
+evaluator = sidecar.evaluator()
+```
+
 ## Execution Flow
 
 The current main path is deliberately small:
@@ -120,6 +153,8 @@ DARP/
 │   ├── benchmarks/                   # PROST/IPC RDDL MDP benchmark corpus.
 │   │   ├── README.md                 # Benchmark source notes and import list.
 │   │   └── <domain-year>/            # Individual benchmark domain directory.
+│   ├── durations/                    # DARP duration sidecar examples.
+│   │   └── tiny_grid.yaml            # Tiny-grid fixed-duration sidecar.
 │   └── rddl/                         # Small hand-written RDDL examples.
 │       ├── tiny_grid_domain.rddl     # Tiny-grid standard RDDL domain.
 │       ├── tiny_grid_instance.rddl   # Tiny-grid instance.
@@ -138,7 +173,8 @@ DARP/
 │   ├── model/                        # DARP-native planning data structures.
 │   │   ├── __init__.py               # Model package entrypoint.
 │   │   ├── and_or_tree.py            # Base AND-OR history tree nodes and history structures.
-│   │   └── duration.py               # DurationModel interface and fixed/expected/Gaussian duration models.
+│   │   ├── duration.py               # DurationModel, HistoryDurationEvaluator, and tau(q) calculations.
+│   │   └── duration_sidecar.py       # JSON/YAML duration sidecar loader and plugin entrypoint.
 │   └── planning/                     # Planners and online execution orchestration.
 │       ├── __init__.py               # Planning package entrypoint.
 │       ├── rollout.py                # Current pyRDDLGym rollout baseline planner.
@@ -146,6 +182,7 @@ DARP/
 └── tests/
     ├── test_darp_entrypoint.py       # Top-level CLI and pyRDDLGym online-trace tests.
     ├── test_and_or_tree.py           # DARP AND-OR tree base-structure tests.
+    ├── test_duration_sidecar.py      # Duration sidecar, plugin, and history-duration tests.
     ├── test_pyrddlgym_runtime.py     # pyRDDLGym runtime and simple online-trace tests.
     └── test_rddl_loader.py           # pyRDDLGym loader, summary, and grounder-reuse tests.
 ```
@@ -170,12 +207,15 @@ DARP/
   - [x] 4.1: Wrap pyRDDLGym `RDDLGroundedModel` behind state/action/observation/reward/CPF accessors
   - [x] 4.2: Build the action/observation/history interface required by the AND-OR tree from the grounded model and runtime
   - [x] 4.3: Report unsupported RDDL structures clearly
-- [ ] Phase 5: Deferred and folded into Phase 9
-  - [ ] Reason: with only the rollout baseline available, a planner registry and offline replay/evaluation workflow would be premature; they become useful once AND-OR, full ILP, and HILP exist.
-- [ ] Phase 6: DurationModel and DARP sidecars
-  - [ ] 6.1: Design YAML/JSON duration sidecar schema
-  - [ ] 6.2: Wire fixed, expected, and Gaussian durations into runtime, history tree, and HILP `tau(q)`
-  - [ ] 6.3: Reserve a Python plugin interface without changing standard RDDL grammar
+- [ ] Phase 5: Verifiable baseline solver (vNext, not blocking Phase 6/7)
+  - [ ] 5.1: Add a planner registry for rollout, AND-OR, full ILP, and HILP
+  - [ ] 5.2: Add unified trace output, time-budget fallback, and trace formatting
+  - [ ] 5.3: Add offline policy JSON plus replay/evaluation workflow
+  - [ ] Note: Phase 5 should move forward after at least one new planner among AND-OR, full ILP, and HILP exists, avoiding premature engineering while rollout is the only baseline.
+- [x] Phase 6: DurationModel and DARP sidecars
+  - [x] 6.1: Design YAML/JSON duration sidecar schema
+  - [x] 6.2: Wire fixed, expected, and Gaussian durations into history tree and HILP `tau(q)` evaluation
+  - [x] 6.3: Reserve a Python plugin interface without changing standard RDDL grammar
 - [ ] Phase 7: Paper search algorithms
   - [ ] 7.1: Implement AND-OR history tree
   - [ ] 7.2: Implement paper `Expand` and preprocessing
@@ -186,13 +226,10 @@ DARP/
   - [ ] 8.2: Add HiGHS
   - [ ] 8.3: Add Gurobi
 - [ ] Phase 9: Benchmarks and PROST/rddlsim compatibility
-  - [ ] 9.1: Add a planner registry for rollout, AND-OR, full ILP, and HILP
-  - [ ] 9.2: Add unified trace output, time-budget fallback, and trace formatting
-  - [ ] 9.3: Add offline policy JSON plus replay/evaluation workflow
-  - [ ] 9.4: Implement benchmark runner and pyRDDLGym/rddlrepository import checks
-  - [ ] 9.5: Implement rddlsim/PROST-style online protocol adapter
-  - [ ] 9.6: Add paper-style experiment scripts
-  - [ ] 9.7: Evaluate integration between pyRDDLGym visualizers and DARP planner traces
+  - [ ] 9.1: Implement benchmark runner and pyRDDLGym/rddlrepository import checks
+  - [ ] 9.2: Implement rddlsim/PROST-style online protocol adapter
+  - [ ] 9.3: Add paper-style experiment scripts
+  - [ ] 9.4: Evaluate integration between pyRDDLGym visualizers and DARP planner traces
 
 ## Testing
 
@@ -206,5 +243,5 @@ python -m pytest
 - The grounded AND-OR interface and pyRDDLGym rollout baseline currently enumerate noop and single bool actions only; action combinations and non-bool actions produce clear unsupported errors and remain future planner/action-space work.
 - Current POMDP belief uses a lightweight particle approximation for debugging runtime boundaries; benchmark-quality POMDP evaluation needs later likelihood weighting/resampling.
 - DARP reuses pyRDDLGym grounding and does not reimplement RDDL grounding or finite-state enumeration.
-- Native DARP-RDDL syntax is not maintained on main; durative actions should first use sidecars/plugins.
+- Native DARP-RDDL syntax is not maintained on main; durative actions are currently integrated through sidecars/plugins.
 - AND-OR tree, full ILP, HILP, and HiGHS/Gurobi backends remain future phases.

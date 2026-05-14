@@ -1,15 +1,17 @@
 """Durative-action models and tau computations."""
 
-# TODO(phase-6.2): Replace the Gaussian approximation with the exact smoothed
+# TODO(phase-7.4): Replace the Gaussian approximation with the exact smoothed
 # belief calculation from the paper for larger POMDP histories.
-# TODO(phase-6.2): Add chance-constrained duration via augmented state space.
+# TODO(phase-7.4): Add chance-constrained duration via augmented state space.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections.abc import Hashable
 from math import erf, sqrt
-from typing import Mapping
+from typing import Iterable, Mapping
+
+from darp.model.and_or_tree import History
 
 ActionName = str
 StateKey = Hashable
@@ -39,6 +41,16 @@ class DurationProgress:
         )
 
 
+@dataclass(frozen=True)
+class HistoryDurationRecord:
+    """Store one action's duration contribution along a history. / 保存 history 中一次 action 的 duration 贡献。"""
+
+    action: ActionName
+    belief: Belief
+    estimate: DurationEstimate
+    progress: DurationProgress
+
+
 class DurationModel:
     """Base class for duration models. / 动作时长模型基类。"""
 
@@ -55,6 +67,68 @@ class DurationModel:
     def should_continue(self, progress: DurationProgress, horizon: float, zeta: float) -> bool:
         """Return whether a history should keep expanding. / 判断一条 history 是否继续展开。"""
         return self.tau(progress, horizon) > zeta
+
+
+@dataclass(frozen=True)
+class HistoryDurationEvaluator:
+    """Evaluate cumulative duration for histories, matching Phase 7 tree pruning. / 评估 history 累计时长以适配 Phase 7 树剪枝。"""
+
+    model: DurationModel
+    horizon: float
+    zeta: float = 0.0
+    default_belief: Belief = field(default_factory=lambda: {"__default__": 1.0})
+
+    def records_for_actions(
+        self,
+        actions: Iterable[ActionName],
+        beliefs: Iterable[Belief] | None = None,
+    ) -> tuple[HistoryDurationRecord, ...]:
+        """Return duration records for an action sequence. / 返回一串 action 的 duration 记录。"""
+        belief_sequence = tuple(beliefs or ())
+        progress = DurationProgress()
+        records: list[HistoryDurationRecord] = []
+        for index, action in enumerate(actions):
+            belief = belief_sequence[index] if index < len(belief_sequence) else self.default_belief
+            estimate = self.model.estimate(belief, action)
+            progress = progress.add(estimate)
+            records.append(
+                HistoryDurationRecord(
+                    action=action,
+                    belief=belief,
+                    estimate=estimate,
+                    progress=progress,
+                )
+            )
+        return tuple(records)
+
+    def progress_for_actions(
+        self,
+        actions: Iterable[ActionName],
+        beliefs: Iterable[Belief] | None = None,
+    ) -> DurationProgress:
+        """Return cumulative duration progress for actions. / 返回 action 序列的累计 duration progress。"""
+        records = self.records_for_actions(actions, beliefs)
+        return records[-1].progress if records else DurationProgress()
+
+    def progress_for_history(
+        self,
+        history: History,
+        beliefs: Iterable[Belief] | None = None,
+    ) -> DurationProgress:
+        """Return cumulative duration progress for a DARP history. / 返回 DARP history 的累计 duration progress。"""
+        return self.progress_for_actions(history.actions, beliefs)
+
+    def tau_for_history(self, history: History, beliefs: Iterable[Belief] | None = None) -> float:
+        """Return tau for a DARP history. / 返回 DARP history 对应的 tau。"""
+        return self.model.tau(self.progress_for_history(history, beliefs), self.horizon)
+
+    def should_expand(self, history: History, beliefs: Iterable[Belief] | None = None) -> bool:
+        """Return whether Phase 7 search should expand the history. / 返回 Phase 7 搜索是否应继续展开该 history。"""
+        return self.model.should_continue(self.progress_for_history(history, beliefs), self.horizon, self.zeta)
+
+    def elapsed_for_history(self, history: History, beliefs: Iterable[Belief] | None = None) -> float:
+        """Return expected elapsed duration, like duration_model(q). / 返回期望累计时长，类似 duration_model(q)。"""
+        return self.progress_for_history(history, beliefs).mean
 
 
 @dataclass(frozen=True)

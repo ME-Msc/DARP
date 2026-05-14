@@ -16,7 +16,16 @@ from darp.model.duration import (
     DurationProgress,
     FixedDurationModel,
     GaussianDurationModel,
+    HistoryDurationEvaluator,
+    HistoryDurationRecord,
     StateDependentDurationModel,
+)
+from darp.model.duration_sidecar import (
+    DurationSidecar,
+    DurationSpecError,
+    build_duration_model,
+    build_duration_sidecar,
+    load_duration_sidecar,
 )
 
 __all__ = [
@@ -27,9 +36,16 @@ __all__ = [
     "DurationEstimate",
     "DurationModel",
     "DurationProgress",
+    "DurationSidecar",
+    "DurationSpecError",
     "FixedDurationModel",
     "GaussianDurationModel",
     "History",
+    "HistoryDurationEvaluator",
+    "HistoryDurationRecord",
     "ObservationScope",
     "StateDependentDurationModel",
+    "build_duration_model",
+    "build_duration_sidecar",
+    "load_duration_sidecar",
 ]

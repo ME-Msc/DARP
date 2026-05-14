@@ -1,0 +1,10 @@
+version: 1
+duration_model:
+  kind: fixed
+  horizon: 8
+  default: 1
+  actions:
+    move-east: 1
+    move-south: 1
+    move-west: 1
+    move-north: 1
