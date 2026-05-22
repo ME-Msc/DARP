@@ -1,7 +1,7 @@
 """Baseline planners over pyRDDLGym runtime copies."""
 
-# TODO(phase-9.1): Retire RolloutPlanner from the default CLI once the
-# HILP/Gurobi planner is wired end to end.
+# TODO(phase-9.1): Keep RolloutPlanner as a debugging baseline while benchmark
+# runs use HILP/Gurobi.
 
 from __future__ import annotations
 

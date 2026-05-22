@@ -1,8 +1,7 @@
 """HILP-style partial frontier search for the paper algorithm."""
 
-# TODO(phase-8.1): Replace the heuristic p-ILP proxy with Gurobi-selected
-# frontier variables once ILP encoders are implemented.
-# TODO(phase-8.3): Add warm-start transfer from one p-ILP solve to the next.
+# TODO(phase-9.1): Add warm-start transfer and full stochastic observation
+# support for benchmark-scale HILP experiments.
 
 from __future__ import annotations
 
@@ -10,10 +9,12 @@ from dataclasses import dataclass, field
 from time import perf_counter
 
 from darp.adapter.runtime import PyRDDLGymRuntime
+from darp.ilp.gurobi import GurobiILPSolver, GurobiUnavailableError
 from darp.model.and_or_tree import ANDORSearchInterface
 from darp.model.duration import HistoryDurationEvaluator
 from darp.planning.expand import ExpandedAction, expand_frontier_item
 from darp.planning.full_ilp import FullILPPlanner
+from darp.planning.ilp_tree import build_frontier_selection_ilp
 from darp.planning.preprocess import FrontierItem, preprocess_search_tree
 from darp.planning.rollout import (
     ActionDecision,
@@ -40,6 +41,8 @@ class HILPPlanner:
     lookahead_depth: int = 4
     max_iterations: int = 4
     frontier_width: int = 1
+    use_gurobi: bool = True
+    require_gurobi: bool = False
     name: str = "hilp-partial-tree"
     last_stats: HILPSearchStats | None = field(default=None, init=False)
 
@@ -60,13 +63,13 @@ class HILPPlanner:
           histories :math:`F`, and non-expanded descendants :math:`N`.
         - Each iteration solves a partial ILP over :math:`E \cup F`, selects
           frontier nodes with positive policy mass, expands them, and repeats.
-        - This Phase 7 implementation keeps the same :math:`E/F` bookkeeping
-          and calls the Phase 7 `Expand` operation, but uses the full-tree
-          dynamic-programming evaluator as a readable p-ILP scoring proxy.
-          Phase 8 replaces that proxy with a Gurobi p-ILP model.
+        - Phase 8 keeps the same :math:`E/F` bookkeeping, calls `Expand`, and
+          solves a Gurobi p-ILP over the current frontier selection. The
+          frontier scores still come from the generated full-tree evaluator
+          until full stochastic support is added.
 
         / 使用 HILP 的 :math:`E/F` frontier 更新框架选择动作；当前以可读的 DP
-        分数近似 p-ILP，Phase 8 会替换成 Gurobi p-ILP。
+        分数作为 p-ILP objective，并用 Gurobi 选择 frontier。
         """
 
         started_at = perf_counter()
@@ -83,13 +86,18 @@ class HILPPlanner:
 
         deadline = None if time_budget_ms is None else started_at + time_budget_ms / 1000.0
         depth = max(1, min(self.lookahead_depth, remaining_depth))
-        full_tree = FullILPPlanner(lookahead_depth=depth)
+        full_tree = FullILPPlanner(
+            lookahead_depth=depth,
+            use_gurobi=self.use_gurobi,
+            require_gurobi=self.require_gurobi,
+        )
         tree = preprocess_search_tree(runtime, interface)
         frontier = list(tree.frontier)
         expanded: list[ExpandedAction] = []
         selected_labels: list[str] = []
         complete = True
         fallback_reason = None
+        used_gurobi = False
 
         try:
             for iteration in range(self.max_iterations):
@@ -100,6 +108,7 @@ class HILPPlanner:
                         expanded_count=len(expanded),
                         frontier_count=0,
                         selected_frontier=tuple(selected_labels),
+                        used_gurobi=used_gurobi,
                     )
                     break
                 scored = self._score_frontier(
@@ -110,7 +119,13 @@ class HILPPlanner:
                     depth=depth,
                     deadline=deadline,
                 )
-                selected = [item for _, item in scored[: self.frontier_width]]
+                selected, selected_with_gurobi = self._select_frontier(
+                    scored,
+                    deadline=deadline,
+                    started_at=started_at,
+                    time_budget_ms=time_budget_ms,
+                )
+                used_gurobi = used_gurobi or selected_with_gurobi
                 for item in selected:
                     if item not in frontier:
                         continue
@@ -125,6 +140,7 @@ class HILPPlanner:
                     expanded_count=len(expanded),
                     frontier_count=len(frontier),
                     selected_frontier=tuple(selected_labels),
+                    used_gurobi=used_gurobi,
                 )
         except _RuntimeDeadlineExceeded as exc:
             complete = False
@@ -134,6 +150,7 @@ class HILPPlanner:
                 expanded_count=len(expanded),
                 frontier_count=len(frontier),
                 selected_frontier=tuple(selected_labels),
+                used_gurobi=used_gurobi,
             )
 
         decision = full_tree.choose_action(
@@ -210,6 +227,46 @@ class HILPPlanner:
             for item in frontier
         ]
         return sorted(scored, key=lambda pair: pair[0], reverse=True)
+
+    def _select_frontier(
+        self,
+        scored: list[tuple[float, FrontierItem]],
+        *,
+        deadline: float | None,
+        started_at: float,
+        time_budget_ms: float | None,
+    ) -> tuple[list[FrontierItem], bool]:
+        r"""Select frontier histories with the Phase 8 Gurobi p-ILP.
+
+        The p-ILP uses one binary variable :math:`y_q` per frontier history and
+        selects up to :math:`k` histories for expansion.
+
+        / 使用 Gurobi p-ILP 选择本轮要展开的 frontier history。
+        """
+        _raise_if_deadline_expired(deadline)
+        fallback = [item for _, item in scored[: self.frontier_width]]
+        if not self.use_gurobi or not scored:
+            return fallback, False
+        try:
+            frontier_ilp = build_frontier_selection_ilp(scored, frontier_width=self.frontier_width)
+            result = GurobiILPSolver().solve(
+                frontier_ilp.spec,
+                time_limit_ms=_remaining_time_budget_ms(started_at, time_budget_ms),
+            )
+        except GurobiUnavailableError:
+            if self.require_gurobi:
+                raise
+            return fallback, False
+        selected = [
+            frontier_ilp.variable_items[var_id]
+            for var_id in result.selected_variables
+            if var_id in frontier_ilp.variable_items
+        ]
+        if not selected:
+            if self.require_gurobi:
+                raise RuntimeError("Gurobi HILP p-ILP did not select a frontier node.")
+            return fallback, False
+        return selected, True
 
 
 def _remaining_time_budget_ms(started_at: float, time_budget_ms: float | None) -> float | None:

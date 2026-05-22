@@ -1,16 +1,19 @@
 """Full-tree baseline for the paper's ILP policy-tree objective."""
 
-# TODO(phase-8.1): Replace the dynamic-programming evaluator with a Gurobi ILP
-# model that exposes binary policy variables, chance/risk rows, and solve status.
+# TODO(phase-9.1): Replace generated observation branches with full stochastic
+# observation support before benchmark-scale CC-POMDP experiments.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import perf_counter
 
 from darp.adapter.runtime import PyRDDLGymRuntime, _json_ready
+from darp.ilp.gurobi import GurobiILPSolver, GurobiUnavailableError, gurobi_available
+from darp.ilp.model import ILPSolveResult
 from darp.model.and_or_tree import ANDORSearchInterface
 from darp.model.duration import HistoryDurationEvaluator
+from darp.planning.ilp_tree import build_generated_full_tree_ilp
 from darp.planning.expand import expand_frontier_item
 from darp.planning.preprocess import FrontierItem, preprocess_search_tree
 from darp.planning.rollout import (
@@ -25,7 +28,11 @@ class FullILPPlanner:
     """Evaluate a complete finite AND-OR tree baseline. / 评估完整有限 AND-OR tree baseline。"""
 
     lookahead_depth: int = 4
-    name: str = "full-tree-baseline"
+    use_gurobi: bool = True
+    require_gurobi: bool = False
+    risk_budget: float | None = None
+    name: str = "full-ilp-gurobi"
+    last_ilp_result: ILPSolveResult | None = field(default=None, init=False)
 
     def choose_action(
         self,
@@ -49,19 +56,15 @@ class FullILPPlanner:
              \qquad
              \sum_{a \in A(q)} x_{q,a} = x_{parent(q)}
 
-        - Until Phase 8 introduces the Gurobi ILP encoder, this class evaluates
-          the same deterministic finite tree by recursive dynamic programming
-          over cloned pyRDDLGym runtimes:
+        - Phase 8 encodes the generated tree as a Gurobi binary ILP. The
+          recursive dynamic-programming value is still used as a readable
+          fallback and as root-action diagnostics:
 
           .. math::
 
              V(q) = \max_a \left[u(q,a) + \gamma V(qao)\right].
 
-        - The public planner boundary and `ActionDecision` shape are already
-          the same one the exact full-ILP solver will use.
-
-        / 通过完整生成树选择根动作；当前使用递归 DP 等价地求小规模 deterministic tree，
-        Phase 8 会把这里替换为 Gurobi ILP encoder。
+        / 通过 Gurobi full-ILP 选择根动作；递归 DP 仍作为诊断和缺少 Gurobi 时的 fallback。
         """
 
         started_at = perf_counter()
@@ -103,6 +106,51 @@ class FullILPPlanner:
             if best_value == float("-inf"):
                 best_value = 0.0
                 action_values.setdefault(best_item.action_label, best_value)
+
+        if self.use_gurobi:
+            try:
+                if not gurobi_available():
+                    raise GurobiUnavailableError("gurobipy is required for DARP Phase 8 ILP solving.")
+                ilp_tree = build_generated_full_tree_ilp(
+                    runtime.clone(),
+                    interface,
+                    duration_evaluator,
+                    depth=depth,
+                    risk_budget=self.risk_budget,
+                    deadline=deadline,
+                )
+                self.last_ilp_result = GurobiILPSolver().solve(
+                    ilp_tree.spec,
+                    time_limit_ms=_remaining_time_budget_ms(started_at, time_budget_ms),
+                )
+                selected_root = next(
+                    (
+                        var_id
+                        for var_id in self.last_ilp_result.selected_variables
+                        if var_id in ilp_tree.root_variable_ids
+                    ),
+                    None,
+                )
+                if selected_root is not None:
+                    best_item = ilp_tree.variable_items[selected_root]
+                    best_value = action_values.get(best_item.action_label, best_value)
+                    if not self.last_ilp_result.is_optimal:
+                        complete = False
+                        fallback_reason = self.last_ilp_result.message
+                elif self.require_gurobi:
+                    raise RuntimeError("Gurobi full-tree ILP did not select a root action.")
+                else:
+                    complete = False
+                    fallback_reason = "Gurobi full-tree ILP did not select a root action; used DP fallback"
+            except GurobiUnavailableError as exc:
+                self.last_ilp_result = None
+                if self.require_gurobi:
+                    raise
+                complete = False
+                fallback_reason = str(exc)
+            except _RuntimeDeadlineExceeded as exc:
+                complete = False
+                fallback_reason = str(exc)
 
         elapsed_ms = (perf_counter() - started_at) * 1000.0
         timed_out = deadline is not None and perf_counter() > deadline
@@ -174,3 +222,10 @@ def _frontier_cache_key(item: FrontierItem, depth: int) -> tuple[str, tuple[str,
     """Return a memoization key for one frontier item. / 返回 frontier item 的缓存键。"""
     state = tuple(sorted((str(key), repr(_json_ready(value))) for key, value in item.parent_runtime.state.items()))
     return (repr(state), item.node.history.actions, item.node.history.observations, depth)
+
+
+def _remaining_time_budget_ms(started_at: float, time_budget_ms: float | None) -> float | None:
+    """Return remaining milliseconds under an outer deadline. / 返回外层 deadline 下剩余毫秒数。"""
+    if time_budget_ms is None:
+        return None
+    return max(0.0, time_budget_ms - (perf_counter() - started_at) * 1000.0)

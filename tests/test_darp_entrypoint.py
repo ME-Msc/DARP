@@ -18,6 +18,8 @@ def test_darp_help_exits_successfully(capsys):
     help_text = capsys.readouterr().out
     assert "--domain" in help_text
     assert "--instance" in help_text
+    assert "--planner" in help_text
+    assert "--duration" in help_text
     assert "--lookahead-depth" in help_text
     assert "--particles" in help_text
 
@@ -38,8 +40,39 @@ def test_darp_rddl_arguments_parse():
     assert args.domain == "domain.rddl"
     assert args.instance == "instance.rddl"
     assert args.seed == 3
+    assert args.planner == "rollout"
     assert args.lookahead_depth == 4
     assert args.particles == 32
+
+
+def test_darp_planner_and_duration_arguments_parse():
+    """Check paper-path planner arguments parse cleanly. / 检查论文路径 planner 参数能正确解析。"""
+    args = build_parser().parse_args(
+        [
+            "--domain",
+            "domain.rddl",
+            "--instance",
+            "instance.rddl",
+            "--duration",
+            "durations.yaml",
+            "--planner",
+            "hilp",
+            "--hilp-iterations",
+            "2",
+            "--frontier-width",
+            "3",
+            "--risk-budget",
+            "1.5",
+            "--require-gurobi",
+        ]
+    )
+
+    assert args.duration == "durations.yaml"
+    assert args.planner == "hilp"
+    assert args.hilp_iterations == 2
+    assert args.frontier_width == 3
+    assert args.risk_budget == 1.5
+    assert args.require_gurobi is True
 
 
 def test_darp_requires_rddl_files():

@@ -1,8 +1,6 @@
 """Paper-style Expand operation over pyRDDLGym runtime copies."""
 
-# TODO(phase-8.1): Feed ExpansionMetrics into Gurobi objective/constraint rows
-# instead of using heuristic planner scores directly.
-# TODO(phase-8.2): Replace deterministic rho propagation with explicit
+# TODO(phase-9.1): Replace deterministic rho propagation with explicit
 # observation-probability calculation when the pyRDDLGym sampler exposes it.
 
 from __future__ import annotations
@@ -77,8 +75,8 @@ def expand_frontier_item(
 
     - The current pyRDDLGym adapter is generative, not enumerative, so the
       sampled observation branch keeps :math:`P(o_q \mid q,a_q)=1`.
-    - DARP has no grounded cost/risk fluent yet, so :math:`r_q=0` until the
-      Phase 8 Gurobi constrained ILP model provides it.
+    - DARP has no grounded cost/risk fluent yet, so :math:`r_q=0`; Phase 9
+      benchmark work should add explicit constrained-cost extraction.
 
     / 展开一个 action-history：执行 action、得到 observation/reward，并计算
     :math:`\rho(q)`、:math:`u_q`、:math:`r_q`、:math:`\tau(q)` 的当前原型值。

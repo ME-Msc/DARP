@@ -1,8 +1,8 @@
 """Durative-action models and tau computations."""
 
-# TODO(phase-8.3): Replace the Gaussian approximation with the exact smoothed
+# TODO(phase-9.3): Replace the Gaussian approximation with the exact smoothed
 # belief calculation from the paper for larger POMDP histories.
-# TODO(phase-8.3): Add chance-constrained duration via augmented state space.
+# TODO(phase-9.3): Add chance-constrained duration via augmented state space.
 
 from __future__ import annotations
 

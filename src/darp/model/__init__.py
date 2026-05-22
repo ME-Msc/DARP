@@ -1,6 +1,7 @@
 """DARP-native planning data structures."""
 
-# TODO(phase-8.1): Export Gurobi ILP-facing model structures after encoders land.
+# TODO(phase-9.1): Keep this package limited to planner-native data structures
+# as benchmark-specific constrained metrics are added.
 
 from darp.model.and_or_tree import (
     ANDORNode,

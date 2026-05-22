@@ -80,7 +80,7 @@ def test_expand_frontier_item_computes_paper_metrics():
 def test_full_tree_baseline_chooses_tiny_grid_goal_action():
     """Check the full-tree baseline chooses the optimal first tiny-grid move. / 检查 full-tree baseline 选择 tiny-grid 的最优首步。"""
     runtime, interface, duration = _phase7_inputs()
-    planner = FullILPPlanner(lookahead_depth=4)
+    planner = FullILPPlanner(lookahead_depth=4, use_gurobi=False)
 
     decision = planner.choose_action(
         runtime,
@@ -97,7 +97,7 @@ def test_full_tree_baseline_chooses_tiny_grid_goal_action():
 def test_hilp_partial_frontier_search_uses_expand_bookkeeping():
     """Check HILP keeps frontier stats while choosing the same root action. / 检查 HILP 保留 frontier 统计并选择相同根动作。"""
     runtime, interface, duration = _phase7_inputs()
-    planner = HILPPlanner(lookahead_depth=4, max_iterations=3, frontier_width=1)
+    planner = HILPPlanner(lookahead_depth=4, max_iterations=3, frontier_width=1, use_gurobi=False)
 
     decision = planner.choose_action(
         runtime,

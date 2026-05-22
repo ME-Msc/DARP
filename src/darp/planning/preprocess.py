@@ -1,7 +1,7 @@
 """Preprocessing helpers for paper-aligned AND-OR search."""
 
-# TODO(phase-8.1): Replace heuristic frontier scores with Gurobi variables once
-# p-ILP/full-ILP encoders exist.
+# TODO(phase-9.1): Add benchmark trace hooks for frontier scores and generated
+# ILP variable ids.
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class FrontierItem:
 
 @dataclass(frozen=True)
 class PreprocessedSearchTree:
-    """Store the root and initial frontier for Phase 7 search. / 保存 Phase 7 搜索的根节点和初始 frontier。"""
+    """Store the root and initial frontier for paper search. / 保存论文搜索的根节点和初始 frontier。"""
 
     root: ANDORNode
     frontier: tuple[FrontierItem, ...]
@@ -52,9 +52,8 @@ def preprocess_search_tree(
     - The first frontier :math:`F` contains one action-history child for each
       available action under the root OR node.
 
-    This helper only builds the deterministic bookkeeping that is independent
-    of the later Gurobi ILP encoder. The p-ILP/full-ILP variables are
-    introduced in Phase 8.
+    This helper only builds deterministic bookkeeping; Phase 8 ILP encoders
+    consume the resulting frontier to create full-ILP and p-ILP variables.
 
     / 初始化论文搜索树：root 的 :math:`\rho=1`，frontier 为根节点下的所有 action-history。
     """

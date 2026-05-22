@@ -1,16 +1,21 @@
 """Online sessions that connect DARP planners to pyRDDLGym environments."""
 
-# TODO(phase-9.2): Run this session loop with the HILP/Gurobi planner instead
-# of the rollout smoke-test planner.
+# TODO(phase-9.2): Add offline policy replay/evaluation traces and benchmark
+# runners on top of this online loop.
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 from darp.adapter.problem import PyRDDLGymProblem
 from darp.adapter.runtime import ParticleBelief, PyRDDLGymRuntime, _json_ready
+from darp.model.duration_sidecar import DurationSidecar, build_duration_sidecar
+from darp.planning.full_ilp import FullILPPlanner
+from darp.planning.hilp import HILPPlanner
 from darp.planning.rollout import ActionDecision, RolloutPlanner
+
+PlannerName = Literal["hilp", "full-ilp", "rollout"]
 
 
 @dataclass(frozen=True)
@@ -67,6 +72,7 @@ class OnlineSessionResult:
     horizon: int
     max_depth: int
     lookahead_depth: int
+    duration: Mapping[str, Any]
     total_reward: float
     is_pomdp: bool
     initial_observation: Mapping[str, Any]
@@ -83,6 +89,7 @@ class OnlineSessionResult:
             "horizon": self.horizon,
             "max_depth": self.max_depth,
             "lookahead_depth": self.lookahead_depth,
+            "duration": _json_ready(dict(self.duration)),
             "total_reward": self.total_reward,
             "is_pomdp": self.is_pomdp,
             "initial_observation": _json_ready(self.initial_observation),
@@ -96,13 +103,33 @@ def run_online_session(
     *,
     seed: int = 0,
     lookahead_depth: int = 4,
+    planner_name: PlannerName = "rollout",
+    duration_sidecar: DurationSidecar | None = None,
+    hilp_iterations: int = 4,
+    frontier_width: int = 1,
+    risk_budget: float | None = None,
+    require_gurobi: bool = False,
     time_budget_ms: float | None = None,
     particle_count: int = 32,
 ) -> OnlineSessionResult:
     """Run a PROST-like online loop against pyRDDLGym. / 基于 pyRDDLGym 运行 PROST 风格在线循环。"""
     runtime = PyRDDLGymRuntime.from_problem(problem)
-    planner = RolloutPlanner(lookahead_depth=lookahead_depth)
+    planner = _build_planner(
+        planner_name,
+        lookahead_depth=lookahead_depth,
+        hilp_iterations=hilp_iterations,
+        frontier_width=frontier_width,
+        risk_budget=risk_budget,
+        require_gurobi=require_gurobi,
+    )
     observation = runtime.reset(seed=seed)
+    view = None
+    interface = None
+    duration = duration_sidecar or _default_duration_sidecar()
+    if planner_name != "rollout":
+        view = problem.build_grounded_view()
+        interface = view.build_and_or_interface(runtime)
+        duration.validate_actions([choice.label for choice in interface.actions])
     belief = runtime.initial_belief(
         observation,
         seed=seed,
@@ -116,11 +143,23 @@ def run_online_session(
         remaining_depth = max(1, max_depth - step)
         state = dict(runtime.state)
         planning_runtime = belief.representative_runtime(runtime)
-        decision = planner.choose_action(
-            planning_runtime,
-            remaining_depth=remaining_depth,
-            time_budget_ms=time_budget_ms,
-        )
+        if planner_name == "rollout":
+            assert isinstance(planner, RolloutPlanner)
+            decision = planner.choose_action(
+                planning_runtime,
+                remaining_depth=remaining_depth,
+                time_budget_ms=time_budget_ms,
+            )
+        else:
+            assert interface is not None
+            assert isinstance(planner, FullILPPlanner | HILPPlanner)
+            decision = planner.choose_action(
+                planning_runtime,
+                interface,
+                duration.evaluator(horizon=remaining_depth),
+                remaining_depth=remaining_depth,
+                time_budget_ms=time_budget_ms,
+            )
         next_observation, reward, terminated, truncated, info = runtime.step(decision.action)
         next_state = dict(runtime.state)
         next_belief = runtime.update_belief(
@@ -160,9 +199,53 @@ def run_online_session(
         horizon=runtime.horizon,
         max_depth=max_depth,
         lookahead_depth=lookahead_depth,
+        duration=_duration_summary(duration, defaulted=duration_sidecar is None),
         total_reward=total_reward,
         is_pomdp=runtime.is_pomdp,
         initial_observation=trace[0].observation if trace else observation,
         initial_belief=trace[0].belief if trace else belief,
         steps=tuple(trace),
     )
+
+
+def _build_planner(
+    planner_name: PlannerName,
+    *,
+    lookahead_depth: int,
+    hilp_iterations: int,
+    frontier_width: int,
+    risk_budget: float | None,
+    require_gurobi: bool,
+) -> RolloutPlanner | FullILPPlanner | HILPPlanner:
+    """Build the requested online planner. / 构建请求的在线 planner。"""
+    if planner_name == "rollout":
+        return RolloutPlanner(lookahead_depth=lookahead_depth)
+    if planner_name == "full-ilp":
+        return FullILPPlanner(
+            lookahead_depth=lookahead_depth,
+            risk_budget=risk_budget,
+            require_gurobi=require_gurobi,
+        )
+    if planner_name == "hilp":
+        return HILPPlanner(
+            lookahead_depth=lookahead_depth,
+            max_iterations=hilp_iterations,
+            frontier_width=frontier_width,
+            require_gurobi=require_gurobi,
+        )
+    raise ValueError(f"Unsupported planner: {planner_name}")
+
+
+def _default_duration_sidecar() -> DurationSidecar:
+    """Return the default unit-duration sidecar. / 返回默认单位 duration sidecar。"""
+    return build_duration_sidecar({"kind": "fixed", "default": 1.0})
+
+
+def _duration_summary(duration: DurationSidecar, *, defaulted: bool) -> dict[str, Any]:
+    """Return a compact duration summary for traces. / 返回 trace 使用的 duration 摘要。"""
+    return {
+        "kind": duration.metadata.get("kind"),
+        "path": str(duration.path) if duration.path is not None else None,
+        "horizon": duration.horizon,
+        "defaulted": defaulted,
+    }

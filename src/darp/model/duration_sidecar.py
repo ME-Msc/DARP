@@ -1,6 +1,7 @@
 """Load DurationModel definitions from JSON/YAML sidecars."""
 
-# TODO(phase-8.1): Add risk/cost fields for the Gurobi constrained ILP rows.
+# TODO(phase-9.1): Add optional risk/cost duration-sidecar fields for
+# constrained benchmark experiments.
 
 from __future__ import annotations
 

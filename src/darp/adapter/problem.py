@@ -1,6 +1,7 @@
 """pyRDDLGym problem bundle for standard RDDL inputs."""
 
-# TODO(phase-8.1): Feed GroundedRDDLView into Gurobi ILP encoders.
+# TODO(phase-9.1): Add risk/cost fluent summaries for benchmark-scale constrained
+# planning reports.
 
 from __future__ import annotations
 

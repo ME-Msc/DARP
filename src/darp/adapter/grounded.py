@@ -1,6 +1,7 @@
 """DARP view over pyRDDLGym grounded models."""
 
-# TODO(phase-8.2): Add expression-level transition rows for Gurobi full ILP.
+# TODO(phase-9.1): Expose risk/cost fluent selectors once benchmark-scale
+# constrained CC-POMDP rows are implemented.
 
 from __future__ import annotations
 

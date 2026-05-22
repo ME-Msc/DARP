@@ -1,7 +1,7 @@
 """AND-OR history tree data structures for DARP search."""
 
-# TODO(phase-8.1): Add Gurobi variable IDs to nodes once the ILP encoders are
-# available.
+# TODO(phase-9.1): Add optional debug links from tree nodes to generated ILP
+# variables if benchmark traces need them.
 
 from __future__ import annotations
 
