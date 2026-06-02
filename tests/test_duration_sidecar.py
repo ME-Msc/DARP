@@ -46,7 +46,7 @@ def test_yaml_fixed_duration_sidecar_matches_grounded_actions():
 def test_history_duration_evaluator_matches_phase7_duration_model_shape():
     """Check evaluator exposes duration_model(q)-style history duration. / 检查 evaluator 暴露类似 duration_model(q) 的 history 时长。"""
     sidecar = load_duration_sidecar(DURATIONS)
-    evaluator = sidecar.evaluator()
+    evaluator = sidecar.evaluator(horizon=8)
     history = History().append_action("move-east").append_observation("at___c12").append_action("move-south")
 
     progress = evaluator.progress_for_history(history)
@@ -89,7 +89,6 @@ def test_gaussian_duration_sidecar_builds_tau_model(tmp_path):
         {
             "duration_model": {
                 "kind": "gaussian",
-                "horizon": 5,
                 "default_mean": 1,
                 "default_variance": 0,
                 "state_actions": {
@@ -99,7 +98,7 @@ def test_gaussian_duration_sidecar_builds_tau_model(tmp_path):
             }
         }
     )
-    evaluator = sidecar.evaluator()
+    evaluator = sidecar.evaluator(horizon=5)
     history = History().append_action("act")
 
     assert isinstance(sidecar.model, GaussianDurationModel)
@@ -148,16 +147,35 @@ def test_duration_sidecar_rejects_unknown_kind():
         )
 
 
-def test_duration_sidecar_accepts_flat_json_mapping():
-    """Check JSON sidecars can use duration_model fields at the root. / 检查 JSON sidecar 可直接在根部写 duration_model 字段。"""
+def test_duration_sidecar_accepts_flat_json_mapping_with_explicit_horizon():
+    """Check flat sidecars use caller-provided RDDL horizon. / 检查 flat sidecar 使用调用方提供的 RDDL horizon。"""
     sidecar = build_duration_sidecar(
         {
             "kind": "fixed",
-            "horizon": 3,
             "actions": {"act": 2},
         }
     )
 
     assert isinstance(sidecar.model, FixedDurationModel)
     assert sidecar.model.estimate({}, "act").mean == 2
-    assert sidecar.evaluator().horizon == 3
+    assert sidecar.evaluator(horizon=3).horizon == 3
+
+
+def test_duration_sidecar_rejects_horizon_field():
+    """Check sidecars cannot duplicate the RDDL horizon. / 检查 sidecar 不能重复定义 RDDL horizon。"""
+    with pytest.raises(DurationSpecError, match="must not define horizon"):
+        build_duration_sidecar({"kind": "fixed", "horizon": 3})
+
+
+def test_duration_sidecar_rejects_version_field():
+    """Check sidecars do not carry unused schema versions. / 检查 sidecar 不携带未使用的 schema version。"""
+    with pytest.raises(DurationSpecError, match="version"):
+        build_duration_sidecar({"version": 1, "kind": "fixed"})
+
+
+def test_duration_sidecar_evaluator_requires_rddl_horizon():
+    """Check evaluator requires horizon from RDDL/runtime. / 检查 evaluator 需要来自 RDDL/runtime 的 horizon。"""
+    sidecar = build_duration_sidecar({"kind": "fixed"})
+
+    with pytest.raises(DurationSpecError, match="RDDL instance"):
+        sidecar.evaluator(horizon=None)  # type: ignore[arg-type]

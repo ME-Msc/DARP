@@ -150,44 +150,30 @@ return:
 | 顺序 | 符号 | 原文英文解释 | 中文解释 |
 | ---: | --- | --- | --- |
 | 1？ | $r(b) \triangleq \sum_{s\in R}{b(s)}$ | probability of being in a risky state for belief $b$ | 给定信念b的风险概率r(b)就是，所有处于风险状态R中的状态s的信念b(s)的累积加和 |
-| 4 | $\bar{b}_q(s)\triangleq \frac{ \sum_{s'\in S\setminus R}T(s',a_q,s)\tilde{b}_{q-1}(s') }{1-r(\tilde{b}_{q-1}) }$ | safe prior belief in CC-POMDP recursion | CC-POMDP 风险递推中的安全先验信念。分母是上一时刻信念下不在风险状态的概率，用于归一化。分子是，在上一时刻非风险的各种状态s'下，基于其后验信念b(s')执行动作 $a_q$ 后到达状态 s 的条件概率分布 |
-| 5 | $\tilde{b}_q(s)\triangleq\frac{O(o_q,s,a_q)\cdot \bar{b}_q(s)}{\eta}$ | safe posterior belief in CC-POMDP recursion | CC-POMDP 风险递推中的安全后验信念。在“前面都安全”的前提下，再结合当前观测 $o_q$，更新得到新的安全信念。$\eta$是归一化参数 |
-| 6 | $\tilde{\rho}(q)$ | safe sequence probability / risk-related occurrence probability | 安全历史发生概率 / 与风险计算相关的发生概率 |
-| 7 | $\rho^*(q)$ | sequence probability from Eq. (9) | 按公式 (9) 计算的历史发生概率 |
-| 8 | $\tilde{b}_{q-1}^*(s)$ | posterior belief from Eq. (10) | 按公式 (10) 计算的后验信念 |
-| 9 | $\bar{x}$ | optimal solution of the linear relaxation | ILP 线性松弛的最优解 |
-| 10 | $\bar{\pi}$ | stochastic policy from linear relaxation | 由线性松弛解得到的随机策略 |
-| 11 | $\bar{\pi}(qa)$ | probability of selecting action extension $qa$ | 随机策略选择动作扩展 $qa$ 的概率 |
-| 12 | $X_{q'}$ | random variable of choosing action node $q'$ | 是否选择动作节点 $q'$ 的随机变量 |
-| 13 | $s^i$ | random state at execution step $i$ | 第 $i$ 个执行步的随机状态 |
-| 14 | $Pr(s^i\mid q)$ | smoothed belief at step $i$ given history $q$ | 给定完整历史 $q$ 时第 $i$ 步状态的平滑信念 |
-| 15 | $\approx b_q^i(s)$ | smoothed belief | 平滑信念 |
-| 16 | $q_{\le i}$ | action-observation pairs up to step $i$ | 到第 $i$ 步为止的动作-观测对 |
-| 17 | $q_{>i}$ | future action-observation pairs after step $i$ | 第 $i$ 步之后的未来动作-观测对 |
-| 18 | $\alpha$ | normalization factor | 归一化因子 |
-| 19 | $f_q^i(s)$ | recursive term for future action-observation likelihood | 计算平滑信念时的未来观测似然递推项 |
-| 20 | $Q$ | linear transformation of duration random variables | 持续时间随机变量的线性组合 |
-| 21 | $\mu_q$ | mean of $Q$ | 总持续时间随机变量 $Q$ 的均值 |
-| 22 | $\sigma_q^2$ | variance of $Q$ | 总持续时间随机变量 $Q$ 的方差 |
-| 23 | $G(\mu_q,\sigma_q^2)$ | Gaussian distribution of $Q$ | $Q$ 服从的高斯分布 |
-| 24 | $\operatorname{erf}(\cdot)$ | Gauss error function | 高斯误差函数 |
-| 25 | $S'$ | augmented state space | 增广状态空间 |
-| 101 | $S'=S\times G(q')$ | augmented state space with cumulative duration values | 由原状态和累计持续时间值构成的增广状态空间 |
-| 102 | $g,g'$ | cumulative duration/resource component in augmented state | 增广状态中的累计持续时间 / 资源分量 |
-| 103 | $\langle s,g\rangle$ | augmented state | 增广状态 |
-| 104 | $R'$ | set of augmented risky states | 增广风险状态集合 |
-| 105 | $T'$ | transition function over augmented state space | 增广状态空间上的转移函数 |
-| 106 | $\epsilon$ | discretization parameter | 离散化误差 / 精度参数 |
-| 107 | $E$ | expanded action nodes | 已扩展动作节点集合 |
-| 108 | $h_q^u$ | admissible heuristic for utility | 奖赏的可采纳启发式上界 |
-| 109 | $h_q^r$ | admissible heuristic for risk | 风险的可采纳启发式下界 |
-| 110 | $p\text{-}ILP$ | partial integer linear program | 部分整数线性规划 |
-| 111 | $Solver$ | solver for p-ILP instances | 求解 p-ILP 的求解器 |
-| 112 | $Obj.$ | objective value | 目标函数值 |
-| 113 | $Time$ | running time | 运行时间 |
-| 114 | $n$ | number of nodes / variables reported in experiments | 实验中报告的节点数或规模指标 |
-| 115 | $Act.\ n$ | active number | 活跃节点 / 活跃变量数量 |
-| 116 | $Exp.\ n$ | expanded number | 扩展节点数量 |
-| 117 | $Exp.\ \%$ | expanded percentage | 扩展比例 |
-| 118 | $Iter.$ | number of iterations | 迭代次数 |
-| 119 | $F,E,S$ in experiments | fixed unit duration, expected duration, stochastic duration | 实验表中的三种持续时间模型：固定单位持续时间、期望持续时间、随机持续时间 |
+| 2 | $\bar{b}_q(s)\triangleq \frac{ \sum_{s'\in S\setminus R}T(s',a_q,s)\tilde{b}_{q-1}(s') }{1-r(\tilde{b}_{q-1}) }$ | safe prior belief in CC-POMDP recursion | CC-POMDP 风险递推中的安全先验信念。分母是上一时刻信念下不在风险状态的概率，用于归一化。分子是，在上一时刻非风险的各种状态s'下，基于其后验信念b(s')执行动作 $a_q$ 后到达状态 s 的条件概率分布 |
+| 3 | $\tilde{b}_q(s)\triangleq\frac{O(o_q,s,a_q)\cdot \bar{b}_q(s)}{\eta}$ | safe posterior belief in CC-POMDP recursion | CC-POMDP 风险递推中的安全后验信念。在“前面都安全”的前提下，再结合当前观测 $o_q$，更新得到新的安全信念。$\eta$是归一化参数 |
+
+### Lemma 3.3
+
+CC-POMDP 也可以被等价地写成 ILP。它的关键是把原来复杂的“整条执行过程中进入 risky states 的概率”转化成 ILP 里的线性形式：$\sum\limits_{q}{r_q x_q} \le R $。<br>
+也就是说，只要提前算好每个动作历史节点 $q$ 的风险贡献 $r_q$，那么选不选这个节点就由二元变量 $x_q$ 决定，最终总风险就是线性的。CC-POMDP 等价于 ILP，只要 ILP 的参数按下面方式设置。
+
+| 顺序 | 符号 | 原文英文解释 | 中文解释 |
+| ---: | --- | --- | --- |
+| 1 | $R\triangleq \Delta-r(b_0)$ |  | ILP 中真正还能使用的，剩余风险预算 $R$，就是总风险预算 $\Delta$ (允许进入 risky states 的最大概率) 减去，<br> 初始 belief $b_0$ 本身可能已经有一部分概率在 risky states 里，这部分风险就是 $r(b_0)$ |
+| 2 | $r_q\triangleq \tilde{\rho}(q)\cdot r(\bar{b}_q),\quad q\in\tilde{A}$ | | 动作历史节点 q 对总执行风险的贡献，等于，安全到达历史 q 的概率$\tilde{\rho}(q)$（在之前没有进入 risky states 的条件下走到 q 的概率），乘以，在节点 q 的 safe prior belief 下进入 risky states 的概率 $r(\bar{b}_q)$，就是“安全走到 q，然后在 q 这里发生风险”的概率贡献 |
+| 3 | $u_q\triangleq \rho^\star(q)\cdot \sum\limits_{s\in S}\tilde{b}_{q-1}^*(s)U(s,a_q),\quad q\in\tilde{A}$ |  | 动作历史节点 q 对总期望效用的贡献，等于，历史 q 按普通 POMDP belief update 发生的概率 $\rho^*(q)$，乘以，执行 q 的最后动作之前在状态 s 上的普通后验 belief，与 在状态 s 下执行动作 $a_q$ 的效用 $U(s,a_q)$ 乘积的累加和 |
+
+### Stochastic Duration Model
+
+Algorithm 2 每扩展一条历史 qao，都要计算这条历史的 belief、发生概率和 duration 指标 τ(qao)。其中 stochastic duration model 用概率分布计算“总时长不足”的概率， <br>
+而 chance-constrained duration model 用增广状态空间计算“累计时长不足”的概率。后续 HILP 就根据 τ(qao)>ς 决定是否继续扩展该分支，从而控制搜索树规模。
+
+## Heuristic Forward Search
+
+| 顺序 | 符号 | 原文英文解释 | 中文解释 |
+| ---: | --- | --- | --- |
+| 1 | $E$ | expanded action nodes | 已扩展动作节点集合 |
+| 2 | $F$ | frontier nodes | 未展开的节点边界 |
+| 3 | $h_q^u$ | admissible heuristic for utility | 奖赏的可采纳启发式上界 |
+| 4 | $h_q^r$ | admissible heuristic for risk | 风险的可采纳启发式下界 |

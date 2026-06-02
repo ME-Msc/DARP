@@ -82,6 +82,22 @@ darp \
 
 `full-ilp` / `hilp` 会在安装 `gurobipy` 时调用 Gurobi；未安装时默认使用生成树 DP fallback 以便调试。使用 `--require-gurobi` 可以要求缺少 Gurobi 时直接失败。
 
+## Duration Sidecar
+
+duration sidecar 只描述动作持续时间模型，不描述 RDDL 已经定义的内容。`horizon` 来自 RDDL instance；sidecar 中不要写 `horizon` 或 `version`。
+
+最小 fixed-duration 示例：
+
+```yaml
+kind: fixed
+default: 1
+actions:
+  move-east: 1
+  move-south: 1
+```
+
+`default` 是针对未在 `actions` 中显式配置的 action 的默认 duration。上例中，如果 RDDL 中还有 `move-west` 但 sidecar 没写它，DARP 会使用 `default: 1` 作为它的持续时间。
+
 将在线 trace 写成 JSON：
 
 ```bash
@@ -220,7 +236,7 @@ DARP/
   - [ ] 5.3：调优 HILP/full-ILP 运行效率，使其适合作为默认 planner
   - [ ] 5.4：实现 offline policy JSON、replay 和 evaluation 流程
 - [x] Phase 6：DurationModel 与 DARP sidecar
-  - [x] 6.1：设计 YAML/JSON duration sidecar schema
+  - [x] 6.1：设计 YAML/JSON duration sidecar schema；sidecar 不包含 `version` / `horizon`
   - [x] 6.2：把 fixed、expected、Gaussian duration 接入 history tree 和 HILP `tau(q)` evaluator
   - [x] 6.3：明确 duration 暂时只由 YAML/JSON sidecar 定义，不修改标准 RDDL grammar
 - [x] Phase 7：论文搜索算法骨架

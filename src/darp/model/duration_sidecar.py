@@ -31,15 +31,13 @@ class DurationSidecar:
     model: DurationModel
     raw: Mapping[str, Any]
     path: Path | None = None
-    horizon: float | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
-    def evaluator(self, horizon: float | None = None, zeta: float = 0.0) -> HistoryDurationEvaluator:
-        """Build a history-duration evaluator for Phase 7 search. / 为 Phase 7 搜索创建 history-duration evaluator。"""
-        target_horizon = horizon if horizon is not None else self.horizon
-        if target_horizon is None:
-            raise DurationSpecError("DurationSidecar requires a horizon from sidecar or caller.")
-        return HistoryDurationEvaluator(model=self.model, horizon=float(target_horizon), zeta=float(zeta))
+    def evaluator(self, horizon: float, zeta: float = 0.0) -> HistoryDurationEvaluator:
+        """Build an evaluator using the RDDL horizon. / 使用 RDDL horizon 创建 evaluator。"""
+        if horizon is None:
+            raise DurationSpecError("DurationSidecar evaluator requires the horizon from the RDDL instance.")
+        return HistoryDurationEvaluator(model=self.model, horizon=float(horizon), zeta=float(zeta))
 
     def validate_actions(self, action_names: set[str] | tuple[str, ...] | list[str]) -> None:
         """Validate that sidecar actions exist in the grounded model. / 验证 sidecar action 是否存在于 grounded model。"""
@@ -59,14 +57,13 @@ def load_duration_sidecar(path: str | Path) -> DurationSidecar:
 def build_duration_sidecar(raw: Mapping[str, Any], path: str | Path | None = None) -> DurationSidecar:
     """Build a DurationSidecar from a parsed mapping. / 从解析后的 mapping 构建 DurationSidecar。"""
     config = _duration_config(raw)
+    _validate_sidecar_schema(raw, config)
     model = build_duration_model(config)
     return DurationSidecar(
         model=model,
         raw=dict(raw),
         path=Path(path).expanduser() if path is not None else None,
-        horizon=_optional_float(config.get("horizon")),
         metadata={
-            "version": raw.get("version"),
             "kind": config.get("kind"),
             "source": "duration-sidecar",
         },
@@ -116,6 +113,14 @@ def _duration_config(raw: Mapping[str, Any]) -> Mapping[str, Any]:
     if not isinstance(block, Mapping):
         raise DurationSpecError("duration_model must be a mapping.")
     return block
+
+
+def _validate_sidecar_schema(raw: Mapping[str, Any], config: Mapping[str, Any]) -> None:
+    """Reject fields that belong to RDDL or old metadata. / 拒绝属于 RDDL 或旧 metadata 的字段。"""
+    if "version" in raw:
+        raise DurationSpecError("Duration sidecar no longer uses a version field; remove `version`.")
+    if "horizon" in raw or "horizon" in config:
+        raise DurationSpecError("Duration sidecar must not define horizon; use the RDDL instance horizon.")
 
 
 def _read_mapping(path: Path) -> Mapping[str, Any]:
@@ -263,7 +268,3 @@ def _required(config: Mapping[str, Any], key: str) -> Any:
         raise DurationSpecError(f"Duration sidecar is missing required field: {key}")
     return config[key]
 
-
-def _optional_float(value: Any) -> float | None:
-    """Return an optional float config value. / 返回可选 float config 值。"""
-    return None if value is None else float(value)

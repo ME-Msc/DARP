@@ -82,6 +82,22 @@ darp \
 
 `full-ilp` / `hilp` call Gurobi when `gurobipy` is installed; without it they use the generated-tree DP fallback for debugging. Use `--require-gurobi` to fail when Gurobi is unavailable.
 
+## Duration Sidecar
+
+A duration sidecar describes only the action-duration model, not fields already defined by RDDL. The `horizon` comes from the RDDL instance; do not put `horizon` or `version` in the sidecar.
+
+Minimal fixed-duration example:
+
+```yaml
+kind: fixed
+default: 1
+actions:
+  move-east: 1
+  move-south: 1
+```
+
+`default` is the fallback duration for actions not explicitly listed in `actions`. In the example above, if the RDDL model also has `move-west` and the sidecar omits it, DARP uses `default: 1` as its duration.
+
 Write the online trace as JSON:
 
 ```bash
@@ -220,7 +236,7 @@ DARP/
   - [ ] 5.3: Tune HILP/full-ILP runtime so the paper path can become the default planner
   - [ ] 5.4: Add offline policy JSON plus replay/evaluation workflow
 - [x] Phase 6: DurationModel and DARP sidecars
-  - [x] 6.1: Design YAML/JSON duration sidecar schema
+  - [x] 6.1: Design a YAML/JSON duration sidecar schema without `version` / `horizon`
   - [x] 6.2: Wire fixed, expected, and Gaussian durations into history tree and HILP `tau(q)` evaluation
   - [x] 6.3: Keep durations in YAML/JSON sidecars without changing standard RDDL grammar
 - [x] Phase 7: Paper search algorithm scaffolding

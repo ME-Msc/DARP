@@ -246,6 +246,5 @@ def _duration_summary(duration: DurationSidecar, *, defaulted: bool) -> dict[str
     return {
         "kind": duration.metadata.get("kind"),
         "path": str(duration.path) if duration.path is not None else None,
-        "horizon": duration.horizon,
         "defaulted": defaulted,
     }
