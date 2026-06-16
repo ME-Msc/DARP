@@ -5,3 +5,7 @@ actions:
   move-south: 1
   move-west: 1
   move-north: 1
+risk:
+  budget: 0.25
+  next_state_fluents:
+    at___c22: 1

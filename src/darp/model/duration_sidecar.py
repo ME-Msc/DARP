@@ -1,8 +1,5 @@
 """Load DurationModel definitions from JSON/YAML sidecars."""
 
-# TODO(phase-9.1): Add optional risk/cost duration-sidecar fields for
-# constrained benchmark experiments.
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -18,6 +15,7 @@ from darp.model.duration import (
     HistoryDurationEvaluator,
     StateDependentDurationModel,
 )
+from darp.adapter.exact import RiskConstraintSpec
 
 
 class DurationSpecError(ValueError):
@@ -33,11 +31,18 @@ class DurationSidecar:
     path: Path | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
-    def evaluator(self, horizon: float, zeta: float = 0.0) -> HistoryDurationEvaluator:
+    def evaluator(self, horizon: float, zeta: float | None = None) -> HistoryDurationEvaluator:
         """Build an evaluator using the RDDL horizon. / 使用 RDDL horizon 创建 evaluator。"""
         if horizon is None:
             raise DurationSpecError("DurationSidecar evaluator requires the horizon from the RDDL instance.")
-        return HistoryDurationEvaluator(model=self.model, horizon=float(horizon), zeta=float(zeta))
+        threshold = self.zeta if zeta is None else zeta
+        return HistoryDurationEvaluator(model=self.model, horizon=float(horizon), zeta=float(threshold))
+
+    @property
+    def zeta(self) -> float:
+        """Return percentile threshold from sidecar, defaulting to zero. / 返回 sidecar 中的 percentile threshold，默认零。"""
+        config = _duration_config(self.raw)
+        return float(config.get("zeta", self.raw.get("zeta", 0.0)))
 
     def validate_actions(self, action_names: set[str] | tuple[str, ...] | list[str]) -> None:
         """Validate that sidecar actions exist in the grounded model. / 验证 sidecar action 是否存在于 grounded model。"""
@@ -45,6 +50,20 @@ class DurationSidecar:
         unknown = sorted(action for action in duration_action_names(self.model) if action not in available)
         if unknown:
             raise DurationSpecError(f"Duration sidecar references unknown actions: {', '.join(unknown)}")
+
+    def risk_spec(self) -> RiskConstraintSpec:
+        """Return optional C-POMDP risk/cost settings. / 返回可选的 C-POMDP risk/cost 配置。"""
+        risk = _risk_config(self.raw)
+        if not risk:
+            return RiskConstraintSpec()
+        return RiskConstraintSpec(
+            budget=float(risk["budget"]) if "budget" in risk and risk["budget"] is not None else None,
+            state_fluent_costs=_number_mapping(risk.get("state_fluents", {}), field_name="risk.state_fluents"),
+            next_state_fluent_costs=_number_mapping(
+                risk.get("next_state_fluents", {}),
+                field_name="risk.next_state_fluents",
+            ),
+        )
 
 
 def load_duration_sidecar(path: str | Path) -> DurationSidecar:
@@ -112,6 +131,20 @@ def _duration_config(raw: Mapping[str, Any]) -> Mapping[str, Any]:
     block = raw.get("duration_model", raw)
     if not isinstance(block, Mapping):
         raise DurationSpecError("duration_model must be a mapping.")
+    return block
+
+
+def _risk_config(raw: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return optional risk/cost config from the sidecar. / 返回 sidecar 中可选的 risk/cost 配置。"""
+    block = raw.get("risk", raw.get("constraint", {}).get("risk") if isinstance(raw.get("constraint"), Mapping) else None)
+    if block is None:
+        constraints = raw.get("constraints")
+        if isinstance(constraints, Mapping):
+            block = constraints.get("risk")
+    if block is None:
+        return {}
+    if not isinstance(block, Mapping):
+        raise DurationSpecError("risk must be a mapping when present.")
     return block
 
 
@@ -267,4 +300,3 @@ def _required(config: Mapping[str, Any], key: str) -> Any:
     if key not in config:
         raise DurationSpecError(f"Duration sidecar is missing required field: {key}")
     return config[key]
-

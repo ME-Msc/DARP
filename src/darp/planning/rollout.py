@@ -1,7 +1,7 @@
 """Baseline planners over pyRDDLGym runtime copies."""
 
-# TODO(phase-9.1): Keep RolloutPlanner as a debugging baseline while benchmark
-# runs use HILP/Gurobi.
+# TODO(phase-9.1): Keep RolloutPlanner as a lightweight baseline while
+# benchmark runs use HILP/Gurobi.
 
 from __future__ import annotations
 

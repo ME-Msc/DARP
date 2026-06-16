@@ -1,4 +1,4 @@
-"""Generated-tree ILP encoders for full-tree and HILP selection."""
+"""Policy-tree ILP encoders for full-tree and HILP selection."""
 
 from __future__ import annotations
 
@@ -6,22 +6,24 @@ from dataclasses import dataclass
 from typing import Mapping, Sequence
 
 from darp.adapter.runtime import PyRDDLGymRuntime
+from darp.adapter.exact import StateKey
 from darp.ilp.model import ILPLinearConstraint, ILPModelSpec, ILPVariable
 from darp.model.and_or_tree import ANDORSearchInterface
 from darp.model.duration import HistoryDurationEvaluator
-from darp.planning.expand import ExpansionMetrics, expand_frontier_item
-from darp.planning.preprocess import FrontierItem, preprocess_search_tree
+from darp.planning.expand import ExpandedAction, ExpansionMetrics, expand_frontier_item
+from darp.planning.preprocess import FrontierItem, initialize_root_frontier
 from darp.planning.rollout import _raise_if_deadline_expired
 
 
 @dataclass(frozen=True)
-class GeneratedPolicyTreeILP:
-    """Store a generated policy-tree ILP and variable lookup maps. / 保存生成式 policy-tree ILP 及变量映射。"""
+class PolicyTreeILP:
+    """Store an exact policy-tree ILP and lookup maps. / 保存 exact policy-tree ILP 及变量映射。"""
 
     spec: ILPModelSpec
     variable_items: Mapping[str, FrontierItem]
     variable_metrics: Mapping[str, ExpansionMetrics]
     root_variable_ids: tuple[str, ...]
+    frontier_variable_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -32,54 +34,233 @@ class FrontierSelectionILP:
     variable_items: Mapping[str, FrontierItem]
 
 
-def build_generated_full_tree_ilp(
+@dataclass(frozen=True)
+class Algorithm1ExpansionRecord:
+    """Store one Algorithm 1 call to Algorithm 2. / 保存 Algorithm 1 中一次调用 Algorithm 2 的结果。"""
+
+    var_id: str
+    item: FrontierItem
+    expanded: ExpandedAction
+    continues: bool
+
+
+def build_full_tree_ilp(
     runtime: PyRDDLGymRuntime,
     interface: ANDORSearchInterface,
     duration_evaluator: HistoryDurationEvaluator,
     *,
-    depth: int,
     risk_budget: float | None = None,
+    root_belief: Mapping[StateKey, float] | None = None,
     deadline: float | None = None,
-) -> GeneratedPolicyTreeILP:
-    r"""Encode the generated AND-OR tree as a binary full-ILP model.
+) -> PolicyTreeILP:
+    r"""Encode the AND-OR policy tree as a binary full-ILP model.
 
     Paper correspondence:
 
     - Root policy constraint:
-      :math:`\sum_{a \in A(root)} x_{root,a}=1`.
-    - Observation-flow constraint for each generated observation node:
-      :math:`\sum_{a \in A(qo)} x_{qo,a}=x_{q}`.
-    - Objective over generated action histories:
-      :math:`\max \sum_q u_q x_q`.
-    - Risk row:
-      :math:`\sum_q r_q x_q \le \Delta` when a risk budget is provided.
 
-    The current encoder uses pyRDDLGym-generated observation branches; full
-    stochastic observation support is a later modeling extension.
+      $$\sum_{a \in A(root)} x_{root,a}=1$$
 
-    / 将当前生成式 AND-OR tree 编码为二元 full-ILP；目前 observation 分支来自
-    pyRDDLGym 采样/确定性生成，完整随机 observation 枚举留给后续扩展。
+
+    - Observation-flow constraint for each observation node:
+      
+      $$\sum_{a \in A(qo)} x_{qo,a}=x_{q}$$
+
+
+    - Objective over action histories:
+
+      $$\max \sum_q u_q x_q$$
+      
+    - Chance-constrained risk row:
+    
+        $$\sum_q r_q x_q \le R,\quad R=\Delta-r(b_0)$$
+     
+        when a risk budget is provided
+
+    Algorithm 2 Expand enumerates finite grounded transition/observation support
+    exactly from pyRDDLGym grounded CPFs through `ExactRDDLKernel`.
+
+    / 将 AND-OR policy tree 编码为二元 full-ILP；Algorithm 2 Expand 通过
+    `ExactRDDLKernel` 从 pyRDDLGym grounded CPF 精确枚举有限
+    transition/observation 支持。
     """
 
-    if depth < 1:
-        raise ValueError("depth must be at least 1.")
-    tree = preprocess_search_tree(runtime, interface)
-    queue: list[FrontierItem] = list(tree.frontier)
+    records = paper_preprocess(
+        runtime=runtime,
+        interface=interface,
+        duration_evaluator=duration_evaluator,
+        root_belief=root_belief,
+        deadline=deadline,
+    )
+    return _encode_algorithm1_records_as_full_ilp(
+        records,
+        risk_budget=_effective_safe_risk_budget(runtime, interface, risk_budget, root_belief),
+        model_name="darp_full_tree",
+    )
+
+
+def build_partial_tree_ilp(
+    *,
+    runtime: PyRDDLGymRuntime,
+    interface: ANDORSearchInterface,
+    expanded_records: Sequence[Algorithm1ExpansionRecord],
+    frontier_records: Sequence[Algorithm1ExpansionRecord],
+    risk_budget: float | None = None,
+    root_belief: Mapping[StateKey, float] | None = None,
+) -> PolicyTreeILP:
+    r"""Encode the current HILP partial policy tree.
+
+    Algorithm 3 solves a p-ILP over the partial tree $$E \cup F$$ rather than
+    over every horizon-feasible history.  Records in $$E$$ keep their
+    Definition 3.1 observation-flow rows; records in $$F$$ are frontier leaves
+    and therefore have no child-flow rows yet.
+
+    / 编码 HILP 当前的 partial policy tree：已展开集合 $$E$$ 保留 flow 约束，
+    frontier 集合 $$F$$ 作为截断叶子参与目标与风险行，不触发完整树枚举。
+    """
+
+    records = tuple(expanded_records) + tuple(frontier_records)
+    return _encode_algorithm1_records_as_full_ilp(
+        records,
+        risk_budget=_effective_safe_risk_budget(runtime, interface, risk_budget, root_belief),
+        model_name="darp_hilp_partial_tree",
+        frontier_variable_ids=tuple(record.var_id for record in frontier_records),
+    )
+
+
+def paper_preprocess(
+    *,
+    runtime: PyRDDLGymRuntime,
+    interface: ANDORSearchInterface,
+    duration_evaluator: HistoryDurationEvaluator,
+    root_belief: Mapping[StateKey, float] | None,
+    deadline: float | None,
+) -> tuple[Algorithm1ExpansionRecord, ...]:
+    r"""Run paper Algorithm 1 `Preprocess` and return expanded action records.
+
+    Original Algorithm 1 alternates between observation histories
+    $$q\in N$$ and actions $$a\in A$$, calling Algorithm 2 for each
+    $$qa$$. DARP keeps the queue at the action-history level because
+    `expand_frontier_item` returns each exact observation branch and its next action
+    frontier together.
+
+    The continuation test is the paper line-8 condition:
+
+    $$
+       \text{if } \exists o\in O \text{ such that } \tau(qao)>\varsigma
+       \text{ then add } qao \text{ to } N.
+    $$
+
+    / 运行论文 Algorithm 1：不断调用 `expand_frontier_item`，当
+    $$\tau(qao)>\varsigma$$ 时继续加入下一层；固定 horizon 已经包含在
+    `duration_evaluator.horizon` 的 $$\tau(qao)$$ 计算中。
+    """
+
+    root_frontier = initialize_root_frontier(runtime, interface, root_belief=root_belief)
+    queue: list[FrontierItem] = list(root_frontier.frontier)
+    records: list[Algorithm1ExpansionRecord] = []
+    seen: set[str] = set()
+
+    while queue:
+        _raise_if_deadline_expired(deadline)
+        item = queue.pop(0)
+        var_id = _action_var_id(item)
+        if var_id in seen:
+            continue
+        seen.add(var_id)
+        expanded = expand_frontier_item(item, interface, duration_evaluator)
+        # Algorithm 1 lines 7-9: Algorithm 2 Expand creates child frontier entries
+        # only for $$qao$$ branches satisfying $$tau(qao) > varsigma$$.
+        # 论文第 7-9 行：Algorithm 2 Expand 只为 $$tau(qao)>varsigma$$ 的 $$qao$$ 分支
+        # 创建后继 frontier；不再额外引入 lookahead/depth 截断。
+        continues = bool(expanded.child_frontier)
+        records.append(
+            Algorithm1ExpansionRecord(
+                var_id=var_id,
+                item=item,
+                expanded=expanded,
+                continues=continues,
+            )
+        )
+        if continues:
+            queue.extend(expanded.child_frontier)
+    return tuple(records)
+
+
+def _effective_safe_risk_budget(
+    runtime: PyRDDLGymRuntime,
+    interface: ANDORSearchInterface,
+    risk_budget: float | None,
+    root_belief: Mapping[StateKey, float] | None,
+) -> float | None:
+    r"""Return Lemma 3.3's residual risk budget.
+
+    The paper rewrites the chance constraint as:
+
+    $$
+       \sum_q r_q x_q \le R,\qquad R=\Delta-r(b_0).
+    $$
+
+    / 返回 chance constraint 的剩余预算；初始 belief 的 unsafe 概率
+    $$r(b_0)$$ 先从用户给定的 $$\Delta$$ 中扣除。
+    """
+    if risk_budget is None or interface.exact_kernel is None:
+        return risk_budget
+    if root_belief is None:
+        root_belief = interface.exact_kernel.initial_belief_from_state(runtime.state)
+    root_risk = getattr(interface.exact_kernel, "belief_state_risk_probability", None)
+    initial_risk = root_risk(root_belief) if root_risk is not None else 0.0
+    return float(risk_budget) - initial_risk
+
+
+def _encode_algorithm1_records_as_full_ilp(
+    records: Sequence[Algorithm1ExpansionRecord],
+    *,
+    risk_budget: float | None,
+    model_name: str = "darp_full_tree",
+    frontier_variable_ids: tuple[str, ...] = (),
+) -> PolicyTreeILP:
+    r"""Encode Algorithm 1/2 records as the paper full-ILP.
+
+    For each action history $$q\in\tilde A$$, Algorithm 2 supplies
+    constants $$u_q$$ and $$r_q$$. The encoder creates one binary
+    variable $$x_q$$ and writes Definition 3.1:
+
+    $$
+       \sum_{a\in A}x_a=1,\qquad
+       \sum_{a\in A}x_{qoa}=x_q.
+    $$
+
+    The objective and optional Lemma 3.3 safe-belief risk row are:
+
+    $$
+       \max \sum_q u_qx_q,\qquad
+       \sum_q r_qx_q\le R.
+    $$
+
+    where $$R=\Delta-r(b_0)$$, $$r_q=\rho^*(q)r(b_q)$$.
+
+    / 将 Algorithm 1/2 得到的 action histories 编码成论文 full-ILP；
+    风险行使用 Lemma 3.3 的 safe-belief 线性化形式。
+    """
+
     variables: dict[str, ILPVariable] = {}
     objective: dict[str, float] = {}
     constraints: list[ILPLinearConstraint] = []
     variable_items: dict[str, FrontierItem] = {}
     variable_metrics: dict[str, ExpansionMetrics] = {}
     root_ids: list[str] = []
+    declared_var_ids = {record.var_id for record in records}
 
-    while queue:
-        _raise_if_deadline_expired(deadline)
-        item = queue.pop(0)
-        var_id = _action_var_id(item)
-        if var_id in variables:
-            continue
-        variables[var_id] = ILPVariable(
-            var_id=var_id,
+    for record in records:
+        item = record.item
+        expanded = record.expanded
+
+        # Definition 3.1 variable: $$x_q=1$$ means this action-history is selected
+        # in the deterministic policy tree. / Definition 3.1 变量：$$x_q=1$$
+        # 表示 deterministic policy tree 选择该 action history。
+        variables[record.var_id] = ILPVariable(
+            var_id=record.var_id,
             label=item.node.history.label(),
             metadata={
                 "action": item.action_label,
@@ -88,29 +269,25 @@ def build_generated_full_tree_ilp(
                 "history": item.node.history.label(),
             },
         )
-        variable_items[var_id] = item
+        variable_items[record.var_id] = item
+        variable_metrics[record.var_id] = expanded.metrics
+        objective[record.var_id] = expanded.metrics.utility
         if item.node.history.depth == 1:
-            root_ids.append(var_id)
-
-        expanded = expand_frontier_item(item, interface, duration_evaluator)
-        variable_metrics[var_id] = expanded.metrics
-        objective[var_id] = expanded.metrics.utility
-        if item.node.history.depth < depth and expanded.child_frontier:
-            child_ids = [_action_var_id(child) for child in expanded.child_frontier]
-            coefficients = {child_id: 1.0 for child_id in child_ids}
-            coefficients[var_id] = coefficients.get(var_id, 0.0) - 1.0
-            constraints.append(
-                ILPLinearConstraint(
-                    name=f"flow_{var_id}",
-                    coefficients=coefficients,
-                    sense="==",
-                    rhs=0.0,
-                )
+            root_ids.append(record.var_id)
+        constraints.extend(
+            _definition31_flow_constraints(
+                record.var_id,
+                expanded,
+                declared_var_ids=declared_var_ids,
+                should_encode=record.continues,
             )
-            queue.extend(expanded.child_frontier)
+        )
 
     if not root_ids:
-        raise ValueError("Generated policy tree has no root action variables.")
+        raise ValueError("Policy tree has no root action variables.")
+
+    # Definition 3.1 root row: $$\sum_{a \in A(root)} x_a = 1$$.
+    # Definition 3.1 根约束：根节点必须且只能选择一个 action。
     constraints.insert(
         0,
         ILPLinearConstraint(
@@ -121,6 +298,8 @@ def build_generated_full_tree_ilp(
         ),
     )
     if risk_budget is not None:
+        # Lemma 3.3 chance constraint: $$\sum_q r_q x_q \le R,\ R=\Delta-r(b_0)$$.
+        # Lemma 3.3 风险约束：由 safe-belief 递推得到的 $$r_q$$ 常量构成。
         constraints.append(
             ILPLinearConstraint(
                 name="risk_budget",
@@ -134,17 +313,70 @@ def build_generated_full_tree_ilp(
             )
         )
     spec = ILPModelSpec(
-        name="darp_full_tree",
+        name=model_name,
         variables=tuple(variables.values()),
         objective=objective,
         constraints=tuple(constraints),
     )
-    return GeneratedPolicyTreeILP(
+    return PolicyTreeILP(
         spec=spec,
         variable_items=variable_items,
         variable_metrics=variable_metrics,
         root_variable_ids=tuple(root_ids),
+        frontier_variable_ids=frontier_variable_ids,
     )
+
+
+def _definition31_flow_constraints(
+    parent_var_id: str,
+    expanded: ExpandedAction,
+    *,
+    declared_var_ids: set[str],
+    should_encode: bool,
+) -> tuple[ILPLinearConstraint, ...]:
+    r"""Encode Definition 3.1 observation-flow constraint.
+
+    For every expanded action history $$q$$ and observation
+    branch $$o$$, the selected policy must choose exactly one child action
+    whenever $$x_q=1$$:
+
+    $$
+       \sum_{a\in A}x_{qoa}=x_q.
+    $$
+
+    DARP writes this row only for non-leaf action histories. A history is a leaf
+    when Algorithm 1 stops because $$\tau(qao)\le\varsigma$$. This mirrors
+    the reference code's ``if ins.duration_model(q) < ins.horizon`` guard
+    before adding child-flow rows; in DARP, that horizon is already inside
+    ``duration_evaluator``.
+
+    / 只对非叶子 action history 编码 observation-flow；duration 停止的叶子
+    不应引用未声明的子变量。
+    """
+    if not should_encode:
+        return ()
+    constraints: list[ILPLinearConstraint] = []
+    for index, observation_frontier in enumerate(expanded.observation_frontiers):
+        child_frontier = observation_frontier.child_frontier
+        if not child_frontier:
+            continue
+        coefficients = {_action_var_id(child): 1.0 for child in child_frontier}
+        missing = set(coefficients) - declared_var_ids
+        if missing:
+            raise ValueError(
+                "Cannot encode flow constraint with undeclared child variables: "
+                + ", ".join(sorted(missing))
+            )
+        coefficients[parent_var_id] = coefficients.get(parent_var_id, 0.0) - 1.0
+        constraints.append(
+            ILPLinearConstraint(
+                name=f"flow_{parent_var_id}_obs_{index}",
+                coefficients=coefficients,
+                sense="==",
+                rhs=0.0,
+            )
+        )
+    return tuple(constraints)
 
 
 def build_frontier_selection_ilp(
@@ -157,11 +389,11 @@ def build_frontier_selection_ilp(
     This is the Phase 8 p-ILP hook for Algorithm 3: select up to
     ``frontier_width`` frontier histories with the highest current score.
 
-    .. math::
-
+    $$
        \max \sum_{q \in F} score(q) y_q
        \quad
        1 \le \sum_{q \in F} y_q \le k
+    $$
 
     / 将 HILP frontier 选择编码为小型 p-ILP。
     """

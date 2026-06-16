@@ -6,6 +6,12 @@ from typing import Any
 
 __all__ = [
     "ActionDict",
+    "ExactActionExpansion",
+    "ExactBeliefState",
+    "ExactKernelError",
+    "ExactObservationOutcome",
+    "ExactRDDLKernel",
+    "ExactTransitionOutcome",
     "GroundedCPF",
     "GroundedRDDLView",
     "GroundedVariable",
@@ -14,6 +20,8 @@ __all__ = [
     "PyRDDLGymRuntime",
     "RDDLLoadError",
     "RDDLLoader",
+    "RiskConstraintSpec",
+    "SafeActionExpansion",
     "UnsupportedRDDLFeature",
     "UnsupportedRDDLFeatureError",
 ]
@@ -42,6 +50,37 @@ def __getattr__(name: str) -> Any:
             "GroundedVariable": GroundedVariable,
             "UnsupportedRDDLFeature": UnsupportedRDDLFeature,
             "UnsupportedRDDLFeatureError": UnsupportedRDDLFeatureError,
+        }[name]
+    if name in {
+        "ExactActionExpansion",
+        "ExactBeliefState",
+        "ExactKernelError",
+        "ExactObservationOutcome",
+        "ExactRDDLKernel",
+        "ExactTransitionOutcome",
+        "RiskConstraintSpec",
+        "SafeActionExpansion",
+    }:
+        from darp.adapter.exact import (
+            ExactActionExpansion,
+            ExactBeliefState,
+            ExactKernelError,
+            ExactObservationOutcome,
+            ExactRDDLKernel,
+            ExactTransitionOutcome,
+            RiskConstraintSpec,
+            SafeActionExpansion,
+        )
+
+        return {
+            "ExactActionExpansion": ExactActionExpansion,
+            "ExactBeliefState": ExactBeliefState,
+            "ExactKernelError": ExactKernelError,
+            "ExactObservationOutcome": ExactObservationOutcome,
+            "ExactRDDLKernel": ExactRDDLKernel,
+            "ExactTransitionOutcome": ExactTransitionOutcome,
+            "RiskConstraintSpec": RiskConstraintSpec,
+            "SafeActionExpansion": SafeActionExpansion,
         }[name]
     if name in {"PyRDDLGymProblem", "RDDLLoadError"}:
         from darp.adapter.problem import PyRDDLGymProblem, RDDLLoadError

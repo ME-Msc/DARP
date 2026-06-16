@@ -9,9 +9,10 @@ The main branch keeps one implementation path: pyRDDLGym owns standard RDDL pars
 - `adapter/` loads standard RDDL domain/instance files through pyRDDLGym and returns `PyRDDLGymProblem(env, model, native_ast)`.
 - `PyRDDLGymProblem.build_grounded_model()` directly reuses pyRDDLGym's `RDDLGrounder(...).ground()` and returns pyRDDLGym's `RDDLGroundedModel`; `GroundedRDDLView` wraps it, so DARP no longer implements grounding itself.
 - `GroundedRDDLView.build_and_or_interface()` now turns grounded actions, observation scope, and root history into an AND-OR search interface.
+- `adapter.ExactRDDLKernel` enumerates transition / observation / reward exactly from pyRDDLGym grounded CPFs for finite bool-state models, and propagates the Lemma 3.3 chance-constrained safe belief plus `rho*(q)` risk constants. Online full-ILP/HILP maintains the root belief with exact Bayes belief updates before building the tree.
 - `darp --domain --instance` defaults to a fast pyRDDLGym + rollout online trace; `--planner full-ilp` / `--planner hilp` switches to the paper-aligned planner path.
 - `model/` keeps DARP-native `DurationModel`, duration sidecars, and AND-OR tree data structures, now wired into Phase 7 `tau(q)` pruning.
-- `planning/` provides paper-aligned `preprocess`, `Expand`, full-tree baseline, and HILP-style partial frontier search. Phase 8 now connects generated full-tree ILP and HILP frontier p-ILP models to Gurobi.
+- `planning/` provides paper-aligned `preprocess`, `Expand`, full-tree baseline, and HILP-style partial-tree search. The full-ILP no longer applies an extra lookahead-depth cutoff; it expands to the remaining RDDL horizon / duration stopping condition. HILP solves the current `E ∪ F` partial-tree p-ILP with Gurobi and selects the root action from the partial solution with an exact frontier heuristic, without falling back to full-ILP.
 - `ilp/` provides DARP's small binary ILP schema and the only solver adapter: Gurobi.
 - Durative actions are currently defined only through YAML/JSON sidecars. Future native syntax should extend the pyRDDLGym parser by inheritance.
 
@@ -46,7 +47,7 @@ darp \
   --instance examples/rddl/tiny_grid_instance.rddl
 ```
 
-Set lookahead and particle count:
+Set rollout/HILP lookahead; `--particles` only affects rollout's approximate POMDP belief:
 
 ```bash
 darp \
@@ -63,11 +64,10 @@ darp \
   --domain examples/rddl/tiny_grid_domain.rddl \
   --instance examples/rddl/tiny_grid_instance.rddl \
   --duration examples/durations/tiny_grid.yaml \
-  --planner full-ilp \
-  --lookahead-depth 4
+  --planner full-ilp
 ```
 
-Use the HILP frontier p-ILP planner:
+Use the HILP partial-tree p-ILP planner:
 
 ```bash
 darp \
@@ -75,12 +75,12 @@ darp \
   --instance examples/rddl/tiny_grid_instance.rddl \
   --duration examples/durations/tiny_grid.yaml \
   --planner hilp \
-  --lookahead-depth 3 \
-  --hilp-iterations 1 \
+  --lookahead-depth 4 \
+  --hilp-iterations 4 \
   --frontier-width 1
 ```
 
-`full-ilp` / `hilp` call Gurobi when `gurobipy` is installed; without it they use the generated-tree DP fallback for debugging. Use `--require-gurobi` to fail when Gurobi is unavailable.
+`full-ilp` / `hilp` are the paper-path planners and require working `gurobipy` plus a Gurobi license; they fail directly when Gurobi is unavailable. `rollout` remains the non-Gurobi baseline.
 
 ## Duration Sidecar
 
@@ -97,6 +97,42 @@ actions:
 ```
 
 `default` is the fallback duration for actions not explicitly listed in `actions`. In the example above, if the RDDL model also has `move-west` and the sidecar omits it, DARP uses `default: 1` as its duration.
+
+Fixed-duration C-POMDP risk constraints can be declared in the same sidecar. The example below treats entering `at___c22` as a risk cost and sets the total risk budget:
+
+```yaml
+kind: fixed
+default: 1
+actions:
+  move-east: 1
+  move-south: 1
+  move-west: 1
+  move-north: 1
+risk:
+  budget: 0.25
+  next_state_fluents:
+    at___c22: 1
+```
+
+In full-ILP, DARP follows the paper's Lemma 3.3 safe-belief chance constraint: the ILP right-hand side is `R = Delta - r(b0)`, and each action history uses the risk coefficient `rho*(q) * r(b_q)`. `rho*(q)` and the safe belief `b*` are propagated along the AND-OR tree instead of simply accumulating ordinary-belief expected costs.
+
+Stochastic Duration with Percentile Risk Criteria uses `kind: gaussian` and `zeta`. `zeta` is the paper's percentile threshold `\varsigma`; DARP computes action-duration means/variances from Algorithm 2 smoothed-belief marginals and uses them in `tau(q)`:
+
+```yaml
+kind: gaussian
+zeta: 0.3
+default_mean: 1
+default_variance: 0.05
+state_actions:
+  at___c22:
+    move-east:
+      mean: 2
+      variance: 0.25
+risk:
+  budget: 0.25
+  next_state_fluents:
+    at___c22: 1
+```
 
 Write the online trace as JSON:
 
@@ -149,7 +185,7 @@ PyRDDLGymProblem.build_grounded_model()
 - DARP `adapter/`: fixed pyRDDLGym adapter for loading, grounded-model views, runtime reset/step, and lightweight belief helpers.
 - DARP `model/`: stores DARP-native planning data structures such as duration models, histories, and AND-OR tree nodes; this package does not directly depend on pyRDDLGym.
 - DARP `planning/`: stores the rollout baseline, paper search scaffolding, HILP/full-tree planners, online sessions, and traces; this package reaches the simulator through the pyRDDLGym runtime.
-- DARP `ilp/`: stores the binary ILP schema and Gurobi adapter; `planning/` encodes generated AND-OR trees/frontiers into full ILP or HILP p-ILP models.
+- DARP `ilp/`: stores the binary ILP schema and Gurobi adapter; `planning/` encodes exact AND-OR trees/frontiers into full ILP or HILP p-ILP models.
 
 ## File Layout
 
@@ -166,7 +202,8 @@ DARP/
 │   │   ├── README.md                 # Benchmark source notes and import list.
 │   │   └── <domain-year>/            # Individual benchmark domain directory.
 │   ├── durations/                    # DARP duration sidecar examples.
-│   │   └── tiny_grid.yaml            # Tiny-grid fixed-duration sidecar.
+│   │   ├── tiny_grid.yaml            # Tiny-grid fixed-duration + risk sidecar.
+│   │   └── tiny_grid_gaussian.yaml   # Tiny-grid Gaussian percentile duration sidecar.
 │   └── rddl/                         # Small hand-written RDDL examples.
 │       ├── tiny_grid_domain.rddl     # Tiny-grid standard RDDL domain.
 │       ├── tiny_grid_instance.rddl   # Tiny-grid instance.
@@ -181,6 +218,7 @@ DARP/
 │   │   ├── problem.py                # PyRDDLGymProblem container, load errors, and pyRDDLGym grounder entrypoint.
 │   │   ├── loader.py                 # Loads standard RDDL with pyRDDLGym.
 │   │   ├── grounded.py               # GroundedRDDLView wrapper over pyRDDLGym grounded models.
+│   │   ├── exact.py                  # Exact finite transition/observation/reward/risk kernel from grounded CPFs.
 │   │   └── runtime.py                # pyRDDLGym reset/step/action/belief runtime.
 │   ├── model/                        # DARP-native planning data structures.
 │   │   ├── __init__.py               # Model package entrypoint.
@@ -193,10 +231,10 @@ DARP/
 │   │   └── gurobi.py                 # Gurobi adapter; the only ILP solver for the paper path.
 │   └── planning/                     # Planners and online execution orchestration.
 │       ├── __init__.py               # Planning package entrypoint.
-│       ├── preprocess.py             # Paper-search preprocessing; initializes root and frontier.
-│       ├── expand.py                 # Paper Expand operation; computes rho/u/r/tau-style metrics.
-│       ├── ilp_tree.py               # Encodes generated AND-OR trees/frontiers as full ILP and HILP p-ILP models.
-│       ├── full_ilp.py               # Gurobi full-tree ILP planner, with fallback when Gurobi is absent.
+│       ├── preprocess.py             # Root-frontier initialization helper for Algorithm 1.
+│       ├── expand.py                 # Paper Expand operation; computes rho/u/r/tau, backward messages, and smoothed beliefs.
+│       ├── ilp_tree.py               # Runs Algorithm 1 preprocessing and encodes full ILP and HILP p-ILP models.
+│       ├── full_ilp.py               # Gurobi-only full-tree ILP planner; builds the policy tree via paper Algorithms 1/2 before solving.
 │       ├── hilp.py                   # HILP partial frontier search using Gurobi p-ILP frontier selection.
 │       ├── rollout.py                # Current pyRDDLGym rollout baseline planner.
 │       └── session.py                # Online session loop and trace structures.
@@ -204,8 +242,8 @@ DARP/
     ├── test_darp_entrypoint.py       # Top-level CLI and pyRDDLGym online-trace tests.
     ├── test_and_or_tree.py           # DARP AND-OR tree base-structure tests.
     ├── test_duration_sidecar.py      # Duration sidecar and history-duration tests.
+    ├── test_exact_kernel.py          # Exact finite kernel, risk sidecar, and Gaussian percentile duration tests.
     ├── test_gurobi_ilp.py            # Phase 8 ILP schema, fake Gurobi, full ILP, and HILP p-ILP tests.
-    ├── test_phase7_search.py         # Phase 7 preprocess, Expand, full-tree, and HILP tests.
     ├── test_pyrddlgym_runtime.py     # pyRDDLGym runtime and simple online-trace tests.
     └── test_rddl_loader.py           # pyRDDLGym loader, summary, and grounder-reuse tests.
 ```
@@ -242,18 +280,22 @@ DARP/
 - [x] Phase 7: Paper search algorithm scaffolding
   - [x] 7.1: Implement AND-OR history tree
   - [x] 7.2: Implement paper `Expand` and preprocessing
-  - [x] 7.3: Implement the generated full-tree DP baseline as the no-Gurobi fallback and diagnostic value path
+  - [x] 7.3: Implement exact policy-tree preprocessing/Expand scaffolding for full-ILP constants
   - [x] 7.4: Implement E/F bookkeeping for HILP-style partial frontier search
 - [x] Phase 8: Gurobi ILP solving
-  - [x] 8.1: Encode generated CC-POMDP trees into full ILP / p-ILP variables, objectives, and constraints
-  - [x] 8.2: Solve generated full-tree ILP with Gurobi while keeping a no-Gurobi fallback
-  - [x] 8.3: Solve HILP frontier-selection p-ILP iterations with Gurobi
+  - [x] 8.1: Encode finite exact CC-POMDP trees into full ILP / p-ILP variables, objectives, and constraints
+  - [x] 8.2: Solve exact/full-tree ILP with Gurobi as the only solver
+  - [x] 8.3: Solve the current HILP `E ∪ F` partial-tree p-ILP with Gurobi and select the root action directly from the partial solution
   - [x] 8.4: Record Gurobi status, runtime, MIP gap, objective, and selected variables through `ILPSolveResult`
+  - [x] 8.5: Wire duration-sidecar safe-belief chance constraints, Algorithm 2 backward messages / smoothed beliefs, and Gaussian percentile `tau(q)`
+  - [x] 8.6: Make online full-ILP/HILP maintain the root belief through `ExactBeliefState` and exact Bayes updates instead of particle belief
 - [ ] Phase 9: Benchmarks, experiments, and syntax extension
   - [ ] 9.1: Implement benchmark runner and pyRDDLGym/rddlrepository import checks
   - [ ] 9.2: Implement PROST/rddlsim-style online protocol compatibility
   - [ ] 9.3: Add paper-style experiment scripts
-  - [ ] 9.4: If native durative-action syntax is needed, extend the pyRDDLGym parser by inheritance
+  - [ ] 9.4: Extend action-space enumeration for concurrent action combinations and non-bool actions
+  - [ ] 9.5: Implement augmented-state chance-constrained duration and broader random-expression / continuous-distribution support
+  - [ ] 9.6: If native durative-action syntax is needed, extend the pyRDDLGym parser by inheritance
 
 ## Testing
 
@@ -266,9 +308,9 @@ Phase 8 unit tests use a fake `gurobipy` module to cover DARP's ILP encoding and
 ## Current Limitations
 
 - RDDL inputs currently execute online traces through a pyRDDLGym generative runtime; DARP no longer maintains a separate `PlanningProblem` compilation path.
-- The default CLI planner remains the fast rollout baseline; `full-ilp` / `hilp` are wired into online sessions, but need performance tuning around pyRDDLGym deep copies and generated-tree expansion before becoming the default.
+- The default CLI planner remains the fast rollout baseline. `hilp` now uses partial-tree p-ILPs to avoid full-horizon enumeration, but still needs benchmark-scale pruning before becoming the default; `full-ilp` expands to the full remaining RDDL horizon and grows exponentially with action/observation histories.
 - The grounded AND-OR interface and pyRDDLGym rollout baseline currently enumerate noop and single bool actions only; action combinations and non-bool actions produce clear unsupported errors and remain future planner/action-space work.
-- Current POMDP belief uses a lightweight particle approximation for debugging runtime boundaries; benchmark-quality POMDP evaluation needs later likelihood weighting/resampling.
-- DARP reuses pyRDDLGym grounding and does not reimplement RDDL grounding or finite-state enumeration.
+- The rollout baseline still uses a lightweight particle approximation for POMDP belief. Online full-ILP/HILP uses exact Bayes belief updates. Benchmark-quality POMDP evaluation still needs richer initial-belief modeling, reachable-state pruning, and scalable belief representations.
+- DARP reuses pyRDDLGym grounding; finite bool grounded models can be enumerated exactly through `ExactRDDLKernel`, while continuous distributions, large state spaces, and complex random expressions remain later benchmark work.
 - Native DARP-RDDL syntax is not maintained on main; durative actions currently enter only through YAML/JSON sidecars.
-- Phase 8 ILP currently uses observation branches generated/sampled through pyRDDLGym; full stochastic observation enumeration, risk/cost fluent extraction, and benchmark-scale constrained rows remain Phase 9 work.
+- Phase 8 ILP now supports exact finite transition/observation branches, Algorithm 2 smoothed beliefs, sidecar safe-belief chance constraints, and duration percentile `tau(q)`; augmented-state chance-constrained duration, benchmark-scale pruning, continuous distributions, and complex random expressions remain Phase 9 work.

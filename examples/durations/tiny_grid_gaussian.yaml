@@ -1,0 +1,16 @@
+kind: gaussian
+zeta: 0.3
+default_mean: 1
+default_variance: 0.05
+state_actions:
+  at___c22:
+    move-east:
+      mean: 2
+      variance: 0.25
+    move-south:
+      mean: 2
+      variance: 0.25
+risk:
+  budget: 0.25
+  next_state_fluents:
+    at___c22: 1

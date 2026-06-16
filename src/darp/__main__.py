@@ -37,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--lookahead-depth",
         type=int,
         default=4,
-        help="per-decision search lookahead depth",
+        help="per-decision lookahead depth for rollout/HILP; full-ilp uses the remaining RDDL horizon",
     )
     parser.add_argument(
         "--hilp-iterations",
@@ -54,18 +54,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--risk-budget",
         type=float,
-        help="optional generated-tree risk budget for full-ILP rows",
-    )
-    parser.add_argument(
-        "--require-gurobi",
-        action="store_true",
-        help="fail instead of using DP fallback when gurobipy is unavailable",
+        help="optional risk budget for full-ILP rows",
     )
     parser.add_argument(
         "--particles",
         type=int,
         default=32,
-        help="particle count for pyRDDLGym POMDP belief tracking",
+        help="particle count for rollout POMDP belief tracking; full-ilp/hilp use exact belief",
     )
     parser.add_argument(
         "--time-budget-ms",
@@ -106,7 +101,6 @@ def _run_rddl_online(args: argparse.Namespace) -> int:
         hilp_iterations=args.hilp_iterations,
         frontier_width=args.frontier_width,
         risk_budget=args.risk_budget,
-        require_gurobi=args.require_gurobi,
         time_budget_ms=args.time_budget_ms,
         particle_count=args.particles,
     )
@@ -129,7 +123,7 @@ def _format_pyrddlgym_trace(payload: dict[str, object]) -> str:
         f"Planner: {payload['planner']}",
         f"Seed: {payload['seed']}",
         f"Horizon: {payload['horizon']} (max depth {payload['max_depth']})",
-        f"Lookahead depth: {payload['lookahead_depth']}",
+        _search_depth_label(payload),
         f"Duration: {_duration_label(payload.get('duration', {}))}",
         "Steps:",
     ]
@@ -166,6 +160,13 @@ def _duration_label(duration: object) -> str:
     path = duration.get("path")
     suffix = "default" if duration.get("defaulted") else path
     return f"{kind} ({suffix})"
+
+
+def _search_depth_label(payload: dict[str, object]) -> str:
+    """Format the planner search-depth line. / 格式化 planner search depth 行。"""
+    if payload.get("planner") == "full-ilp-gurobi":
+        return "Search depth: remaining horizon"
+    return f"Lookahead depth: {payload['lookahead_depth']}"
 
 
 def _active_state_label(state: object) -> str:

@@ -1,7 +1,7 @@
 """DARP view over pyRDDLGym grounded models."""
 
-# TODO(phase-9.1): Expose risk/cost fluent selectors once benchmark-scale
-# constrained CC-POMDP rows are implemented.
+# TODO(phase-9.1): Expose richer constrained-cost summaries for benchmark
+# domains; current risk rows are selected through duration sidecars.
 
 from __future__ import annotations
 
@@ -158,11 +158,14 @@ class GroundedRDDLView:
             for action in raw_actions
         )
 
-    def build_and_or_interface(self, runtime: Any | None = None) -> ANDORSearchInterface:
+    def build_and_or_interface(self, runtime: Any | None = None, risk: Any | None = None) -> ANDORSearchInterface:
         """Build the action/observation interface consumed by AND-OR search. / 构建 AND-OR 搜索消费的 action/observation 接口。"""
+        from darp.adapter.exact import ExactRDDLKernel
+
         return ANDORSearchInterface.from_actions_and_observations(
             actions=self.action_choices(runtime),
             observation_scope=self.observation_scope(),
+            exact_kernel=ExactRDDLKernel.from_grounded_model(self.grounded_model, risk=risk),
         )
 
     def validate_supported(self) -> None:

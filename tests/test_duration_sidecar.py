@@ -28,8 +28,7 @@ def test_yaml_fixed_duration_sidecar_matches_grounded_actions():
     pytest.importorskip("pyRDDLGym")
     problem = RDDLLoader().load(DOMAIN, INSTANCE)
     sidecar = load_duration_sidecar(DURATIONS)
-    with pytest.warns(UserWarning):
-        action_names = problem.build_grounded_view().action_fluents()
+    action_names = problem.build_grounded_view().action_fluents()
 
     sidecar.validate_actions(action_names)
 

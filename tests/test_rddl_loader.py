@@ -1,6 +1,7 @@
 """Tests for pyRDDLGym RDDL loading."""
 
 from types import SimpleNamespace
+import warnings
 
 import pytest
 
@@ -52,15 +53,25 @@ def test_pyrddlgym_problem_summary_exposes_planner_interfaces():
     assert "move-east" in summary["model"]["action_fluents"]
 
 
-def test_pyrddlgym_problem_reuses_pyrddlgym_grounder():
-    """Check grounding is delegated to pyRDDLGym. / 检查 grounding 委托给 pyRDDLGym。"""
+def test_pyrddlgym_problem_builds_enum_safe_grounded_model():
+    """Check enum literals are normalized during grounding. / 检查 grounding 时 enum literal 会被归一化。"""
     pytest.importorskip("pyRDDLGym")
     problem = RDDLLoader().load(DOMAIN, INSTANCE)
-    with pytest.warns(UserWarning):
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
         grounded = problem.build_grounded_model()
 
+    warning_text = "\n".join(str(item.message) for item in caught)
+    assert "undefined state-fluent" not in warning_text
+    assert "undefined non-fluent" not in warning_text
     assert type(grounded).__name__ == "RDDLGroundedModel"
     assert "at___c11" in grounded.state_fluents
+    assert grounded.state_fluents["at___c11"] is True
+    assert grounded.non_fluents["is-start___c11"] is True
+    assert grounded.non_fluents["is-risk___c22"] is True
+    assert grounded.non_fluents["is-goal___c33"] is True
+    assert grounded.non_fluents["next-east___c11__c12"] is True
     assert "move-east" in grounded.action_fluents
 
 
@@ -68,8 +79,7 @@ def test_pyrddlgym_problem_grounded_view_exposes_solver_boundary():
     """Check DARP wraps pyRDDLGym grounding behind a stable view. / 检查 DARP 用稳定 view 封装 pyRDDLGym grounding。"""
     pytest.importorskip("pyRDDLGym")
     problem = RDDLLoader().load(DOMAIN, INSTANCE)
-    with pytest.warns(UserWarning):
-        view = problem.build_grounded_view()
+    view = problem.build_grounded_view()
 
     assert view.horizon == 8
     assert "at___c11" in view.state_fluents()
@@ -84,8 +94,7 @@ def test_grounded_view_builds_and_or_search_interface():
     problem = RDDLLoader().load(DOMAIN, INSTANCE)
     runtime = PyRDDLGymRuntime.from_problem(problem)
     runtime.reset(seed=7)
-    with pytest.warns(UserWarning):
-        interface = problem.build_grounded_view().build_and_or_interface(runtime)
+    interface = problem.build_grounded_view().build_and_or_interface(runtime)
 
     assert interface.root.kind == ANDORNodeKind.OR
     assert [action.label for action in interface.actions] == [

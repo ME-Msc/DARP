@@ -1,38 +1,32 @@
-"""Full-tree baseline for the paper's ILP policy-tree objective."""
+"""Gurobi full-ILP planner for the paper's policy-tree objective."""
 
-# TODO(phase-9.1): Replace generated observation branches with full stochastic
-# observation support before benchmark-scale CC-POMDP experiments.
+# TODO(phase-9.1): Add benchmark-scale pruning for large exact finite kernels
+# and richer finite random variables beyond the current supported subset.
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from time import perf_counter
+from typing import Mapping
 
-from darp.adapter.runtime import PyRDDLGymRuntime, _json_ready
-from darp.ilp.gurobi import GurobiILPSolver, GurobiUnavailableError, gurobi_available
+from darp.adapter.exact import StateKey
+from darp.adapter.runtime import PyRDDLGymRuntime
+from darp.ilp.gurobi import GurobiILPSolver
 from darp.ilp.model import ILPSolveResult
 from darp.model.and_or_tree import ANDORSearchInterface
 from darp.model.duration import HistoryDurationEvaluator
-from darp.planning.ilp_tree import build_generated_full_tree_ilp
-from darp.planning.expand import expand_frontier_item
-from darp.planning.preprocess import FrontierItem, preprocess_search_tree
-from darp.planning.rollout import (
-    ActionDecision,
-    _RuntimeDeadlineExceeded,
-    _raise_if_deadline_expired,
-)
+from darp.planning.ilp_tree import PolicyTreeILP, build_full_tree_ilp
+from darp.planning.rollout import ActionDecision, _raise_if_deadline_expired
 
 
 @dataclass
 class FullILPPlanner:
-    """Evaluate a complete finite AND-OR tree baseline. / 评估完整有限 AND-OR tree baseline。"""
+    """Solve the full policy-tree ILP with Gurobi. / 使用 Gurobi 求解完整 policy-tree ILP。"""
 
-    lookahead_depth: int = 4
-    use_gurobi: bool = True
-    require_gurobi: bool = False
     risk_budget: float | None = None
     name: str = "full-ilp-gurobi"
     last_ilp_result: ILPSolveResult | None = field(default=None, init=False)
+    last_policy_tree: PolicyTreeILP | None = field(default=None, init=False)
 
     def choose_action(
         self,
@@ -41,187 +35,117 @@ class FullILPPlanner:
         duration_evaluator: HistoryDurationEvaluator,
         *,
         remaining_depth: int,
+        root_belief: Mapping[StateKey, float] | None = None,
         time_budget_ms: float | None = None,
     ) -> ActionDecision:
-        r"""Choose the root action by solving the full generated tree.
+        r"""Choose the root action by solving the full-ILP.
 
         Paper correspondence:
 
-        - The paper's full ILP baseline builds the full history tree and
-          chooses binary policy variables with constraints equivalent to:
+        - Algorithm 1 initializes the root history and repeatedly calls
+          Algorithm 2 (`Expand`) until all histories that violate the duration
+          stopping test have been expanded. DARP implements this tree-building
+          phase in `build_full_tree_ilp(...)`. With an exact kernel,
+          this tree uses exact finite transition/observation branches from the
+          pyRDDLGym grounded CPFs.
 
-          .. math::
+        - Algorithm 2 computes the constants for each action history $$q \in \tilde{A}$$:
 
-             \sum_{a \in A(root)} x_{root,a} = 1,
-             \qquad
-             \sum_{a \in A(q)} x_{q,a} = x_{parent(q)}
+          $$u_q = \rho^*(q)\sum_s b^*_{q-1}(s)U(s,a_q),\qquad
+            r_q = \rho^*(q)r(b_q),\qquad
+            \tau(q).$$
 
-        - Phase 8 encodes the generated tree as a Gurobi binary ILP. The
-          recursive dynamic-programming value is still used as a readable
-          fallback and as root-action diagnostics:
+        - The full-ILP then solves the paper's policy-tree program:
 
-          .. math::
+          $$\max_x \sum_{q \in \tilde{A}: \tau(q-1)>\varsigma} u_q x_q$$
 
-             V(q) = \max_a \left[u(q,a) + \gamma V(qao)\right].
+          subject to the root and observation-flow constraints:
 
-        / 通过 Gurobi full-ILP 选择根动作；递归 DP 仍作为诊断和缺少 Gurobi 时的 fallback。
+          $$\sum_{a\in A} x_a = 1,\qquad
+            \sum_{a\in A} x_{qoa} = x_q,$$
+
+          plus the optional Lemma 3.3 chance-constrained risk row:
+
+          $$\sum_q r_q x_q \le R.$$
+
+        按论文 Algorithm 1/2 生成完整 policy tree；有 exact kernel 时使用
+        pyRDDLGym grounded CPF 的有限 transition/observation 精确分支，然后直接
+        用 Gurobi 求解 full-ILP；这里没有递归 DP 或 rollout fallback。
+
+        Reference-code correspondence:
+
+        - Author ``solver.preprocess(...)`` builds a NetworkX AND-OR tree and
+          stores $$u_q$$, $$r_q$$, $$\rho^*(q)$$, and beliefs on tree
+          nodes. DARP's equivalent is
+          ``build_full_tree_ilp -> paper_preprocess -> expand_frontier_item``.
+        - Author ``solver.ILP(...)`` creates binary variables ``x[q]`` for
+          action histories, then adds ``tree_c1``, ``tree_c{q}``, and
+          ``capacity_c``. DARP encodes the same rows as ``root_action``,
+          ``flow_*``, and ``risk_budget`` before calling `GurobiILPSolver`.
+
+        / 作者代码中的 `preprocess` 与 `ILP` 在 DARP 中分别对应 tree generation
+        与 ILP encoding 两步；变量和约束名称不同，但数学结构相同。
         """
 
         started_at = perf_counter()
-        if self.lookahead_depth < 1:
-            raise ValueError("lookahead_depth must be at least 1.")
         if remaining_depth < 1:
             raise ValueError("remaining_depth must be at least 1.")
         if time_budget_ms is not None and time_budget_ms < 0.0:
             raise ValueError("time_budget_ms must be non-negative.")
 
         deadline = None if time_budget_ms is None else started_at + time_budget_ms / 1000.0
-        depth = max(1, min(self.lookahead_depth, remaining_depth))
-        tree = preprocess_search_tree(runtime, interface)
-        action_values: dict[str, float] = {}
-        best_item = tree.frontier[0]
-        best_value = float("-inf")
-        complete = True
-        fallback_reason = None
-        cache: dict[tuple[str, tuple[str, ...], tuple[str, ...], int], float] = {}
+        _raise_if_deadline_expired(deadline)
 
-        try:
-            for item in tree.frontier:
-                _raise_if_deadline_expired(deadline)
-                value = self.frontier_value(
-                    item,
-                    interface,
-                    duration_evaluator,
-                    depth=depth,
-                    deadline=deadline,
-                    cache=cache,
-                )
-                action_values[item.action_label] = value
-                if value > best_value:
-                    best_item = item
-                    best_value = value
-        except _RuntimeDeadlineExceeded as exc:
-            complete = False
-            fallback_reason = str(exc)
-            if best_value == float("-inf"):
-                best_value = 0.0
-                action_values.setdefault(best_item.action_label, best_value)
+        ilp_tree = build_full_tree_ilp(
+            runtime.clone(),
+            interface,
+            duration_evaluator,
+            risk_budget=self.risk_budget,
+            root_belief=root_belief,
+            deadline=deadline,
+        )
+        self.last_policy_tree = ilp_tree
+        self.last_ilp_result = GurobiILPSolver().solve(
+            ilp_tree.spec,
+            time_limit_ms=_remaining_time_budget_ms(started_at, time_budget_ms),
+        )
+        selected_root = _selected_root_variable(self.last_ilp_result, ilp_tree)
+        if selected_root is None:
+            raise RuntimeError(
+                "Gurobi full-tree ILP did not select a root action. "
+                f"status={self.last_ilp_result.status}"
+            )
 
-        if self.use_gurobi:
-            try:
-                if not gurobi_available():
-                    raise GurobiUnavailableError("gurobipy is required for DARP Phase 8 ILP solving.")
-                ilp_tree = build_generated_full_tree_ilp(
-                    runtime.clone(),
-                    interface,
-                    duration_evaluator,
-                    depth=depth,
-                    risk_budget=self.risk_budget,
-                    deadline=deadline,
-                )
-                self.last_ilp_result = GurobiILPSolver().solve(
-                    ilp_tree.spec,
-                    time_limit_ms=_remaining_time_budget_ms(started_at, time_budget_ms),
-                )
-                selected_root = next(
-                    (
-                        var_id
-                        for var_id in self.last_ilp_result.selected_variables
-                        if var_id in ilp_tree.root_variable_ids
-                    ),
-                    None,
-                )
-                if selected_root is not None:
-                    best_item = ilp_tree.variable_items[selected_root]
-                    best_value = action_values.get(best_item.action_label, best_value)
-                    if not self.last_ilp_result.is_optimal:
-                        complete = False
-                        fallback_reason = self.last_ilp_result.message
-                elif self.require_gurobi:
-                    raise RuntimeError("Gurobi full-tree ILP did not select a root action.")
-                else:
-                    complete = False
-                    fallback_reason = "Gurobi full-tree ILP did not select a root action; used DP fallback"
-            except GurobiUnavailableError as exc:
-                self.last_ilp_result = None
-                if self.require_gurobi:
-                    raise
-                complete = False
-                fallback_reason = str(exc)
-            except _RuntimeDeadlineExceeded as exc:
-                complete = False
-                fallback_reason = str(exc)
-
+        selected_item = ilp_tree.variable_items[selected_root]
         elapsed_ms = (perf_counter() - started_at) * 1000.0
         timed_out = deadline is not None and perf_counter() > deadline
-        if timed_out and complete:
-            complete = False
-            fallback_reason = "deadline expired after full-tree decision"
         return ActionDecision(
-            action=dict(best_item.node.metadata["assignment"]),
-            label=best_item.action_label,
-            value=best_value,
-            action_values=action_values,
-            remaining_depth=depth,
+            action=dict(selected_item.node.metadata["assignment"]),
+            label=selected_item.action_label,
+            value=float(self.last_ilp_result.objective_value or 0.0),
+            action_values=_root_objective_values(ilp_tree),
+            remaining_depth=remaining_depth,
             elapsed_ms=elapsed_ms,
             time_budget_ms=time_budget_ms,
-            complete=complete,
+            complete=self.last_ilp_result.is_optimal and not timed_out,
             timed_out=timed_out,
-            fallback_reason=fallback_reason,
+            fallback_reason=self.last_ilp_result.message,
         )
 
-    def frontier_value(
-        self,
-        item: FrontierItem,
-        interface: ANDORSearchInterface,
-        duration_evaluator: HistoryDurationEvaluator,
-        *,
-        depth: int,
-        deadline: float | None = None,
-        cache: dict[tuple[str, tuple[str, ...], tuple[str, ...], int], float] | None = None,
-    ) -> float:
-        r"""Return the best value from an action-history frontier item.
 
-        The recurrence mirrors the paper tree objective without introducing ILP
-        variables yet:
-
-        .. math::
-
-           Q(q,a) = u_q + \gamma \max_{a'} Q(qoa')
-
-        where `Expand` supplies :math:`u_q`, :math:`\tau(q)`, and terminal
-        checks. / 返回 action-history 的递归价值，`Expand` 提供 :math:`u_q`
-        与 :math:`\tau(q)`。
-        """
-
-        _raise_if_deadline_expired(deadline)
-        memo = cache if cache is not None else {}
-        key = _frontier_cache_key(item, depth)
-        if key in memo:
-            return memo[key]
-        expanded = expand_frontier_item(item, interface, duration_evaluator)
-        value = expanded.metrics.utility
-        if depth > 1 and expanded.metrics.should_expand and expanded.child_frontier:
-            future = max(
-                self.frontier_value(
-                    child,
-                    interface,
-                    duration_evaluator,
-                    depth=depth - 1,
-                    deadline=deadline,
-                    cache=memo,
-                )
-                for child in expanded.child_frontier
-            )
-            value += item.parent_runtime.discount * future
-        memo[key] = value
-        return value
+def _selected_root_variable(result: ILPSolveResult, tree: PolicyTreeILP) -> str | None:
+    """Return the selected root action variable id. / 返回被选中的根 action 变量 id。"""
+    root_ids = set(tree.root_variable_ids)
+    return next((var_id for var_id in result.selected_variables if var_id in root_ids), None)
 
 
-def _frontier_cache_key(item: FrontierItem, depth: int) -> tuple[str, tuple[str, ...], tuple[str, ...], int]:
-    """Return a memoization key for one frontier item. / 返回 frontier item 的缓存键。"""
-    state = tuple(sorted((str(key), repr(_json_ready(value))) for key, value in item.parent_runtime.state.items()))
-    return (repr(state), item.node.history.actions, item.node.history.observations, depth)
+def _root_objective_values(tree: PolicyTreeILP) -> dict[str, float]:
+    """Return root-action utility coefficients for diagnostics. / 返回根 action utility 系数用于诊断。"""
+    values: dict[str, float] = {}
+    for var_id in tree.root_variable_ids:
+        item = tree.variable_items[var_id]
+        values[item.action_label] = float(tree.spec.objective.get(var_id, 0.0))
+    return values
 
 
 def _remaining_time_budget_ms(started_at: float, time_budget_ms: float | None) -> float | None:

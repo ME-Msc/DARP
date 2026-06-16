@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "DARP: RDDL tiny grid online",
+      "name": "tiny grid rollout",
       "type": "debugpy",
       "request": "launch",
       "module": "darp",
@@ -17,10 +17,72 @@
         "examples/rddl/tiny_grid_domain.rddl",
         "--instance",
         "examples/rddl/tiny_grid_instance.rddl",
-        "--seed",
-        "7",
+        "--planner",
+        "rollout",
         "--lookahead-depth",
-        "4"
+        "4",
+        "--seed",
+        "0",
+        "--output",
+        "/tmp/darp_tiny_grid_rollout.json"
+      ]
+    },
+    {
+      "name": "tiny grid full-ilp",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "darp",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      },
+      "args": [
+        "--domain",
+        "examples/rddl/tiny_grid_domain.rddl",
+        "--instance",
+        "examples/rddl/tiny_grid_instance.rddl",
+        "--duration",
+        "examples/durations/tiny_grid.yaml",
+        "--planner",
+        "full-ilp",
+        "--seed",
+        "0",
+        "--output",
+        "/tmp/darp_tiny_grid_full_ilp.json"
+      ]
+    },
+    {
+      "name": "tiny grid hilp",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "darp",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      },
+      "args": [
+        "--domain",
+        "examples/rddl/tiny_grid_domain.rddl",
+        "--instance",
+        "examples/rddl/tiny_grid_instance.rddl",
+        "--duration",
+        "examples/durations/tiny_grid.yaml",
+        "--planner",
+        "hilp",
+        "--lookahead-depth",
+        "4",
+        "--hilp-iterations",
+        "4",
+        "--frontier-width",
+        "1",
+        "--seed",
+        "0",
+        "--output",
+        "/tmp/darp_tiny_grid_hilp.json"
       ]
     },
     {

@@ -6,34 +6,38 @@ from darp.planning.expand import ExpandedAction, ExpansionMetrics, expand_fronti
 from darp.planning.full_ilp import FullILPPlanner
 from darp.planning.hilp import HILPPlanner, HILPSearchStats
 from darp.planning.ilp_tree import (
+    Algorithm1ExpansionRecord,
     FrontierSelectionILP,
-    GeneratedPolicyTreeILP,
+    PolicyTreeILP,
     build_frontier_selection_ilp,
-    build_generated_full_tree_ilp,
+    build_full_tree_ilp,
+    paper_preprocess,
 )
-from darp.planning.preprocess import FrontierItem, PreprocessedSearchTree, preprocess_search_tree
+from darp.planning.preprocess import FrontierItem, RootFrontier, initialize_root_frontier
 from darp.planning.rollout import ActionDecision, RolloutPlanner, action_label
 from darp.planning.session import OnlineSessionResult, OnlineStep, PlannerName, run_online_session
 
 __all__ = [
     "ActionDecision",
+    "Algorithm1ExpansionRecord",
     "ExpandedAction",
     "ExpansionMetrics",
     "FrontierSelectionILP",
     "FrontierItem",
     "FullILPPlanner",
-    "GeneratedPolicyTreeILP",
     "HILPPlanner",
     "HILPSearchStats",
     "OnlineSessionResult",
     "OnlineStep",
     "PlannerName",
-    "PreprocessedSearchTree",
+    "PolicyTreeILP",
+    "RootFrontier",
     "RolloutPlanner",
     "action_label",
     "build_frontier_selection_ilp",
-    "build_generated_full_tree_ilp",
+    "build_full_tree_ilp",
     "expand_frontier_item",
-    "preprocess_search_tree",
+    "initialize_root_frontier",
+    "paper_preprocess",
     "run_online_session",
 ]

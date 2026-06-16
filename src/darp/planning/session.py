@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping
 
+from darp.adapter.exact import ExactBeliefState
 from darp.adapter.problem import PyRDDLGymProblem
 from darp.adapter.runtime import ParticleBelief, PyRDDLGymRuntime, _json_ready
 from darp.model.duration_sidecar import DurationSidecar, build_duration_sidecar
@@ -16,6 +17,7 @@ from darp.planning.hilp import HILPPlanner
 from darp.planning.rollout import ActionDecision, RolloutPlanner
 
 PlannerName = Literal["hilp", "full-ilp", "rollout"]
+BeliefRecord = ParticleBelief | ExactBeliefState
 
 
 @dataclass(frozen=True)
@@ -25,12 +27,12 @@ class OnlineStep:
     step: int
     observation: Mapping[str, Any]
     state: Mapping[str, Any]
-    belief: ParticleBelief
+    belief: BeliefRecord
     decision: ActionDecision
     reward: float
     next_observation: Mapping[str, Any]
     next_state: Mapping[str, Any]
-    next_belief: ParticleBelief
+    next_belief: BeliefRecord
     terminated: bool
     truncated: bool
     info: Mapping[str, Any] = field(default_factory=dict)
@@ -76,7 +78,7 @@ class OnlineSessionResult:
     total_reward: float
     is_pomdp: bool
     initial_observation: Mapping[str, Any]
-    initial_belief: ParticleBelief
+    initial_belief: BeliefRecord
     steps: tuple[OnlineStep, ...]
 
     def to_dict(self) -> dict[str, Any]:
@@ -108,33 +110,44 @@ def run_online_session(
     hilp_iterations: int = 4,
     frontier_width: int = 1,
     risk_budget: float | None = None,
-    require_gurobi: bool = False,
     time_budget_ms: float | None = None,
     particle_count: int = 32,
 ) -> OnlineSessionResult:
     """Run a PROST-like online loop against pyRDDLGym. / 基于 pyRDDLGym 运行 PROST 风格在线循环。"""
     runtime = PyRDDLGymRuntime.from_problem(problem)
+    duration = duration_sidecar or _default_duration_sidecar()
+    sidecar_risk = duration.risk_spec()
+    planner_risk_budget = risk_budget if risk_budget is not None else sidecar_risk.budget
     planner = _build_planner(
         planner_name,
         lookahead_depth=lookahead_depth,
         hilp_iterations=hilp_iterations,
         frontier_width=frontier_width,
-        risk_budget=risk_budget,
-        require_gurobi=require_gurobi,
+        risk_budget=planner_risk_budget,
     )
     observation = runtime.reset(seed=seed)
     view = None
     interface = None
-    duration = duration_sidecar or _default_duration_sidecar()
     if planner_name != "rollout":
         view = problem.build_grounded_view()
-        interface = view.build_and_or_interface(runtime)
+        interface = view.build_and_or_interface(runtime, risk=sidecar_risk)
         duration.validate_actions([choice.label for choice in interface.actions])
-    belief = runtime.initial_belief(
-        observation,
-        seed=seed,
-        particle_count=particle_count,
-    )
+    if planner_name == "rollout":
+        belief: BeliefRecord = runtime.initial_belief(
+            observation,
+            seed=seed,
+            particle_count=particle_count,
+        )
+    else:
+        assert interface is not None
+        if interface.exact_kernel is None:
+            raise ValueError("Paper-path planners require an exact kernel.")
+        belief = ExactBeliefState.from_runtime(
+            interface.exact_kernel,
+            runtime,
+            observation,
+            is_pomdp=runtime.is_pomdp,
+        )
     trace: list[OnlineStep] = []
     total_reward = 0.0
     max_depth = runtime.horizon
@@ -142,8 +155,9 @@ def run_online_session(
     for step in range(max_depth):
         remaining_depth = max(1, max_depth - step)
         state = dict(runtime.state)
-        planning_runtime = belief.representative_runtime(runtime)
         if planner_name == "rollout":
+            assert isinstance(belief, ParticleBelief)
+            planning_runtime = belief.representative_runtime(runtime)
             assert isinstance(planner, RolloutPlanner)
             decision = planner.choose_action(
                 planning_runtime,
@@ -152,23 +166,41 @@ def run_online_session(
             )
         else:
             assert interface is not None
+            if interface.exact_kernel is None:
+                raise ValueError("Paper-path planners require an exact kernel.")
+            assert isinstance(belief, ExactBeliefState)
+            planning_runtime = runtime.clone()
+            root_belief = belief.belief
             assert isinstance(planner, FullILPPlanner | HILPPlanner)
             decision = planner.choose_action(
                 planning_runtime,
                 interface,
                 duration.evaluator(horizon=remaining_depth),
                 remaining_depth=remaining_depth,
+                root_belief=root_belief,
                 time_budget_ms=time_budget_ms,
             )
         next_observation, reward, terminated, truncated, info = runtime.step(decision.action)
         next_state = dict(runtime.state)
-        next_belief = runtime.update_belief(
-            belief,
-            decision.action,
-            next_observation,
-            seed=seed + step + 1,
-            particle_count=particle_count,
-        )
+        if planner_name == "rollout":
+            assert isinstance(belief, ParticleBelief)
+            next_belief: BeliefRecord = runtime.update_belief(
+                belief,
+                decision.action,
+                next_observation,
+                seed=seed + step + 1,
+                particle_count=particle_count,
+            )
+        else:
+            assert interface is not None
+            assert interface.exact_kernel is not None
+            assert isinstance(belief, ExactBeliefState)
+            next_belief = belief.advance(
+                interface.exact_kernel,
+                decision.action,
+                next_observation,
+                observed_state=next_state,
+            )
         total_reward += reward
         trace.append(
             OnlineStep(
@@ -215,23 +247,20 @@ def _build_planner(
     hilp_iterations: int,
     frontier_width: int,
     risk_budget: float | None,
-    require_gurobi: bool,
 ) -> RolloutPlanner | FullILPPlanner | HILPPlanner:
     """Build the requested online planner. / 构建请求的在线 planner。"""
     if planner_name == "rollout":
         return RolloutPlanner(lookahead_depth=lookahead_depth)
     if planner_name == "full-ilp":
         return FullILPPlanner(
-            lookahead_depth=lookahead_depth,
             risk_budget=risk_budget,
-            require_gurobi=require_gurobi,
         )
     if planner_name == "hilp":
         return HILPPlanner(
             lookahead_depth=lookahead_depth,
             max_iterations=hilp_iterations,
             frontier_width=frontier_width,
-            require_gurobi=require_gurobi,
+            risk_budget=risk_budget,
         )
     raise ValueError(f"Unsupported planner: {planner_name}")
 

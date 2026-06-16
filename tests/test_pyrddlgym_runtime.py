@@ -88,27 +88,39 @@ def test_pyrddlgym_runtime_updates_particle_belief_for_pomdp():
     assert next_belief.support() == {"{'hidden': False}": 1.0}
 
 
-def test_online_session_can_use_full_ilp_planner_path():
+def test_online_session_can_use_full_ilp_planner_path(monkeypatch):
     """Check online session can call the full-ILP planner path. / 检查 online session 能调用 full-ILP planner 路径。"""
+    from test_gurobi_ilp import _install_fake_gurobi
+
+    _install_fake_gurobi(monkeypatch)
     problem = _FakePlannerProblem()
 
-    result = run_online_session(problem, planner_name="full-ilp", lookahead_depth=1)
+    result = run_online_session(problem, planner_name="full-ilp")
     payload = result.to_dict()
 
     assert payload["planner"] == "full-ilp-gurobi"
     assert payload["duration"]["defaulted"] is True
+    assert payload["initial_belief"]["source"] == "exact-initial-state"
+    assert payload["steps"][0]["belief"]["source"] == "exact-initial-state"
+    assert payload["steps"][0]["next_belief"]["source"] == "exact-bayes"
     assert payload["steps"][0]["action"] == "go"
     assert payload["steps"][0]["next_state"]["at_goal"] is True
 
 
-def test_online_session_can_use_hilp_planner_path():
+def test_online_session_can_use_hilp_planner_path(monkeypatch):
     """Check online session can call the HILP planner path. / 检查 online session 能调用 HILP planner 路径。"""
+    from test_gurobi_ilp import _install_fake_gurobi
+
+    _install_fake_gurobi(monkeypatch)
     problem = _FakePlannerProblem()
 
     result = run_online_session(problem, planner_name="hilp", lookahead_depth=1, hilp_iterations=1)
     payload = result.to_dict()
 
     assert payload["planner"] == "hilp-partial-tree"
+    assert payload["initial_belief"]["source"] == "exact-initial-state"
+    assert payload["steps"][0]["belief"]["source"] == "exact-initial-state"
+    assert payload["steps"][0]["next_belief"]["source"] == "exact-bayes"
     assert payload["steps"][0]["action"] == "go"
     assert payload["steps"][0]["next_state"]["at_goal"] is True
 
@@ -188,7 +200,7 @@ class _FakePlannerEnv:
 class _FakeGroundedView:
     """Small grounded view double for AND-OR planner inputs. / AND-OR planner 输入用 grounded view 替身。"""
 
-    def build_and_or_interface(self, runtime):
+    def build_and_or_interface(self, runtime, risk=None):
         """Build action and observation inputs from the runtime. / 从 runtime 构建 action 和 observation 输入。"""
         return ANDORSearchInterface.from_actions_and_observations(
             actions=tuple(
@@ -196,4 +208,75 @@ class _FakeGroundedView:
                 for action in runtime.action_candidates()
             ),
             observation_scope=ObservationScope(mode="mdp-state", variables=("at_goal",)),
+            exact_kernel=_FakeExactKernel(),
         )
+
+
+class _FakeExactKernel:
+    """Exact finite kernel for fake planner-path session tests. / fake planner session 测试用 exact finite kernel。"""
+
+    def initial_belief_from_state(self, state):
+        """Return a singleton belief. / 返回单点 belief。"""
+        return {self._state_key(bool(state.get("at_goal", False))): 1.0}
+
+    def fluent_belief(self, belief):
+        """Return state fluent marginals. / 返回 state fluent 边缘概率。"""
+        return {"at_goal": sum(prob for state, prob in belief.items() if dict(state).get("at_goal"))}
+
+    def state_label(self, state):
+        """Return a compact state label. / 返回紧凑 state 标签。"""
+        return "at_goal" if dict(state).get("at_goal") else "not_at_goal"
+
+    def expand_action(self, belief, action):
+        """Return exact transition, observation, reward, and risk constants. / 返回 exact 转移、观测、奖励和风险常量。"""
+        prior = {}
+        utility = 0.0
+        for state, probability in belief.items():
+            next_at_goal = bool(dict(state).get("at_goal")) or bool(action.get("go"))
+            utility += probability * (5.0 if bool(action.get("go")) else 0.0)
+            next_key = self._state_key(next_at_goal)
+            prior[next_key] = prior.get(next_key, 0.0) + probability
+        observations = tuple(
+            SimpleNamespace(
+                observation=(("__state__", state),),
+                label=self.state_label(state),
+                probability=probability,
+                belief={state: 1.0},
+            )
+            for state, probability in prior.items()
+        )
+        return SimpleNamespace(
+            utility=utility,
+            risk=0.0,
+            prior_belief=prior,
+            observations=observations,
+        )
+
+    def expand_safe_action(self, safe_belief, action):
+        """Return a no-risk safe expansion. / 返回无风险 safe expansion。"""
+        expansion = self.expand_action(safe_belief, action)
+        return SimpleNamespace(
+            utility=expansion.utility,
+            risk=0.0,
+            prior_belief=expansion.prior_belief,
+            survival_probability=1.0,
+            observations=expansion.observations,
+        )
+
+    def state_from_key(self, key):
+        """Convert state key to mapping. / 将 state key 转成 mapping。"""
+        return dict(key)
+
+    def transition_distribution(self, state, action):
+        """Return the deterministic fake transition. / 返回确定性 fake 转移。"""
+        next_at_goal = bool(state.get("at_goal")) or bool(action.get("go"))
+        return {self._state_key(next_at_goal): 1.0}
+
+    def observation_probability(self, observation, state, action):
+        """Return the MDP-state observation likelihood. / 返回 MDP-state 观测似然。"""
+        del action
+        return 1.0 if observation == (("__state__", state),) else 0.0
+
+    def _state_key(self, at_goal):
+        """Return a stable exact-state key. / 返回稳定 exact state key。"""
+        return (("at_goal", bool(at_goal)),)

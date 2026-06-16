@@ -1,7 +1,7 @@
 """Gurobi-backed ILP model structures for DARP planning."""
 
-# TODO(phase-9.1): Extend generated-tree ILP rows with full stochastic
-# observation support and domain risk/cost fluents for benchmark-scale CC-POMDPs.
+# TODO(phase-9.1): Extend exact-tree ILP rows with richer finite random
+# variables and domain risk/cost fluents for benchmark-scale CC-POMDPs.
 
 from darp.ilp.gurobi import GurobiILPSolver, GurobiUnavailableError, gurobi_available
 from darp.ilp.model import (

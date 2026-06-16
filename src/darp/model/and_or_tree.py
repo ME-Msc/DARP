@@ -1,7 +1,7 @@
 """AND-OR history tree data structures for DARP search."""
 
-# TODO(phase-9.1): Add optional debug links from tree nodes to generated ILP
-# variables if benchmark traces need them.
+# TODO(phase-9.1): Add optional trace links from tree nodes to ILP variables if
+# benchmark reports need them.
 
 from __future__ import annotations
 
@@ -90,18 +90,21 @@ class ANDORSearchInterface:
     root: ANDORNode
     actions: tuple[ActionChoice, ...]
     observation_scope: ObservationScope
+    exact_kernel: Any | None = None
 
     @classmethod
     def from_actions_and_observations(
         cls,
         actions: tuple[ActionChoice, ...],
         observation_scope: ObservationScope,
+        exact_kernel: Any | None = None,
     ) -> "ANDORSearchInterface":
         """Create a root interface from action choices and observation scope. / 从 action choice 和 observation scope 创建根接口。"""
         return cls(
             root=ANDORNode(node_id="root", kind=ANDORNodeKind.OR),
             actions=actions,
             observation_scope=observation_scope,
+            exact_kernel=exact_kernel,
         )
 
     def action_nodes(self, parent: ANDORNode | None = None) -> tuple[ANDORNode, ...]:

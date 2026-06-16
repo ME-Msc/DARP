@@ -63,7 +63,6 @@ def test_darp_planner_and_duration_arguments_parse():
             "3",
             "--risk-budget",
             "1.5",
-            "--require-gurobi",
         ]
     )
 
@@ -72,7 +71,6 @@ def test_darp_planner_and_duration_arguments_parse():
     assert args.hilp_iterations == 2
     assert args.frontier_width == 3
     assert args.risk_budget == 1.5
-    assert args.require_gurobi is True
 
 
 def test_darp_requires_rddl_files():
