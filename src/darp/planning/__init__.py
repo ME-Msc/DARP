@@ -7,9 +7,7 @@ from darp.planning.full_ilp import FullILPPlanner
 from darp.planning.hilp import HILPPlanner, HILPSearchStats
 from darp.planning.ilp_tree import (
     Algorithm1ExpansionRecord,
-    FrontierSelectionILP,
     PolicyTreeILP,
-    build_frontier_selection_ilp,
     build_full_tree_ilp,
     paper_preprocess,
 )
@@ -22,7 +20,6 @@ __all__ = [
     "Algorithm1ExpansionRecord",
     "ExpandedAction",
     "ExpansionMetrics",
-    "FrontierSelectionILP",
     "FrontierItem",
     "FullILPPlanner",
     "HILPPlanner",
@@ -34,7 +31,6 @@ __all__ = [
     "RootFrontier",
     "RolloutPlanner",
     "action_label",
-    "build_frontier_selection_ilp",
     "build_full_tree_ilp",
     "expand_frontier_item",
     "initialize_root_frontier",

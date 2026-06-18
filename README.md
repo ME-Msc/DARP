@@ -12,7 +12,7 @@ main 分支只保留一条实现主线：pyRDDLGym 负责标准 RDDL parser、gr
 - `adapter.ExactRDDLKernel` 基于 pyRDDLGym grounded CPF 为有限 bool 状态模型精确枚举 transition / observation / reward，并按论文 Lemma 3.3 递推 chance-constrained safe belief 与 `rho*(q)` risk 常量；online full-ILP/HILP 使用 exact Bayes belief update 维护 root belief 后再建树。
 - `darp --domain --instance` 默认通过 pyRDDLGym + rollout baseline 执行快速 online trace；`--planner full-ilp` / `--planner hilp` 会切换到论文算法路径。
 - `model/` 保留 DARP 自己的 `DurationModel`、duration sidecar 和 AND-OR tree 数据结构，并已接入 Phase 7 的 `tau(q)` 剪枝。
-- `planning/` 已提供论文结构对齐的 `preprocess`、`Expand`、full-tree baseline 和 HILP-style partial-tree search；full-ILP 不再使用额外 lookahead depth 截断，而是展开到 RDDL 剩余 horizon / duration stopping condition；HILP 通过 Gurobi 求解当前 `E ∪ F` partial-tree p-ILP，并用 exact frontier heuristic 选择 root action，不再回退调用 full-ILP。
+- `planning/` 已提供论文结构对齐的 `preprocess`、`Expand`、full-tree baseline 和 HILP-style partial-tree search；full-ILP 不再使用额外 lookahead depth 截断，而是展开到 RDDL 剩余 horizon / duration stopping condition；HILP 通过 Gurobi 求解当前 `E ∪ F` partial-tree p-ILP，并用 exact utility/risk frontier heuristic 选择 root action，不再回退调用 full-ILP。
 - `ilp/` 提供 DARP 自己的小型二元 ILP schema 和唯一 solver adapter：Gurobi。
 - durative action 当前只通过 YAML/JSON sidecar 定义；未来如需原生语法，会继承 pyRDDLGym parser 做扩展解析。
 
@@ -81,6 +81,8 @@ darp \
 ```
 
 `full-ilp` / `hilp` 是论文路线 planner，必须安装可用的 `gurobipy` 和 Gurobi license；缺少 Gurobi 时会直接报错。`rollout` 是不依赖 Gurobi 的 baseline。
+
+注意：CC-POMDP 规划问题中的时间预算不是 Python 程序运行时间。DARP 使用 RDDL instance 的 `horizon` 加上 duration sidecar 中的动作持续时间，通过 `tau(q)` 判断 history 是否还能继续展开。
 
 ## Duration Sidecar
 
@@ -235,7 +237,7 @@ DARP/
 │       ├── expand.py                 # 论文 Expand 操作，计算 rho/u/r/tau、backward message 和 smoothed belief。
 │       ├── ilp_tree.py               # 运行 Algorithm 1 preprocessing，并编码 full ILP 和 HILP p-ILP。
 │       ├── full_ilp.py               # Gurobi-only full-tree ILP planner；按论文 Algorithm 1/2 生成 policy tree 后求解。
-│       ├── hilp.py                   # HILP partial frontier search，使用 Gurobi p-ILP 选择 frontier。
+│       ├── hilp.py                   # HILP partial-tree search，按 Algorithm 3 维护 E/F frontier 并反复求解 Gurobi p-ILP。
 │       ├── rollout.py                # 当前 pyRDDLGym rollout baseline planner。
 │       └── session.py                # online session loop 和 trace 结构。
 └── tests/
@@ -270,7 +272,7 @@ DARP/
   - [x] 4.3：明确不支持或暂不支持的 RDDL 结构，并给出清晰错误
 - [ ] Phase 5：可验证执行流程
   - [x] 5.1：把 `full-ilp` / `hilp` 论文 planner 接入 online session 和 CLI
-  - [x] 5.2：在 CLI/JSON trace 中记录 planner、duration、decision fallback 和 time-budget 状态
+  - [x] 5.2：在 CLI/JSON trace 中记录 planner、duration、decision value 和求解耗时
   - [ ] 5.3：调优 HILP/full-ILP 运行效率，使其适合作为默认 planner
   - [ ] 5.4：实现 offline policy JSON、replay 和 evaluation 流程
 - [x] Phase 6：DurationModel 与 DARP sidecar
@@ -285,7 +287,7 @@ DARP/
 - [x] Phase 8：Gurobi ILP 求解
   - [x] 8.1：实现 finite exact CC-POMDP tree 到 full ILP / p-ILP 的变量、目标和约束编码
   - [x] 8.2：用 Gurobi 作为唯一 solver 求解 exact/full-tree ILP
-  - [x] 8.3：用 Gurobi 求解 HILP 当前 `E ∪ F` partial-tree p-ILP，并直接从 partial solution 选择 root action
+  - [x] 8.3：用 Gurobi 求解 HILP 当前 `E ∪ F` partial-tree p-ILP，并直接从 partial solution 选择 root action 和待展开 frontier
   - [x] 8.4：用 `ILPSolveResult` 记录 Gurobi status、runtime、MIP gap、objective 和 selected variables
   - [x] 8.5：接入 duration sidecar 的 safe-belief chance constraint、Algorithm 2 backward message / smoothed belief 和 Gaussian percentile `tau(q)`
   - [x] 8.6：让 online full-ILP/HILP 使用 `ExactBeliefState` 和 exact Bayes update 维护 root belief，不再依赖 particle belief

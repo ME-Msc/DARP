@@ -12,7 +12,7 @@ The main branch keeps one implementation path: pyRDDLGym owns standard RDDL pars
 - `adapter.ExactRDDLKernel` enumerates transition / observation / reward exactly from pyRDDLGym grounded CPFs for finite bool-state models, and propagates the Lemma 3.3 chance-constrained safe belief plus `rho*(q)` risk constants. Online full-ILP/HILP maintains the root belief with exact Bayes belief updates before building the tree.
 - `darp --domain --instance` defaults to a fast pyRDDLGym + rollout online trace; `--planner full-ilp` / `--planner hilp` switches to the paper-aligned planner path.
 - `model/` keeps DARP-native `DurationModel`, duration sidecars, and AND-OR tree data structures, now wired into Phase 7 `tau(q)` pruning.
-- `planning/` provides paper-aligned `preprocess`, `Expand`, full-tree baseline, and HILP-style partial-tree search. The full-ILP no longer applies an extra lookahead-depth cutoff; it expands to the remaining RDDL horizon / duration stopping condition. HILP solves the current `E ∪ F` partial-tree p-ILP with Gurobi and selects the root action from the partial solution with an exact frontier heuristic, without falling back to full-ILP.
+- `planning/` provides paper-aligned `preprocess`, `Expand`, full-tree baseline, and HILP-style partial-tree search. The full-ILP no longer applies an extra lookahead-depth cutoff; it expands to the remaining RDDL horizon / duration stopping condition. HILP solves the current `E ∪ F` partial-tree p-ILP with Gurobi and selects the root action from the partial solution with an exact utility/risk frontier heuristic, without falling back to full-ILP.
 - `ilp/` provides DARP's small binary ILP schema and the only solver adapter: Gurobi.
 - Durative actions are currently defined only through YAML/JSON sidecars. Future native syntax should extend the pyRDDLGym parser by inheritance.
 
@@ -81,6 +81,8 @@ darp \
 ```
 
 `full-ilp` / `hilp` are the paper-path planners and require working `gurobipy` plus a Gurobi license; they fail directly when Gurobi is unavailable. `rollout` remains the non-Gurobi baseline.
+
+Note: the CC-POMDP planning time budget is not Python wall-clock runtime. DARP uses the RDDL instance `horizon` plus action durations from the sidecar, and `tau(q)` decides whether a history can keep expanding.
 
 ## Duration Sidecar
 
@@ -235,7 +237,7 @@ DARP/
 │       ├── expand.py                 # Paper Expand operation; computes rho/u/r/tau, backward messages, and smoothed beliefs.
 │       ├── ilp_tree.py               # Runs Algorithm 1 preprocessing and encodes full ILP and HILP p-ILP models.
 │       ├── full_ilp.py               # Gurobi-only full-tree ILP planner; builds the policy tree via paper Algorithms 1/2 before solving.
-│       ├── hilp.py                   # HILP partial frontier search using Gurobi p-ILP frontier selection.
+│       ├── hilp.py                   # HILP partial-tree search that maintains Algorithm 3 E/F frontier sets and repeatedly solves Gurobi p-ILPs.
 │       ├── rollout.py                # Current pyRDDLGym rollout baseline planner.
 │       └── session.py                # Online session loop and trace structures.
 └── tests/
@@ -270,7 +272,7 @@ DARP/
   - [x] 4.3: Report unsupported RDDL structures clearly
 - [ ] Phase 5: Verifiable execution workflow
   - [x] 5.1: Wire the `full-ilp` / `hilp` paper planners into online sessions and the CLI
-  - [x] 5.2: Record planner, duration, decision fallback, and time-budget status in CLI/JSON traces
+  - [x] 5.2: Record planner, duration, decision value, and solve elapsed time in CLI/JSON traces
   - [ ] 5.3: Tune HILP/full-ILP runtime so the paper path can become the default planner
   - [ ] 5.4: Add offline policy JSON plus replay/evaluation workflow
 - [x] Phase 6: DurationModel and DARP sidecars
@@ -285,7 +287,7 @@ DARP/
 - [x] Phase 8: Gurobi ILP solving
   - [x] 8.1: Encode finite exact CC-POMDP trees into full ILP / p-ILP variables, objectives, and constraints
   - [x] 8.2: Solve exact/full-tree ILP with Gurobi as the only solver
-  - [x] 8.3: Solve the current HILP `E ∪ F` partial-tree p-ILP with Gurobi and select the root action directly from the partial solution
+  - [x] 8.3: Solve the current HILP `E ∪ F` partial-tree p-ILP with Gurobi and select both the root action and frontier refinements directly from the partial solution
   - [x] 8.4: Record Gurobi status, runtime, MIP gap, objective, and selected variables through `ILPSolveResult`
   - [x] 8.5: Wire duration-sidecar safe-belief chance constraints, Algorithm 2 backward messages / smoothed beliefs, and Gaussian percentile `tau(q)`
   - [x] 8.6: Make online full-ILP/HILP maintain the root belief through `ExactBeliefState` and exact Bayes updates instead of particle belief

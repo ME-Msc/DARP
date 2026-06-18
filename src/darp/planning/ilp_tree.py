@@ -1,4 +1,4 @@
-"""Policy-tree ILP encoders for full-tree and HILP selection."""
+"""Policy-tree ILP encoders for full-tree and HILP partial trees."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from darp.model.and_or_tree import ANDORSearchInterface
 from darp.model.duration import HistoryDurationEvaluator
 from darp.planning.expand import ExpandedAction, ExpansionMetrics, expand_frontier_item
 from darp.planning.preprocess import FrontierItem, initialize_root_frontier
-from darp.planning.rollout import _raise_if_deadline_expired
 
 
 @dataclass(frozen=True)
@@ -24,14 +23,6 @@ class PolicyTreeILP:
     variable_metrics: Mapping[str, ExpansionMetrics]
     root_variable_ids: tuple[str, ...]
     frontier_variable_ids: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class FrontierSelectionILP:
-    """Store a HILP frontier-selection p-ILP and lookup maps. / 保存 HILP frontier-selection p-ILP 及映射。"""
-
-    spec: ILPModelSpec
-    variable_items: Mapping[str, FrontierItem]
 
 
 @dataclass(frozen=True)
@@ -51,7 +42,6 @@ def build_full_tree_ilp(
     *,
     risk_budget: float | None = None,
     root_belief: Mapping[StateKey, float] | None = None,
-    deadline: float | None = None,
 ) -> PolicyTreeILP:
     r"""Encode the AND-OR policy tree as a binary full-ILP model.
 
@@ -90,7 +80,6 @@ def build_full_tree_ilp(
         interface=interface,
         duration_evaluator=duration_evaluator,
         root_belief=root_belief,
-        deadline=deadline,
     )
     return _encode_algorithm1_records_as_full_ilp(
         records,
@@ -134,7 +123,6 @@ def paper_preprocess(
     interface: ANDORSearchInterface,
     duration_evaluator: HistoryDurationEvaluator,
     root_belief: Mapping[StateKey, float] | None,
-    deadline: float | None,
 ) -> tuple[Algorithm1ExpansionRecord, ...]:
     r"""Run paper Algorithm 1 `Preprocess` and return expanded action records.
 
@@ -162,7 +150,6 @@ def paper_preprocess(
     seen: set[str] = set()
 
     while queue:
-        _raise_if_deadline_expired(deadline)
         item = queue.pop(0)
         var_id = _action_var_id(item)
         if var_id in seen:
@@ -377,73 +364,6 @@ def _definition31_flow_constraints(
             )
         )
     return tuple(constraints)
-
-
-def build_frontier_selection_ilp(
-    scored_frontier: Sequence[tuple[float, FrontierItem]],
-    *,
-    frontier_width: int,
-) -> FrontierSelectionILP:
-    r"""Encode HILP frontier selection as a small p-ILP.
-
-    This is the Phase 8 p-ILP hook for Algorithm 3: select up to
-    ``frontier_width`` frontier histories with the highest current score.
-
-    $$
-       \max \sum_{q \in F} score(q) y_q
-       \quad
-       1 \le \sum_{q \in F} y_q \le k
-    $$
-
-    / 将 HILP frontier 选择编码为小型 p-ILP。
-    """
-
-    if frontier_width < 1:
-        raise ValueError("frontier_width must be at least 1.")
-    variables: dict[str, ILPVariable] = {}
-    objective: dict[str, float] = {}
-    items: dict[str, FrontierItem] = {}
-    for index, (score, item) in enumerate(scored_frontier):
-        var_id = f"frontier_{index}_{_node_token(item.node.node_id)}"
-        variables[var_id] = ILPVariable(
-            var_id=var_id,
-            label=item.node.history.label(),
-            metadata={
-                "action": item.action_label,
-                "root_action": item.root_label,
-                "score": score,
-            },
-        )
-        objective[var_id] = float(score)
-        items[var_id] = item
-    constraints: list[ILPLinearConstraint] = []
-    if variables:
-        coefficients = {var_id: 1.0 for var_id in variables}
-        constraints.extend(
-            [
-                ILPLinearConstraint(
-                    name="frontier_width",
-                    coefficients=coefficients,
-                    sense="<=",
-                    rhs=float(min(frontier_width, len(variables))),
-                ),
-                ILPLinearConstraint(
-                    name="select_at_least_one",
-                    coefficients=coefficients,
-                    sense=">=",
-                    rhs=1.0,
-                ),
-            ]
-        )
-    return FrontierSelectionILP(
-        spec=ILPModelSpec(
-            name="darp_hilp_frontier",
-            variables=tuple(variables.values()),
-            objective=objective,
-            constraints=tuple(constraints),
-        ),
-        variable_items=items,
-    )
 
 
 def _action_var_id(item: FrontierItem) -> str:

@@ -16,7 +16,7 @@ from darp.ilp.model import ILPSolveResult
 from darp.model.and_or_tree import ANDORSearchInterface
 from darp.model.duration import HistoryDurationEvaluator
 from darp.planning.ilp_tree import PolicyTreeILP, build_full_tree_ilp
-from darp.planning.rollout import ActionDecision, _raise_if_deadline_expired
+from darp.planning.rollout import ActionDecision
 
 
 @dataclass
@@ -36,7 +36,6 @@ class FullILPPlanner:
         *,
         remaining_depth: int,
         root_belief: Mapping[StateKey, float] | None = None,
-        time_budget_ms: float | None = None,
     ) -> ActionDecision:
         r"""Choose the root action by solving the full-ILP.
 
@@ -90,11 +89,6 @@ class FullILPPlanner:
         started_at = perf_counter()
         if remaining_depth < 1:
             raise ValueError("remaining_depth must be at least 1.")
-        if time_budget_ms is not None and time_budget_ms < 0.0:
-            raise ValueError("time_budget_ms must be non-negative.")
-
-        deadline = None if time_budget_ms is None else started_at + time_budget_ms / 1000.0
-        _raise_if_deadline_expired(deadline)
 
         ilp_tree = build_full_tree_ilp(
             runtime.clone(),
@@ -102,13 +96,9 @@ class FullILPPlanner:
             duration_evaluator,
             risk_budget=self.risk_budget,
             root_belief=root_belief,
-            deadline=deadline,
         )
         self.last_policy_tree = ilp_tree
-        self.last_ilp_result = GurobiILPSolver().solve(
-            ilp_tree.spec,
-            time_limit_ms=_remaining_time_budget_ms(started_at, time_budget_ms),
-        )
+        self.last_ilp_result = GurobiILPSolver().solve(ilp_tree.spec)
         selected_root = _selected_root_variable(self.last_ilp_result, ilp_tree)
         if selected_root is None:
             raise RuntimeError(
@@ -118,7 +108,6 @@ class FullILPPlanner:
 
         selected_item = ilp_tree.variable_items[selected_root]
         elapsed_ms = (perf_counter() - started_at) * 1000.0
-        timed_out = deadline is not None and perf_counter() > deadline
         return ActionDecision(
             action=dict(selected_item.node.metadata["assignment"]),
             label=selected_item.action_label,
@@ -126,10 +115,7 @@ class FullILPPlanner:
             action_values=_root_objective_values(ilp_tree),
             remaining_depth=remaining_depth,
             elapsed_ms=elapsed_ms,
-            time_budget_ms=time_budget_ms,
-            complete=self.last_ilp_result.is_optimal and not timed_out,
-            timed_out=timed_out,
-            fallback_reason=self.last_ilp_result.message,
+            complete=self.last_ilp_result.is_optimal,
         )
 
 
@@ -146,10 +132,3 @@ def _root_objective_values(tree: PolicyTreeILP) -> dict[str, float]:
         item = tree.variable_items[var_id]
         values[item.action_label] = float(tree.spec.objective.get(var_id, 0.0))
     return values
-
-
-def _remaining_time_budget_ms(started_at: float, time_budget_ms: float | None) -> float | None:
-    """Return remaining milliseconds under an outer deadline. / 返回外层 deadline 下剩余毫秒数。"""
-    if time_budget_ms is None:
-        return None
-    return max(0.0, time_budget_ms - (perf_counter() - started_at) * 1000.0)

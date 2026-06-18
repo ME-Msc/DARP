@@ -145,8 +145,8 @@ def test_full_ilp_uses_explicit_root_belief_over_runtime_state():
     assert "not_at_goal" not in tree_ilp.variable_metrics[noop_id].state_label
 
 
-def test_hilp_frontier_selection_uses_gurobi_when_available(monkeypatch):
-    """Check HILP calls the Gurobi p-ILP frontier selector. / 检查 HILP 调用 Gurobi p-ILP frontier selector。"""
+def test_hilp_partial_tree_uses_gurobi_when_available(monkeypatch):
+    """Check HILP solves the current partial-tree p-ILP. / 检查 HILP 求解当前 partial-tree p-ILP。"""
     _install_fake_gurobi(monkeypatch)
     runtime, interface, duration = _two_action_inputs()
     planner = HILPPlanner(lookahead_depth=1, max_iterations=1, frontier_width=1)
@@ -155,7 +155,8 @@ def test_hilp_frontier_selection_uses_gurobi_when_available(monkeypatch):
 
     assert decision.label == "go"
     assert planner.last_stats is not None
-    assert planner.last_stats.used_gurobi is True
+    assert planner.last_ilp_result is not None
+    assert planner.last_stats.partial_variable_count > 0
 
 
 def test_hilp_keeps_partial_tree_below_full_horizon(monkeypatch):

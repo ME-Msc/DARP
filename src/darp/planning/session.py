@@ -110,7 +110,6 @@ def run_online_session(
     hilp_iterations: int = 4,
     frontier_width: int = 1,
     risk_budget: float | None = None,
-    time_budget_ms: float | None = None,
     particle_count: int = 32,
 ) -> OnlineSessionResult:
     """Run a PROST-like online loop against pyRDDLGym. / 基于 pyRDDLGym 运行 PROST 风格在线循环。"""
@@ -162,7 +161,6 @@ def run_online_session(
             decision = planner.choose_action(
                 planning_runtime,
                 remaining_depth=remaining_depth,
-                time_budget_ms=time_budget_ms,
             )
         else:
             assert interface is not None
@@ -178,7 +176,6 @@ def run_online_session(
                 duration.evaluator(horizon=remaining_depth),
                 remaining_depth=remaining_depth,
                 root_belief=root_belief,
-                time_budget_ms=time_budget_ms,
             )
         next_observation, reward, terminated, truncated, info = runtime.step(decision.action)
         next_state = dict(runtime.state)

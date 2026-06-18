@@ -43,13 +43,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--hilp-iterations",
         type=int,
         default=4,
-        help="maximum HILP frontier-selection iterations per decision",
+        help="maximum HILP partial-tree refinement iterations per decision",
     )
     parser.add_argument(
         "--frontier-width",
         type=int,
         default=1,
-        help="number of HILP frontier nodes selected per p-ILP iteration",
+        help="maximum HILP frontier action histories expanded per iteration",
     )
     parser.add_argument(
         "--risk-budget",
@@ -61,11 +61,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=32,
         help="particle count for rollout POMDP belief tracking; full-ilp/hilp use exact belief",
-    )
-    parser.add_argument(
-        "--time-budget-ms",
-        type=float,
-        help="hard per-decision time budget in milliseconds",
     )
     parser.add_argument("--output", help="optional JSON output file for non-visual execution")
     return parser
@@ -101,7 +96,6 @@ def _run_rddl_online(args: argparse.Namespace) -> int:
         hilp_iterations=args.hilp_iterations,
         frontier_width=args.frontier_width,
         risk_budget=args.risk_budget,
-        time_budget_ms=args.time_budget_ms,
         particle_count=args.particles,
     )
     payload = result.to_dict()
@@ -134,9 +128,6 @@ def _format_pyrddlgym_trace(payload: dict[str, object]) -> str:
         decision = step.get("decision", {})
         value = decision.get("value") if isinstance(decision, dict) else None
         value_text = f" value={float(value):.3f}" if isinstance(value, int | float) else ""
-        status_text = " timeout" if isinstance(decision, dict) and decision.get("timed_out") else ""
-        fallback = decision.get("fallback_reason") if isinstance(decision, dict) else None
-        fallback_text = f" fallback={fallback}" if fallback else ""
         lines.append(
             "  "
             f"t={step['step']} "
@@ -145,8 +136,6 @@ def _format_pyrddlgym_trace(payload: dict[str, object]) -> str:
             f"reward={step['reward']} "
             f"next={_active_state_label(step.get('next_state', {}))}"
             f"{value_text}"
-            f"{status_text}"
-            f"{fallback_text}"
         )
     lines.append(f"Total reward: {payload['total_reward']}")
     return "\n".join(lines)
