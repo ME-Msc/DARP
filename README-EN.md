@@ -12,7 +12,7 @@ The main branch keeps one implementation path: pyRDDLGym owns standard RDDL pars
 - `adapter.ExactRDDLKernel` enumerates transition / observation / reward exactly from pyRDDLGym grounded CPFs for finite bool-state models, and propagates the Lemma 3.3 chance-constrained safe belief plus `rho*(q)` risk constants. Online full-ILP/HILP maintains the root belief with exact Bayes belief updates before building the tree.
 - `darp --domain --instance` defaults to a fast pyRDDLGym + rollout online trace; `--planner full-ilp` / `--planner hilp` switches to the paper-aligned planner path.
 - `model/` keeps DARP-native `DurationModel`, duration sidecars, and AND-OR tree data structures, now wired into Phase 7 `tau(q)` pruning.
-- `planning/` provides paper-aligned `preprocess`, `Expand`, full-tree baseline, and HILP-style partial-tree search. The full-ILP no longer applies an extra lookahead-depth cutoff; it expands to the remaining RDDL horizon / duration stopping condition. HILP solves the current `E ∪ F` partial-tree p-ILP with Gurobi and selects the root action from the partial solution with an exact utility/risk frontier heuristic, without falling back to full-ILP.
+- `planning/` provides paper-aligned `preprocess`, `Expand`, full-tree baseline, and HILP-style partial-tree search. The full-ILP no longer applies an extra lookahead-depth cutoff; it expands to the remaining RDDL horizon / duration stopping condition. HILP solves the current `E ∪ F` partial-tree p-ILP with Gurobi and supports two frontier utility heuristics: `one-step-greedy` and `reachable-bellman`. Neither mode samples futures, recursively expands the observation tree, or falls back to full-ILP.
 - `ilp/` provides DARP's small binary ILP schema and the only solver adapter: Gurobi.
 - Durative actions are currently defined only through YAML/JSON sidecars. Future native syntax should extend the pyRDDLGym parser by inheritance.
 
@@ -47,7 +47,7 @@ darp \
   --instance examples/rddl/tiny_grid_instance.rddl
 ```
 
-Set rollout/HILP lookahead; `--particles` only affects rollout's approximate POMDP belief:
+Set rollout lookahead or HILP's maximum partial-tree refinement depth; `reachable-bellman` also uses it as the local Bellman horizon cap. `--particles` only affects rollout's approximate POMDP belief:
 
 ```bash
 darp \
@@ -77,12 +77,50 @@ darp \
   --planner hilp \
   --lookahead-depth 4 \
   --hilp-iterations 4 \
-  --frontier-width 1
+  --frontier-width 1 \
+  --hilp-heuristic one-step-greedy
 ```
+
+HILP has two heuristic modes:
+
+- `one-step-greedy`: the default. It uses $$h_q^u := u_q = \rho^*(q)\sum_s b_q^*(s)U(s,a_q)$$. It is fastest, but it only sees the immediate expected reward of the current action.
+- `reachable-bellman`: starts from the successor support of the current frontier action and runs a fully observable Bellman backup only over states reachable within the remaining lookahead. It sees future reward without enumerating the observation tree, and is best suited to small finite state spaces such as tiny grid.
 
 `full-ilp` / `hilp` are the paper-path planners and require working `gurobipy` plus a Gurobi license; they fail directly when Gurobi is unavailable. `rollout` remains the non-Gurobi baseline.
 
 Note: the CC-POMDP planning time budget is not Python wall-clock runtime. DARP uses the RDDL instance `horizon` plus action durations from the sidecar, and `tau(q)` decides whether a history can keep expanding.
+
+## PROST Comparison Experiment
+
+DARP/PROST comparisons are run through the reusable runner `scripts/darp_prost_compare.py`, which owns process orchestration, log parsing, metric aggregation, and table output. Scenario scripts only provide RDDL paths, a duration sidecar, and any PROST state parser needed by that scenario.
+
+The tiny-grid fixed duration=1 comparison is named `tiny_grid_fixed_1`, and `scripts/tiny_grid_fixed_1.py` calls the reusable runner. Prefer the script over starting processes from a notebook. By default, the script runs both DARP HILP heuristic modes, `one-step-greedy` and `reachable-bellman`, then starts the rddlsim server and PROST client, and writes stdout, stderr, rddlsim logs, DARP JSON traces, and a compact summary into one directory:
+
+```bash
+python scripts/tiny_grid_fixed_1.py --seeds 0
+```
+
+At the end, the script prints a metric-row terminal table with `DARP-one-step-greedy`, `DARP-reachable-bellman`, and `PROST` columns by default. Metrics include `total_reward`, `turns`, `runtime_s`, `rddl_load_ms`, `grounding_ms`, `and_or_interface_ms`, `initial_belief_ms`, `planner_elapsed_ms`, `decision_ms`, `frontier_expand_ms`, `heuristic_eval_ms`, `ilp_encode_ms`, `tree_ilp_build_ms`, `gurobi_call_ms`, `postprocess_ms`, `actions`, `states`, `expanded_nodes`, `performed_trials`, `ilp_vars`, `ilp_constraints`, `gurobi_ms`, `prost_parsing_ms`, `prost_simplifying_ms`, `prost_analyzing_ms`, `risk_budget`, and `constraint_violation`. Metrics that are not yet collected remain as blank columns.
+
+The `actions` rows come from the DARP JSON trace and PROST client stdout respectively; DARP `states` come from the JSON trace, while PROST `states` come from the `Current state` bit vectors in client stdout with the final state inferred from the last action. DARP trace `elapsed_ms` is the per-step `choose_action()` wall-clock time, so the experiment reports it as `planner_elapsed_ms`; DARP `decision_ms` comes from planner `timing.decision_ms`, currently defined as tree/partial-tree + ILP construction, Gurobi solving, and action extraction time. PROST `decision_ms` uses the sum of reported per-step `Search time` values. DARP `grounding_ms` is pyRDDLGym grounder time; PROST's closest counterpart is `Instantiating`. DARP `frontier_expand_ms`, `heuristic_eval_ms`, and `ilp_encode_ms` are HILP-specific, while PROST cells are left blank or represented by PROST's own parser/search phase metrics. In `--open-terminals` mode, PROST `runtime_s` uses timestamps around the PROST client process rather than the outer waiting window.
+
+Use `--hilp-heuristics` to choose which DARP heuristic modes to compare:
+
+```bash
+python scripts/tiny_grid_fixed_1.py \
+  --seeds 0 \
+  --hilp-heuristics one-step-greedy,reachable-bellman
+```
+
+If you want to watch the experiment in separate terminal windows, use:
+
+```bash
+python scripts/tiny_grid_fixed_1.py --seeds 0 --open-terminals
+```
+
+This mode generates one `run_darp_<heuristic>.sh` per DARP heuristic, plus `run_prost_server.sh` and `run_prost_client.sh`, then opens the DARP variants, rddlsim server, and PROST client with `gnome-terminal`. The PROST client waits until the server log reports initialization before starting; the original terminal keeps waiting for the logs and trace, then prints the same metrics table.
+
+The default PROST path is `/home/shaocong/Desktop/prost-planner`, the rddlsim path comes from `RDDLSIM_ROOT` or `/home/shaocong/Desktop/rddlsim`, and the PROST helper Python uses the conda `rddl` environment. `examples/rddl/tiny_grid_*` now uses the shared RDDL subset accepted by both DARP/pyRDDLGym and PROST/rddlsim: `location` is an `object` type, objects live in the instance `objects` block, and the domain expresses goals, risks, penalty directions, and the transition graph through non-fluents instead of hard-coded enum constants. Tiny grid uses negative-cost rewards: ordinary moves are `-1`, non-goal noop is `-2`, risky directions are `-10`, and goal states yield `0`; maximizing reward therefore means reaching the goal quickly while avoiding risky directions.
 
 ## Duration Sidecar
 
@@ -198,6 +236,9 @@ DARP/
 ├── pyproject.toml                    # Python package metadata and the Gurobi solver extra.
 ├── requirements.txt                  # Runtime dependencies, including pyRDDLGym.
 ├── requirements-dev.txt              # Development/test dependencies.
+├── scripts/
+│   ├── darp_prost_compare.py        # Reusable runner for DARP/PROST comparison experiments.
+│   └── tiny_grid_fixed_1.py         # Runner configuration for tiny_grid with fixed duration=1.
 │
 ├── examples/
 │   ├── benchmarks/                   # PROST/IPC RDDL MDP benchmark corpus.
@@ -287,7 +328,7 @@ DARP/
 - [x] Phase 8: Gurobi ILP solving
   - [x] 8.1: Encode finite exact CC-POMDP trees into full ILP / p-ILP variables, objectives, and constraints
   - [x] 8.2: Solve exact/full-tree ILP with Gurobi as the only solver
-  - [x] 8.3: Solve the current HILP `E ∪ F` partial-tree p-ILP with Gurobi and select both the root action and frontier refinements directly from the partial solution
+  - [x] 8.3: Solve the current HILP `E ∪ F` partial-tree p-ILP with Gurobi and support `one-step-greedy` / `reachable-bellman` frontier heuristics for selecting refinements
   - [x] 8.4: Record Gurobi status, runtime, MIP gap, objective, and selected variables through `ILPSolveResult`
   - [x] 8.5: Wire duration-sidecar safe-belief chance constraints, Algorithm 2 backward messages / smoothed beliefs, and Gaussian percentile `tau(q)`
   - [x] 8.6: Make online full-ILP/HILP maintain the root belief through `ExactBeliefState` and exact Bayes updates instead of particle belief

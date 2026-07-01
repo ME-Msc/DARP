@@ -10,7 +10,8 @@
       "justMyCode": false,
       "python": "${workspaceFolder}/.venv/bin/python",
       "env": {
-        "PYTHONPATH": "${workspaceFolder}/src"
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "MPLCONFIGDIR": "/tmp/darp-matplotlib"
       },
       "args": [
         "--domain",
@@ -36,7 +37,8 @@
       "justMyCode": false,
       "python": "${workspaceFolder}/.venv/bin/python",
       "env": {
-        "PYTHONPATH": "${workspaceFolder}/src"
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "MPLCONFIGDIR": "/tmp/darp-matplotlib"
       },
       "args": [
         "--domain",
@@ -62,7 +64,8 @@
       "justMyCode": false,
       "python": "${workspaceFolder}/.venv/bin/python",
       "env": {
-        "PYTHONPATH": "${workspaceFolder}/src"
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "MPLCONFIGDIR": "/tmp/darp-matplotlib"
       },
       "args": [
         "--domain",
@@ -79,10 +82,87 @@
         "4",
         "--frontier-width",
         "1",
+        "--hilp-heuristic",
+        "one-step-greedy",
         "--seed",
         "0",
         "--output",
         "/tmp/darp_tiny_grid_hilp.json"
+      ]
+    },
+    {
+      "name": "tiny grid hilp reachable-bellman",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "darp",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "MPLCONFIGDIR": "/tmp/darp-matplotlib"
+      },
+      "args": [
+        "--domain",
+        "examples/rddl/tiny_grid_domain.rddl",
+        "--instance",
+        "examples/rddl/tiny_grid_instance.rddl",
+        "--duration",
+        "examples/durations/tiny_grid.yaml",
+        "--planner",
+        "hilp",
+        "--lookahead-depth",
+        "4",
+        "--hilp-iterations",
+        "4",
+        "--frontier-width",
+        "1",
+        "--hilp-heuristic",
+        "reachable-bellman",
+        "--seed",
+        "0",
+        "--output",
+        "/tmp/darp_tiny_grid_hilp_bellman.json"
+      ]
+    },
+    {
+      "name": "PROST server: tiny grid rddlsim",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "/home/shaocong/Desktop/prost-planner/testbed/run-server.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "python": "/home/shaocong/miniconda3/envs/rddl/bin/python",
+      "cwd": "/home/shaocong/Desktop/prost-planner/testbed",
+      "env": {
+        "RDDLSIM_ROOT": "/home/shaocong/Desktop/rddlsim"
+      },
+      "args": [
+        "-b",
+        "${workspaceFolder}/examples/rddl",
+        "-p",
+        "2323",
+        "-r",
+        "1",
+        "-s",
+        "0",
+        "--separate-session",
+        "-l",
+        "/tmp/darp_prost_rddlsim_logs"
+      ]
+    },
+    {
+      "name": "PROST client: tiny grid IPC2014",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "/home/shaocong/Desktop/prost-planner/prost.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "python": "/home/shaocong/miniconda3/envs/rddl/bin/python",
+      "cwd": "/home/shaocong/Desktop/prost-planner",
+      "args": [
+        "tiny_grid_inst",
+        "[Prost -s 0 -se [IPC2014]]"
       ]
     },
     {
@@ -94,7 +174,8 @@
       "justMyCode": false,
       "python": "${workspaceFolder}/.venv/bin/python",
       "env": {
-        "PYTHONPATH": "${workspaceFolder}/src"
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "MPLCONFIGDIR": "/tmp/darp-matplotlib"
       },
       "args": []
     }

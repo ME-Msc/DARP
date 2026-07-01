@@ -177,3 +177,21 @@ Algorithm 2 每扩展一条历史 qao，都要计算这条历史的 belief、发
 | 2 | $F$ | frontier nodes | 未展开的节点边界 |
 | 3 | $h_q^u$ | admissible heuristic for utility | 奖赏的可采纳启发式上界 |
 | 4 | $h_q^r$ | admissible heuristic for risk | 风险的可采纳启发式下界 |
+
+DARP 当前支持两个 frontier utility heuristic 模式。`one-step-greedy` 直接使用 Algorithm 2 已经计算出的当前 action 常量 $u_q$ 作为 $h_q^u$，并用同一个值排序选择下一批要展开的 frontier；root action 平局时也用该值做 deterministic tie-break：
+
+对于 frontier action history $q$，DARP 使用：
+
+$$h_q^u := u_q = \rho^*(q)\sum_s b_q^*(s)U(s,a_q).$$
+
+`reachable-bellman` 使用当前 frontier action 的后继状态 support 作为种子，只在可达状态集合上做 fully observable Bellman backup：
+
+$$V_0(s)=0,\qquad V_t(s)=\max_a\left[U(s,a)+\sum_{s'}T(s,a,s')V_{t-1}(s')\right].$$
+
+对应 frontier action history $q$：
+
+$$h_q^u=\rho^*(q)\sum_s b_q^*(s)\left[U(s,a_q)+\sum_{s'}T(s,a_q,s')V_{d-1}(s')\right].$$
+
+两种模式都不是未来采样，也不递归展开 observation tree；区别在于 `one-step-greedy` 更快，`reachable-bellman` 会在有限可达状态集合上向后传播未来 reward。
+
+风险启发式 $h_q^r$ 当前保持为一步 safe-belief 风险 $r_q$，作为未来风险的可采纳下界；更强的风险启发式留给后续 benchmark 优化。

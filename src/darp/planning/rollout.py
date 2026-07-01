@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Mapping
 
@@ -23,6 +23,7 @@ class ActionDecision:
     remaining_depth: int
     elapsed_ms: float
     complete: bool = True
+    timing: Mapping[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-friendly decision record. / 返回适合 JSON 的决策记录。"""
@@ -33,6 +34,7 @@ class ActionDecision:
             "action_values": dict(self.action_values),
             "remaining_depth": self.remaining_depth,
             "elapsed_ms": self.elapsed_ms,
+            "timing": dict(self.timing),
             "complete": self.complete,
         }
 
@@ -75,6 +77,11 @@ class RolloutPlanner:
             action_values=action_values,
             remaining_depth=depth,
             elapsed_ms=elapsed_ms,
+            timing={
+                "planner_elapsed_ms": elapsed_ms,
+                "decision_ms": elapsed_ms,
+                "rollout_eval_ms": elapsed_ms,
+            },
         )
 
     def _rollout_value(

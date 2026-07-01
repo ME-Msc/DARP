@@ -223,3 +223,6 @@ __marimo__/
 
 # Generated visualizer artifacts
 *_ast.html
+
+# Generated experiment outputs
+experiments/

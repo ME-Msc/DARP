@@ -177,6 +177,24 @@ def test_hilp_keeps_partial_tree_below_full_horizon(monkeypatch):
     assert len(planner.last_partial_tree.spec.variables) < len(full_tree.spec.variables)
 
 
+def test_hilp_reachable_bellman_heuristic_runs(monkeypatch):
+    """Check reachable Bellman heuristic can score HILP frontier leaves. / 检查 reachable Bellman heuristic 可用于 HILP frontier。"""
+    _install_fake_gurobi(monkeypatch)
+    runtime, interface, duration = _policy_tree_inputs()
+    planner = HILPPlanner(
+        lookahead_depth=2,
+        max_iterations=1,
+        frontier_width=1,
+        heuristic_mode="reachable-bellman",
+    )
+
+    decision = planner.choose_action(runtime, interface, duration, remaining_depth=runtime.horizon)
+
+    assert decision.label == "go"
+    assert planner.last_partial_tree is not None
+    assert decision.timing["hilp_heuristic_reachable_bellman"] == 1.0
+
+
 def _two_action_inputs():
     """Build a tiny deterministic problem where action `go` dominates. / 构建 `go` 动作明显更优的小问题。"""
     runtime = _TwoActionRuntime()

@@ -58,7 +58,7 @@ def test_pyrddlgym_online_session_reaches_tiny_grid_goal():
     assert payload["steps"][2]["action"] == "move-south"
     assert payload["steps"][3]["action"] == "move-south"
     assert payload["steps"][3]["next_state"]["at___c33"] is True
-    assert payload["total_reward"] == 97.0
+    assert payload["total_reward"] == -4.0
 
 
 def test_pyrddlgym_runtime_updates_particle_belief_for_pomdp():

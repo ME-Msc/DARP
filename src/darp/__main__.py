@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from time import perf_counter
 
 from darp.adapter.loader import RDDLLoader
 from darp.model.duration_sidecar import load_duration_sidecar
@@ -37,7 +38,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--lookahead-depth",
         type=int,
         default=4,
-        help="per-decision lookahead depth for rollout/HILP; full-ilp uses the remaining RDDL horizon",
+        help=(
+            "rollout lookahead depth or HILP partial-tree depth cap; "
+            "reachable-bellman also uses this as its local Bellman horizon cap"
+        ),
     )
     parser.add_argument(
         "--hilp-iterations",
@@ -50,6 +54,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="maximum HILP frontier action histories expanded per iteration",
+    )
+    parser.add_argument(
+        "--hilp-heuristic",
+        choices=("one-step-greedy", "reachable-bellman"),
+        default="one-step-greedy",
+        help="HILP frontier heuristic: one-step-greedy is fastest; reachable-bellman uses local reachable-state Bellman backups",
     )
     parser.add_argument(
         "--risk-budget",
@@ -85,8 +95,12 @@ def _run_rddl_online(args: argparse.Namespace) -> int:
         raise ValueError("--frontier-width must be at least 1.")
     if args.particles < 1:
         raise ValueError("--particles must be at least 1.")
+    load_started_at = perf_counter()
     problem = RDDLLoader().load(args.domain, args.instance)
+    rddl_load_ms = (perf_counter() - load_started_at) * 1000.0
+    duration_started_at = perf_counter()
     duration = load_duration_sidecar(args.duration) if args.duration else None
+    duration_load_ms = (perf_counter() - duration_started_at) * 1000.0
     result = run_online_session(
         problem,
         seed=args.seed,
@@ -95,10 +109,18 @@ def _run_rddl_online(args: argparse.Namespace) -> int:
         lookahead_depth=args.lookahead_depth,
         hilp_iterations=args.hilp_iterations,
         frontier_width=args.frontier_width,
+        hilp_heuristic=args.hilp_heuristic,
         risk_budget=args.risk_budget,
         particle_count=args.particles,
     )
     payload = result.to_dict()
+    payload.setdefault("timing", {})
+    payload["timing"].update(
+        {
+            "rddl_load_ms": rddl_load_ms,
+            "duration_load_ms": duration_load_ms,
+        }
+    )
     payload["rddl"] = problem.to_summary_dict()
     if args.output:
         Path(args.output).write_text(

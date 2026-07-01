@@ -21,6 +21,7 @@ def test_darp_help_exits_successfully(capsys):
     assert "--planner" in help_text
     assert "--duration" in help_text
     assert "--lookahead-depth" in help_text
+    assert "--hilp-heuristic" in help_text
     assert "--particles" in help_text
 
 
@@ -61,6 +62,8 @@ def test_darp_planner_and_duration_arguments_parse():
             "2",
             "--frontier-width",
             "3",
+            "--hilp-heuristic",
+            "reachable-bellman",
             "--risk-budget",
             "1.5",
         ]
@@ -70,6 +73,7 @@ def test_darp_planner_and_duration_arguments_parse():
     assert args.planner == "hilp"
     assert args.hilp_iterations == 2
     assert args.frontier_width == 3
+    assert args.hilp_heuristic == "reachable-bellman"
     assert args.risk_budget == 1.5
 
 

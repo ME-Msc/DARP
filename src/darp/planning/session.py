@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Any, Literal, Mapping
 
 from darp.adapter.exact import ExactBeliefState
@@ -13,7 +14,7 @@ from darp.adapter.problem import PyRDDLGymProblem
 from darp.adapter.runtime import ParticleBelief, PyRDDLGymRuntime, _json_ready
 from darp.model.duration_sidecar import DurationSidecar, build_duration_sidecar
 from darp.planning.full_ilp import FullILPPlanner
-from darp.planning.hilp import HILPPlanner
+from darp.planning.hilp import HILPHeuristicMode, HILPPlanner
 from darp.planning.rollout import ActionDecision, RolloutPlanner
 
 PlannerName = Literal["hilp", "full-ilp", "rollout"]
@@ -80,6 +81,7 @@ class OnlineSessionResult:
     initial_observation: Mapping[str, Any]
     initial_belief: BeliefRecord
     steps: tuple[OnlineStep, ...]
+    timing: Mapping[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-friendly session record. / 返回适合 JSON 的会话记录。"""
@@ -96,6 +98,7 @@ class OnlineSessionResult:
             "is_pomdp": self.is_pomdp,
             "initial_observation": _json_ready(self.initial_observation),
             "initial_belief": self.initial_belief.to_dict(),
+            "timing": dict(self.timing),
             "steps": [step.to_dict() for step in self.steps],
         }
 
@@ -109,6 +112,7 @@ def run_online_session(
     duration_sidecar: DurationSidecar | None = None,
     hilp_iterations: int = 4,
     frontier_width: int = 1,
+    hilp_heuristic: HILPHeuristicMode = "one-step-greedy",
     risk_budget: float | None = None,
     particle_count: int = 32,
 ) -> OnlineSessionResult:
@@ -116,20 +120,26 @@ def run_online_session(
     runtime = PyRDDLGymRuntime.from_problem(problem)
     duration = duration_sidecar or _default_duration_sidecar()
     sidecar_risk = duration.risk_spec()
+    session_timing: dict[str, float] = {}
     planner_risk_budget = risk_budget if risk_budget is not None else sidecar_risk.budget
     planner = _build_planner(
         planner_name,
         lookahead_depth=lookahead_depth,
         hilp_iterations=hilp_iterations,
         frontier_width=frontier_width,
+        hilp_heuristic=hilp_heuristic,
         risk_budget=planner_risk_budget,
     )
     observation = runtime.reset(seed=seed)
     view = None
     interface = None
     if planner_name != "rollout":
+        grounded_started_at = perf_counter()
         view = problem.build_grounded_view()
+        session_timing["grounding_ms"] = (perf_counter() - grounded_started_at) * 1000.0
+        interface_started_at = perf_counter()
         interface = view.build_and_or_interface(runtime, risk=sidecar_risk)
+        session_timing["and_or_interface_ms"] = (perf_counter() - interface_started_at) * 1000.0
         duration.validate_actions([choice.label for choice in interface.actions])
     if planner_name == "rollout":
         belief: BeliefRecord = runtime.initial_belief(
@@ -141,12 +151,14 @@ def run_online_session(
         assert interface is not None
         if interface.exact_kernel is None:
             raise ValueError("Paper-path planners require an exact kernel.")
+        belief_started_at = perf_counter()
         belief = ExactBeliefState.from_runtime(
             interface.exact_kernel,
             runtime,
             observation,
             is_pomdp=runtime.is_pomdp,
         )
+        session_timing["initial_belief_ms"] = (perf_counter() - belief_started_at) * 1000.0
     trace: list[OnlineStep] = []
     total_reward = 0.0
     max_depth = runtime.horizon
@@ -234,6 +246,7 @@ def run_online_session(
         initial_observation=trace[0].observation if trace else observation,
         initial_belief=trace[0].belief if trace else belief,
         steps=tuple(trace),
+        timing=session_timing,
     )
 
 
@@ -243,6 +256,7 @@ def _build_planner(
     lookahead_depth: int,
     hilp_iterations: int,
     frontier_width: int,
+    hilp_heuristic: HILPHeuristicMode,
     risk_budget: float | None,
 ) -> RolloutPlanner | FullILPPlanner | HILPPlanner:
     """Build the requested online planner. / 构建请求的在线 planner。"""
@@ -257,6 +271,7 @@ def _build_planner(
             lookahead_depth=lookahead_depth,
             max_iterations=hilp_iterations,
             frontier_width=frontier_width,
+            heuristic_mode=hilp_heuristic,
             risk_budget=risk_budget,
         )
     raise ValueError(f"Unsupported planner: {planner_name}")

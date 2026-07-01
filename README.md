@@ -12,7 +12,7 @@ main 分支只保留一条实现主线：pyRDDLGym 负责标准 RDDL parser、gr
 - `adapter.ExactRDDLKernel` 基于 pyRDDLGym grounded CPF 为有限 bool 状态模型精确枚举 transition / observation / reward，并按论文 Lemma 3.3 递推 chance-constrained safe belief 与 `rho*(q)` risk 常量；online full-ILP/HILP 使用 exact Bayes belief update 维护 root belief 后再建树。
 - `darp --domain --instance` 默认通过 pyRDDLGym + rollout baseline 执行快速 online trace；`--planner full-ilp` / `--planner hilp` 会切换到论文算法路径。
 - `model/` 保留 DARP 自己的 `DurationModel`、duration sidecar 和 AND-OR tree 数据结构，并已接入 Phase 7 的 `tau(q)` 剪枝。
-- `planning/` 已提供论文结构对齐的 `preprocess`、`Expand`、full-tree baseline 和 HILP-style partial-tree search；full-ILP 不再使用额外 lookahead depth 截断，而是展开到 RDDL 剩余 horizon / duration stopping condition；HILP 通过 Gurobi 求解当前 `E ∪ F` partial-tree p-ILP，并用 exact utility/risk frontier heuristic 选择 root action，不再回退调用 full-ILP。
+- `planning/` 已提供论文结构对齐的 `preprocess`、`Expand`、full-tree baseline 和 HILP-style partial-tree search；full-ILP 不再使用额外 lookahead depth 截断，而是展开到 RDDL 剩余 horizon / duration stopping condition；HILP 通过 Gurobi 求解当前 `E ∪ F` partial-tree p-ILP，并支持 `one-step-greedy` 与 `reachable-bellman` 两种 frontier utility heuristic。二者都不采样未来、不递归展开 observation tree，也不回退调用 full-ILP。
 - `ilp/` 提供 DARP 自己的小型二元 ILP schema 和唯一 solver adapter：Gurobi。
 - durative action 当前只通过 YAML/JSON sidecar 定义；未来如需原生语法，会继承 pyRDDLGym parser 做扩展解析。
 
@@ -47,7 +47,7 @@ darp \
   --instance examples/rddl/tiny_grid_instance.rddl
 ```
 
-设置 rollout/HILP 的 lookahead；`--particles` 只影响 rollout 的 POMDP 近似 belief：
+设置 rollout 的 lookahead 或 HILP 的 partial-tree 最大细化深度；`reachable-bellman` 模式也会把它作为局部 Bellman horizon 上限。`--particles` 只影响 rollout 的 POMDP 近似 belief：
 
 ```bash
 darp \
@@ -77,12 +77,50 @@ darp \
   --planner hilp \
   --lookahead-depth 4 \
   --hilp-iterations 4 \
-  --frontier-width 1
+  --frontier-width 1 \
+  --hilp-heuristic one-step-greedy
 ```
+
+HILP heuristic 有两个模式：
+
+- `one-step-greedy`：默认模式，使用 $$h_q^u := u_q = \rho^*(q)\sum_s b_q^*(s)U(s,a_q)$$，最快，但只看当前动作的一步期望奖赏。
+- `reachable-bellman`：从当前 frontier action 的后继状态 support 出发，只在剩余 lookahead 内可达的状态集合上做 fully observable Bellman backup；它会看未来 reward，但不枚举 observation tree，适合 tiny grid 这类状态空间较小的问题。
 
 `full-ilp` / `hilp` 是论文路线 planner，必须安装可用的 `gurobipy` 和 Gurobi license；缺少 Gurobi 时会直接报错。`rollout` 是不依赖 Gurobi 的 baseline。
 
 注意：CC-POMDP 规划问题中的时间预算不是 Python 程序运行时间。DARP 使用 RDDL instance 的 `horizon` 加上 duration sidecar 中的动作持续时间，通过 `tau(q)` 判断 history 是否还能继续展开。
+
+## PROST 对比实验
+
+DARP/PROST 对比实验由通用 runner `scripts/darp_prost_compare.py` 负责进程管理、日志解析、metrics 汇总和表格输出；具体场景脚本只提供 RDDL 路径、duration sidecar 和必要的 PROST 状态解析逻辑。
+
+tiny grid fixed duration=1 的对比实验命名为 `tiny_grid_fixed_1`，它由 `scripts/tiny_grid_fixed_1.py` 调用通用 runner。建议用脚本运行，而不是 notebook 直接启动进程。脚本默认会分别运行 DARP HILP 的 `one-step-greedy` 和 `reachable-bellman` 两种 heuristic 模式，再启动 rddlsim server 和 PROST client，并把 stdout、stderr、rddlsim logs、DARP JSON trace 和 summary 写到同一个目录：
+
+```bash
+python scripts/tiny_grid_fixed_1.py --seeds 0
+```
+
+脚本结束时会在终端打印按 metric 分行的 DARP/PROST 对比表，默认列为 `DARP-one-step-greedy`、`DARP-reachable-bellman` 和 `PROST`。指标包括 `total_reward`、`turns`、`runtime_s`、`rddl_load_ms`、`grounding_ms`、`and_or_interface_ms`、`initial_belief_ms`、`planner_elapsed_ms`、`decision_ms`、`frontier_expand_ms`、`heuristic_eval_ms`、`ilp_encode_ms`、`tree_ilp_build_ms`、`gurobi_call_ms`、`postprocess_ms`、`actions`、`states`、`expanded_nodes`、`performed_trials`、`ilp_vars`、`ilp_constraints`、`gurobi_ms`、`prost_parsing_ms`、`prost_simplifying_ms`、`prost_analyzing_ms`、`risk_budget` 和 `constraint_violation`。当前还没有稳定统计的指标会先保留为空列。
+
+其中 `actions` 会分别来自 DARP JSON trace 和 PROST client stdout；`states` 在 DARP 侧来自 JSON trace，在 PROST 侧来自 client stdout 中的 `Current state` 位向量，最后一个状态由最后动作推断。DARP trace 中的 `elapsed_ms` 是每步 `choose_action()` 的 wall-clock 耗时，因此汇总为 `planner_elapsed_ms`；DARP 的 `decision_ms` 来自 planner 内部 `timing.decision_ms`，目前定义为 tree/partial-tree + ILP 构造、Gurobi 求解和动作抽取时间之和。PROST 的 `decision_ms` 来自 client stdout 中每步 `Search time` 的和。DARP 的 `grounding_ms` 对应 pyRDDLGym grounder，PROST 的 closest counterpart 是 `Instantiating`；DARP 的 `frontier_expand_ms`、`heuristic_eval_ms`、`ilp_encode_ms` 只对 HILP 有意义，PROST 侧保留为空或使用 PROST 自己的 parser/search phase 指标。`--open-terminals` 模式下，PROST 的 `runtime_s` 使用 PROST client 启动到结束的时间戳，不再使用外部等待窗口时间。
+
+可以用 `--hilp-heuristics` 指定要比较的 DARP heuristic 模式：
+
+```bash
+python scripts/tiny_grid_fixed_1.py \
+  --seeds 0 \
+  --hilp-heuristics one-step-greedy,reachable-bellman
+```
+
+如果你想像手动实验一样看到多个终端窗口，可以使用：
+
+```bash
+python scripts/tiny_grid_fixed_1.py --seeds 0 --open-terminals
+```
+
+该模式会为每个 DARP heuristic 生成一个 `run_darp_<heuristic>.sh`，同时生成 `run_prost_server.sh` 和 `run_prost_client.sh`，并用 `gnome-terminal` 分别打开多个 DARP variant、rddlsim server 和 PROST client。PROST client 会等待 server 日志显示初始化完成后再启动；执行该命令的原终端会继续等待日志和 trace 写完，然后打印同一张 metrics 对比表。
+
+默认 PROST 路径是 `/home/shaocong/Desktop/prost-planner`，rddlsim 路径来自 `RDDLSIM_ROOT` 或 `/home/shaocong/Desktop/rddlsim`，PROST helper Python 使用 conda 的 `rddl` 环境。`examples/rddl/tiny_grid_*` 本身使用 DARP/pyRDDLGym 和 PROST/rddlsim 都支持的共同 RDDL 子集：`location` 是 `object` 类型，对象写在 instance 的 `objects` 块中，domain 通过 non-fluent 描述 goal、risk、penalty direction 和 transition graph，而不是硬编码 enum 常量。tiny grid 的 reward 使用负代价语义：普通移动是 `-1`，非 goal 的 noop 是 `-2`，危险方向是 `-10`，到达 goal 后 reward 为 `0`；最大化 reward 因此等价于尽快到达 goal 并避免危险方向。
 
 ## Duration Sidecar
 
@@ -198,6 +236,9 @@ DARP/
 ├── pyproject.toml                    # Python 包配置和 Gurobi solver extra。
 ├── requirements.txt                  # 运行时依赖，包含 pyRDDLGym。
 ├── requirements-dev.txt              # 开发/测试依赖。
+├── scripts/
+│   ├── darp_prost_compare.py        # DARP/PROST 对比实验的通用 runner。
+│   └── tiny_grid_fixed_1.py         # tiny_grid 场景、fixed duration=1 的 runner 配置脚本。
 │
 ├── examples/
 │   ├── benchmarks/                   # PROST/IPC RDDL MDP benchmark 数据集。
@@ -287,7 +328,7 @@ DARP/
 - [x] Phase 8：Gurobi ILP 求解
   - [x] 8.1：实现 finite exact CC-POMDP tree 到 full ILP / p-ILP 的变量、目标和约束编码
   - [x] 8.2：用 Gurobi 作为唯一 solver 求解 exact/full-tree ILP
-  - [x] 8.3：用 Gurobi 求解 HILP 当前 `E ∪ F` partial-tree p-ILP，并直接从 partial solution 选择 root action 和待展开 frontier
+  - [x] 8.3：用 Gurobi 求解 HILP 当前 `E ∪ F` partial-tree p-ILP，并支持 `one-step-greedy` / `reachable-bellman` frontier heuristic 选择待展开节点
   - [x] 8.4：用 `ILPSolveResult` 记录 Gurobi status、runtime、MIP gap、objective 和 selected variables
   - [x] 8.5：接入 duration sidecar 的 safe-belief chance constraint、Algorithm 2 backward message / smoothed belief 和 Gaussian percentile `tau(q)`
   - [x] 8.6：让 online full-ILP/HILP 使用 `ExactBeliefState` 和 exact Bayes update 维护 root belief，不再依赖 particle belief

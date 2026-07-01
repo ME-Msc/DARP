@@ -90,6 +90,7 @@ class FullILPPlanner:
         if remaining_depth < 1:
             raise ValueError("remaining_depth must be at least 1.")
 
+        build_started_at = perf_counter()
         ilp_tree = build_full_tree_ilp(
             runtime.clone(),
             interface,
@@ -97,8 +98,12 @@ class FullILPPlanner:
             risk_budget=self.risk_budget,
             root_belief=root_belief,
         )
+        tree_ilp_build_ms = (perf_counter() - build_started_at) * 1000.0
         self.last_policy_tree = ilp_tree
+        solve_started_at = perf_counter()
         self.last_ilp_result = GurobiILPSolver().solve(ilp_tree.spec)
+        solver_call_ms = (perf_counter() - solve_started_at) * 1000.0
+        postprocess_started_at = perf_counter()
         selected_root = _selected_root_variable(self.last_ilp_result, ilp_tree)
         if selected_root is None:
             raise RuntimeError(
@@ -107,7 +112,10 @@ class FullILPPlanner:
             )
 
         selected_item = ilp_tree.variable_items[selected_root]
+        postprocess_ms = (perf_counter() - postprocess_started_at) * 1000.0
         elapsed_ms = (perf_counter() - started_at) * 1000.0
+        gurobi_ms = float(self.last_ilp_result.runtime_ms)
+        decision_ms = tree_ilp_build_ms + gurobi_ms + postprocess_ms
         return ActionDecision(
             action=dict(selected_item.node.metadata["assignment"]),
             label=selected_item.action_label,
@@ -116,6 +124,17 @@ class FullILPPlanner:
             remaining_depth=remaining_depth,
             elapsed_ms=elapsed_ms,
             complete=self.last_ilp_result.is_optimal,
+            timing={
+                "planner_elapsed_ms": elapsed_ms,
+                "decision_ms": decision_ms,
+                "tree_ilp_build_ms": tree_ilp_build_ms,
+                "gurobi_solve_ms": gurobi_ms,
+                "gurobi_call_ms": solver_call_ms,
+                "postprocess_ms": postprocess_ms,
+                "ilp_variables": float(len(ilp_tree.spec.variables)),
+                "ilp_constraints": float(len(ilp_tree.spec.constraints)),
+                "expanded_nodes": float(len(ilp_tree.variable_items)),
+            },
         )
 
 
