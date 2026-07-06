@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from time import perf_counter
 from typing import Any, Literal, Mapping
 
@@ -74,7 +76,9 @@ class OnlineSessionResult:
     seed: int
     horizon: int
     max_depth: int
-    lookahead_depth: int
+    rollout_lookahead_depth: int
+    heuristic_lookahead_depth: int
+    expansion_rounds: int | None
     duration: Mapping[str, Any]
     total_reward: float
     is_pomdp: bool
@@ -92,7 +96,9 @@ class OnlineSessionResult:
             "seed": self.seed,
             "horizon": self.horizon,
             "max_depth": self.max_depth,
-            "lookahead_depth": self.lookahead_depth,
+            "rollout_lookahead_depth": self.rollout_lookahead_depth,
+            "heuristic_lookahead_depth": self.heuristic_lookahead_depth,
+            "expansion_rounds": self.expansion_rounds,
             "duration": _json_ready(dict(self.duration)),
             "total_reward": self.total_reward,
             "is_pomdp": self.is_pomdp,
@@ -107,25 +113,30 @@ def run_online_session(
     problem: PyRDDLGymProblem,
     *,
     seed: int = 0,
-    lookahead_depth: int = 4,
+    rollout_lookahead_depth: int = 4,
+    heuristic_lookahead_depth: int = 4,
+    expansion_rounds: int | None = None,
     planner_name: PlannerName = "rollout",
     duration_sidecar: DurationSidecar | None = None,
-    hilp_iterations: int = 4,
     frontier_width: int = 1,
     hilp_heuristic: HILPHeuristicMode = "one-step-greedy",
     risk_budget: float | None = None,
     particle_count: int = 32,
+    trace_output_path: str | Path | None = None,
+    trace_timing: Mapping[str, float] | None = None,
 ) -> OnlineSessionResult:
     """Run a PROST-like online loop against pyRDDLGym. / 基于 pyRDDLGym 运行 PROST 风格在线循环。"""
     runtime = PyRDDLGymRuntime.from_problem(problem)
     duration = duration_sidecar or _default_duration_sidecar()
     sidecar_risk = duration.risk_spec()
-    session_timing: dict[str, float] = {}
+    session_timing: dict[str, float] = dict(trace_timing or {})
+    trace_path = Path(trace_output_path) if trace_output_path is not None else None
     planner_risk_budget = risk_budget if risk_budget is not None else sidecar_risk.budget
     planner = _build_planner(
         planner_name,
-        lookahead_depth=lookahead_depth,
-        hilp_iterations=hilp_iterations,
+        rollout_lookahead_depth=rollout_lookahead_depth,
+        heuristic_lookahead_depth=heuristic_lookahead_depth,
+        expansion_rounds=expansion_rounds,
         frontier_width=frontier_width,
         hilp_heuristic=hilp_heuristic,
         risk_budget=planner_risk_budget,
@@ -162,6 +173,24 @@ def run_online_session(
     trace: list[OnlineStep] = []
     total_reward = 0.0
     max_depth = runtime.horizon
+    _write_trace_snapshot(
+        trace_path,
+        _session_result(
+            runtime=runtime,
+            planner_name=planner.name,
+            seed=seed,
+            rollout_lookahead_depth=rollout_lookahead_depth,
+            heuristic_lookahead_depth=heuristic_lookahead_depth,
+            expansion_rounds=expansion_rounds,
+            duration=duration,
+            duration_defaulted=duration_sidecar is None,
+            total_reward=total_reward,
+            observation=observation,
+            belief=belief,
+            trace=trace,
+            timing=session_timing,
+        ),
+    )
 
     for step in range(max_depth):
         remaining_depth = max(1, max_depth - step)
@@ -229,47 +258,115 @@ def run_online_session(
         )
         observation = next_observation
         belief = next_belief
+        _write_trace_snapshot(
+            trace_path,
+            _session_result(
+                runtime=runtime,
+                planner_name=planner.name,
+                seed=seed,
+                rollout_lookahead_depth=rollout_lookahead_depth,
+                heuristic_lookahead_depth=heuristic_lookahead_depth,
+                expansion_rounds=expansion_rounds,
+                duration=duration,
+                duration_defaulted=duration_sidecar is None,
+                total_reward=total_reward,
+                observation=observation,
+                belief=belief,
+                trace=trace,
+                timing=session_timing,
+            ),
+        )
         if terminated or truncated:
             break
 
+    return _session_result(
+        runtime=runtime,
+        planner_name=planner.name,
+        seed=seed,
+        rollout_lookahead_depth=rollout_lookahead_depth,
+        heuristic_lookahead_depth=heuristic_lookahead_depth,
+        expansion_rounds=expansion_rounds,
+        duration=duration,
+        duration_defaulted=duration_sidecar is None,
+        total_reward=total_reward,
+        observation=observation,
+        belief=belief,
+        trace=trace,
+        timing=session_timing,
+    )
+
+
+def _session_result(
+    *,
+    runtime: PyRDDLGymRuntime,
+    planner_name: str,
+    seed: int,
+    rollout_lookahead_depth: int,
+    heuristic_lookahead_depth: int,
+    expansion_rounds: int | None,
+    duration: DurationSidecar,
+    duration_defaulted: bool,
+    total_reward: float,
+    observation: Mapping[str, Any],
+    belief: BeliefRecord,
+    trace: list[OnlineStep],
+    timing: Mapping[str, float],
+) -> OnlineSessionResult:
+    """Build a session result from the current online-loop state. / 从当前在线循环状态构建结果。"""
     return OnlineSessionResult(
         mode="online",
         problem=runtime.problem_name,
-        planner=planner.name,
+        planner=planner_name,
         seed=seed,
         horizon=runtime.horizon,
-        max_depth=max_depth,
-        lookahead_depth=lookahead_depth,
-        duration=_duration_summary(duration, defaulted=duration_sidecar is None),
+        max_depth=runtime.horizon,
+        rollout_lookahead_depth=rollout_lookahead_depth,
+        heuristic_lookahead_depth=heuristic_lookahead_depth,
+        expansion_rounds=expansion_rounds,
+        duration=_duration_summary(duration, defaulted=duration_defaulted),
         total_reward=total_reward,
         is_pomdp=runtime.is_pomdp,
         initial_observation=trace[0].observation if trace else observation,
         initial_belief=trace[0].belief if trace else belief,
         steps=tuple(trace),
-        timing=session_timing,
+        timing=dict(timing),
     )
+
+
+def _write_trace_snapshot(path: Path | None, result: OnlineSessionResult) -> None:
+    """Atomically write a partial JSON trace if an output path was requested. / 如有输出路径则原子写入部分 JSON trace。"""
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(
+        json.dumps(result.to_dict(), indent=2, sort_keys=True, default=str) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
 
 
 def _build_planner(
     planner_name: PlannerName,
     *,
-    lookahead_depth: int,
-    hilp_iterations: int,
+    rollout_lookahead_depth: int,
+    heuristic_lookahead_depth: int,
+    expansion_rounds: int | None,
     frontier_width: int,
     hilp_heuristic: HILPHeuristicMode,
     risk_budget: float | None,
 ) -> RolloutPlanner | FullILPPlanner | HILPPlanner:
     """Build the requested online planner. / 构建请求的在线 planner。"""
     if planner_name == "rollout":
-        return RolloutPlanner(lookahead_depth=lookahead_depth)
+        return RolloutPlanner(lookahead_depth=rollout_lookahead_depth)
     if planner_name == "full-ilp":
         return FullILPPlanner(
             risk_budget=risk_budget,
         )
     if planner_name == "hilp":
         return HILPPlanner(
-            lookahead_depth=lookahead_depth,
-            max_iterations=hilp_iterations,
+            heuristic_lookahead_depth=heuristic_lookahead_depth,
+            expansion_rounds=expansion_rounds,
             frontier_width=frontier_width,
             heuristic_mode=hilp_heuristic,
             risk_budget=risk_budget,

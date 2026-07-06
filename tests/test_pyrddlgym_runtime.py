@@ -45,7 +45,7 @@ def test_pyrddlgym_online_session_reaches_tiny_grid_goal():
     """Check DARP can run a simple RDDL online loop through pyRDDLGym. / 检查 DARP 能通过 pyRDDLGym 运行简单 RDDL 在线循环。"""
     pytest.importorskip("pyRDDLGym")
     problem = RDDLLoader().load(DOMAIN, INSTANCE)
-    result = run_online_session(problem, seed=7, lookahead_depth=4)
+    result = run_online_session(problem, seed=7, rollout_lookahead_depth=4)
     payload = result.to_dict()
 
     assert payload["planner"] == "pyrddlgym-rollout"
@@ -114,7 +114,12 @@ def test_online_session_can_use_hilp_planner_path(monkeypatch):
     _install_fake_gurobi(monkeypatch)
     problem = _FakePlannerProblem()
 
-    result = run_online_session(problem, planner_name="hilp", lookahead_depth=1, hilp_iterations=1)
+    result = run_online_session(
+        problem,
+        planner_name="hilp",
+        heuristic_lookahead_depth=1,
+        expansion_rounds=1,
+    )
     payload = result.to_dict()
 
     assert payload["planner"] == "hilp-partial-tree"

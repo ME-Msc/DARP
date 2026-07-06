@@ -149,7 +149,7 @@ def test_hilp_partial_tree_uses_gurobi_when_available(monkeypatch):
     """Check HILP solves the current partial-tree p-ILP. / 检查 HILP 求解当前 partial-tree p-ILP。"""
     _install_fake_gurobi(monkeypatch)
     runtime, interface, duration = _two_action_inputs()
-    planner = HILPPlanner(lookahead_depth=1, max_iterations=1, frontier_width=1)
+    planner = HILPPlanner(heuristic_lookahead_depth=1, expansion_rounds=1, frontier_width=1)
 
     decision = planner.choose_action(runtime, interface, duration, remaining_depth=runtime.horizon)
 
@@ -163,7 +163,7 @@ def test_hilp_keeps_partial_tree_below_full_horizon(monkeypatch):
     """Check HILP selects from a partial tree instead of full-ILP fallback. / 检查 HILP 直接从 partial tree 选动作。"""
     _install_fake_gurobi(monkeypatch)
     runtime, interface, duration = _policy_tree_inputs()
-    planner = HILPPlanner(lookahead_depth=2, max_iterations=1, frontier_width=1)
+    planner = HILPPlanner(heuristic_lookahead_depth=2, expansion_rounds=1, frontier_width=1)
 
     decision = planner.choose_action(runtime, interface, duration, remaining_depth=runtime.horizon)
     full_tree = build_full_tree_ilp(runtime, interface, duration)
@@ -182,8 +182,8 @@ def test_hilp_reachable_bellman_heuristic_runs(monkeypatch):
     _install_fake_gurobi(monkeypatch)
     runtime, interface, duration = _policy_tree_inputs()
     planner = HILPPlanner(
-        lookahead_depth=2,
-        max_iterations=1,
+        heuristic_lookahead_depth=2,
+        expansion_rounds=1,
         frontier_width=1,
         heuristic_mode="reachable-bellman",
     )
@@ -244,7 +244,7 @@ class _TwoActionRuntime:
 
     def step(self, action: Mapping[str, Any]):
         """Apply one transition and reward. / 执行一次转移和 reward。"""
-        reward = 5.0 if bool(action.get("go")) else 0.0
+        reward = 5.0 if bool(action.get("go")) and not self.at_goal else 0.0
         self.at_goal = bool(action.get("go")) or self.at_goal
         self.state = {"at_goal": self.at_goal}
         return dict(self.state), reward, False, False, {}
@@ -272,7 +272,7 @@ class _TinyExactKernel:
         for state, probability in belief.items():
             at_goal = bool(dict(state).get("at_goal"))
             next_at_goal = at_goal or bool(action.get("go"))
-            utility += probability * (5.0 if bool(action.get("go")) else 0.0)
+            utility += probability * (5.0 if bool(action.get("go")) and not at_goal else 0.0)
             next_key = self._state_key(next_at_goal)
             prior[next_key] = prior.get(next_key, 0.0) + probability
         observations = tuple(

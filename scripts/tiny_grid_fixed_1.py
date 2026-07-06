@@ -1,4 +1,4 @@
-"""Run the tiny_grid_fixed_1 DARP-heuristics-vs-PROST experiment.
+"""Run the tiny_grid_fixed_1 DARP-vs-PROST experiment.
 
 The generic runner lives in `darp_prost_compare.py`; this file only defines the
 tiny-grid RDDL paths and the PROST state-vector parser.
@@ -98,7 +98,7 @@ def _tiny_grid_next_state(state: str, action: str) -> str:
 
 SPEC = DARPProstExperimentSpec(
     name="tiny_grid_fixed_1",
-    description="Compare DARP HILP heuristic modes and PROST on tiny_grid_fixed_1.",
+    description="Compare DARP HILP reachable-bellman and PROST on tiny_grid_fixed_1.",
     domain_path=REPO_ROOT / "examples" / "rddl" / "tiny_grid_domain.rddl",
     instance_path=REPO_ROOT / "examples" / "rddl" / "tiny_grid_instance.rddl",
     duration_path=REPO_ROOT / "examples" / "durations" / "tiny_grid.yaml",

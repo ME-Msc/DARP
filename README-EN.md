@@ -1,37 +1,57 @@
 # DARP
 
-Durative Action RDDL Planner is a Python research prototype for implementing fixed-horizon POMDP / constrained POMDP / durative-action planning algorithms on standard RDDL problems, with a staged path toward the AND-OR tree, full-tree baseline, and HILP search workflow from "Heuristic Search in Dual Space for Constrained Fixed-Horizon POMDPs with Durative Actions".
+DARP (Durative Action RDDL Planner) is a Python research planner for RDDL. The current implementation uses pyRDDLGym for standard RDDL parsing, grounding, and simulation, while DARP owns the AND-OR history tree, duration sidecars, full-ILP/HILP encodings, and Gurobi-based solving path for the fixed-horizon / chance-constrained POMDP setting from "Heuristic Search in Dual Space for Constrained Fixed-Horizon POMDPs with Durative Actions".
 
-The main branch keeps one implementation path: pyRDDLGym owns standard RDDL parsing, grounding, and simulation; DARP uses its own data structures for the AND-OR history tree, converts the fixed-horizon CC-POMDP search problem into the paper's full ILP / HILP p-ILP form, and targets Gurobi as the only ILP solver. Durative actions are currently defined through YAML/JSON sidecars; future native RDDL syntax should extend the pyRDDLGym parser instead of adding a second parser.
+The `main` branch keeps one implementation path:
 
-## Feature Status
-
-- `adapter/` loads standard RDDL domain/instance files through pyRDDLGym and returns `PyRDDLGymProblem(env, model, native_ast)`.
-- `PyRDDLGymProblem.build_grounded_model()` directly reuses pyRDDLGym's `RDDLGrounder(...).ground()` and returns pyRDDLGym's `RDDLGroundedModel`; `GroundedRDDLView` wraps it, so DARP no longer implements grounding itself.
-- `GroundedRDDLView.build_and_or_interface()` now turns grounded actions, observation scope, and root history into an AND-OR search interface.
-- `adapter.ExactRDDLKernel` enumerates transition / observation / reward exactly from pyRDDLGym grounded CPFs for finite bool-state models, and propagates the Lemma 3.3 chance-constrained safe belief plus `rho*(q)` risk constants. Online full-ILP/HILP maintains the root belief with exact Bayes belief updates before building the tree.
-- `darp --domain --instance` defaults to a fast pyRDDLGym + rollout online trace; `--planner full-ilp` / `--planner hilp` switches to the paper-aligned planner path.
-- `model/` keeps DARP-native `DurationModel`, duration sidecars, and AND-OR tree data structures, now wired into Phase 7 `tau(q)` pruning.
-- `planning/` provides paper-aligned `preprocess`, `Expand`, full-tree baseline, and HILP-style partial-tree search. The full-ILP no longer applies an extra lookahead-depth cutoff; it expands to the remaining RDDL horizon / duration stopping condition. HILP solves the current `E ∪ F` partial-tree p-ILP with Gurobi and supports two frontier utility heuristics: `one-step-greedy` and `reachable-bellman`. Neither mode samples futures, recursively expands the observation tree, or falls back to full-ILP.
-- `ilp/` provides DARP's small binary ILP schema and the only solver adapter: Gurobi.
-- Durative actions are currently defined only through YAML/JSON sidecars. Future native syntax should extend the pyRDDLGym parser by inheritance.
+- RDDL parser / grounder / simulator: pyRDDLGym
+- DARP data structures: AND-OR tree, belief, duration, risk sidecar
+- Paper algorithms: full-tree ILP baseline and HILP partial-tree search
+- ILP solver: Gurobi
+- Durative actions: YAML/JSON sidecars for now; native RDDL syntax extensions can later subclass/extend the pyRDDLGym parser
 
 ## Installation
+
+On Linux, use the project installer to create the virtual environment and install DARP dependencies:
+
+```bash
+bash scripts/install_linux_deps.sh
+source .venv/bin/activate
+```
+
+On a fresh Ubuntu/Debian machine, install system packages and clone/build PROST plus rddlsim:
+
+```bash
+INSTALL_SYSTEM_DEPS=1 bash scripts/install_linux_deps.sh
+```
+
+By default, PROST and rddlsim are placed next to the DARP checkout:
+
+```text
+../prost-planner
+../rddlsim
+```
+
+Override paths as needed:
+
+```bash
+PROST_ROOT=/path/to/prost-planner \
+RDDLSIM_ROOT=/path/to/rddlsim \
+bash scripts/install_linux_deps.sh
+```
+
+Gurobi note: the script installs `gurobipy`, but real full-ILP/HILP runs still require a valid local Gurobi license.
+
+Manual installation:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -e .
-python -m pip install -r requirements-dev.txt
+python -m pip install -U pip
+python -m pip install -e ".[gurobi]" -r requirements-dev.txt
 ```
 
-Gurobi is the only solver target for the paper ILP/HILP path. Install it when running ILP/HILP solving:
-
-```bash
-python -m pip install -e ".[gurobi]"
-```
-
-## CLI
+## DARP CLI
 
 Show help:
 
@@ -39,7 +59,7 @@ Show help:
 darp -h
 ```
 
-Load standard RDDL and execute the default online trace:
+Run the default online trace:
 
 ```bash
 darp \
@@ -47,17 +67,22 @@ darp \
   --instance examples/rddl/tiny_grid_instance.rddl
 ```
 
-Set rollout lookahead or HILP's maximum partial-tree refinement depth; `reachable-bellman` also uses it as the local Bellman horizon cap. `--particles` only affects rollout's approximate POMDP belief:
+Run HILP:
 
 ```bash
 darp \
   --domain examples/rddl/tiny_grid_domain.rddl \
   --instance examples/rddl/tiny_grid_instance.rddl \
-  --lookahead-depth 4 \
-  --particles 32
+  --duration examples/durations/tiny_grid.yaml \
+  --planner hilp \
+  --heuristic-lookahead-depth 4 \
+  --expansion-rounds 4 \
+  --frontier-width 1 \
+  --hilp-heuristic reachable-bellman \
+  --output /tmp/darp_tiny_grid_hilp.json
 ```
 
-Use a duration sidecar and the full-tree ILP planner:
+Run full-ILP:
 
 ```bash
 darp \
@@ -67,66 +92,95 @@ darp \
   --planner full-ilp
 ```
 
-Use the HILP partial-tree p-ILP planner:
+Current HILP frontier heuristics:
+
+- `reachable-bellman`: runs a finite-horizon fully observable Bellman backup over states reachable from the current frontier action.
+- `one-step-greedy`: uses only the current action's one-step expected reward; faster but greedier.
+
+## DARP/PROST Benchmark Comparisons
+
+All benchmark experiments are run through `scripts/run_benchmark_suite.py`. The recommended workflow is one command that names the benchmark, points to the RDDL files, chooses duration/seed/HILP settings, and writes everything under `experiments/<name>/`. HTML replay is generated by default:
 
 ```bash
-darp \
+.venv/bin/python scripts/run_benchmark_suite.py \
+  --name navigation_2011_inst2_fixed_1 \
+  --domain examples/benchmarks/navigation-2011/navigation_mdp.rddl \
+  --instance examples/benchmarks/navigation-2011/navigation_inst_mdp__2.rddl \
+  --duration examples/durations/fixed_1.yaml \
+  --seed 0 \
+  --timeout 300 \
+  --heuristic-lookahead-depth 6 \
+  --expansion-rounds 2 \
+  --frontier-width 1
+```
+
+The default planner is `hilp`, and the default heuristic is `reachable-bellman`. For fixed-duration=1 comparisons, explicitly pass `examples/durations/fixed_1.yaml` so the experiment config and DARP trace record the duration assumption:
+
+```bash
+.venv/bin/python scripts/run_benchmark_suite.py \
+  --name tiny_grid_fixed_1 \
   --domain examples/rddl/tiny_grid_domain.rddl \
   --instance examples/rddl/tiny_grid_instance.rddl \
-  --duration examples/durations/tiny_grid.yaml \
-  --planner hilp \
-  --lookahead-depth 4 \
-  --hilp-iterations 4 \
-  --frontier-width 1 \
-  --hilp-heuristic one-step-greedy
+  --duration examples/durations/fixed_1.yaml \
+  --prost-state-parser tiny_grid \
+  --seed 0
 ```
 
-HILP has two heuristic modes:
+Useful options:
 
-- `one-step-greedy`: the default. It uses $$h_q^u := u_q = \rho^*(q)\sum_s b_q^*(s)U(s,a_q)$$. It is fastest, but it only sees the immediate expected reward of the current action.
-- `reachable-bellman`: starts from the successor support of the current frontier action and runs a fully observable Bellman backup only over states reachable within the remaining lookahead. It sees future reward without enumerating the observation tree, and is best suited to small finite state spaces such as tiny grid.
+- `--duration`: pass a DARP duration sidecar; for DARP/PROST comparisons, prefer `examples/durations/fixed_1.yaml`.
+- `horizon`: comes from the RDDL instance and bounds the real online episode.
+- `--heuristic-lookahead-depth`: number of fully observable Bellman backup layers used to score a frontier action in `reachable-bellman`.
+- `--expansion-rounds`: optional HILP tree-expansion budget; omit it to expand until the frontier is exhausted by the RDDL horizon and duration stopping condition, which is suitable only for small problems.
+- `--frontier-width`: number of frontier items expanded in each round.
+- `--hilp-heuristics`: defaults to `reachable-bellman`; can also be `one-step-greedy`.
+- `--no-visualize`: disable default HTML replay generation.
+- `--seeds`: run multiple seeds, e.g. `--seeds 0,1,2`.
 
-`full-ilp` / `hilp` are the paper-path planners and require working `gurobipy` plus a Gurobi license; they fail directly when Gurobi is unavailable. `rollout` remains the non-Gurobi baseline.
-
-Note: the CC-POMDP planning time budget is not Python wall-clock runtime. DARP uses the RDDL instance `horizon` plus action durations from the sidecar, and `tau(q)` decides whether a history can keep expanding.
-
-## PROST Comparison Experiment
-
-DARP/PROST comparisons are run through the reusable runner `scripts/darp_prost_compare.py`, which owns process orchestration, log parsing, metric aggregation, and table output. Scenario scripts only provide RDDL paths, a duration sidecar, and any PROST state parser needed by that scenario.
-
-The tiny-grid fixed duration=1 comparison is named `tiny_grid_fixed_1`, and `scripts/tiny_grid_fixed_1.py` calls the reusable runner. Prefer the script over starting processes from a notebook. By default, the script runs both DARP HILP heuristic modes, `one-step-greedy` and `reachable-bellman`, then starts the rddlsim server and PROST client, and writes stdout, stderr, rddlsim logs, DARP JSON traces, and a compact summary into one directory:
+Manage PROST/rddlsim paths with environment variables:
 
 ```bash
-python scripts/tiny_grid_fixed_1.py --seeds 0
+export PROST_ROOT=/path/to/prost-planner
+export RDDLSIM_ROOT=/path/to/rddlsim
+export PROST_PYTHON=.venv/bin/python
 ```
 
-At the end, the script prints a metric-row terminal table with `DARP-one-step-greedy`, `DARP-reachable-bellman`, and `PROST` columns by default. Metrics include `total_reward`, `turns`, `runtime_s`, `rddl_load_ms`, `grounding_ms`, `and_or_interface_ms`, `initial_belief_ms`, `planner_elapsed_ms`, `decision_ms`, `frontier_expand_ms`, `heuristic_eval_ms`, `ilp_encode_ms`, `tree_ilp_build_ms`, `gurobi_call_ms`, `postprocess_ms`, `actions`, `states`, `expanded_nodes`, `performed_trials`, `ilp_vars`, `ilp_constraints`, `gurobi_ms`, `prost_parsing_ms`, `prost_simplifying_ms`, `prost_analyzing_ms`, `risk_budget`, and `constraint_violation`. Metrics that are not yet collected remain as blank columns.
-
-The `actions` rows come from the DARP JSON trace and PROST client stdout respectively; DARP `states` come from the JSON trace, while PROST `states` come from the `Current state` bit vectors in client stdout with the final state inferred from the last action. DARP trace `elapsed_ms` is the per-step `choose_action()` wall-clock time, so the experiment reports it as `planner_elapsed_ms`; DARP `decision_ms` comes from planner `timing.decision_ms`, currently defined as tree/partial-tree + ILP construction, Gurobi solving, and action extraction time. PROST `decision_ms` uses the sum of reported per-step `Search time` values. DARP `grounding_ms` is pyRDDLGym grounder time; PROST's closest counterpart is `Instantiating`. DARP `frontier_expand_ms`, `heuristic_eval_ms`, and `ilp_encode_ms` are HILP-specific, while PROST cells are left blank or represented by PROST's own parser/search phase metrics. In `--open-terminals` mode, PROST `runtime_s` uses timestamps around the PROST client process rather than the outer waiting window.
-
-Use `--hilp-heuristics` to choose which DARP heuristic modes to compare:
+The script creates or updates `experiments/<name>/config.json` to record the benchmark defined by the command. You can also rerun an existing experiment folder:
 
 ```bash
-python scripts/tiny_grid_fixed_1.py \
-  --seeds 0 \
-  --hilp-heuristics one-step-greedy,reachable-bellman
+.venv/bin/python scripts/run_benchmark_suite.py experiments/navigation_2011_inst2_fixed_1 --seed 0
 ```
 
-If you want to watch the experiment in separate terminal windows, use:
+Each experiment directory contains:
 
-```bash
-python scripts/tiny_grid_fixed_1.py --seeds 0 --open-terminals
+- `config.json`: versioned experiment definition.
+- `summary.json`: full raw results.
+- `runs.csv`: long-format per-run rows.
+- `summary.csv`: aggregate mean/std rows by solver variant.
+- `replay.html`: optional side-by-side replay.
+- `seed_<n>/`: stdout, stderr, PROST/rddlsim logs, DARP traces, and raw artifacts.
+
+DARP writes its trace incrementally after every completed environment step. If a large instance times out before the full horizon finishes, `replay.html` and the CSV files still use the completed action/state prefix when available; if the timeout happens during the first decision, the replay can only show an empty prefix.
+
+DARP online execution runs pyRDDLGym in the same Python process: `adapter.runtime.PyRDDLGymRuntime` wraps `env.reset(seed=...)` and `env.step(action)`, and `planning.run_online_session` calls a planner for an action before immediately applying it to pyRDDLGym. PROST comparison runs still start an rddlsim server and a PROST client that communicate through the IPC protocol.
+
+Aggregate tables and LaTeX previews live only in:
+
+```text
+experiments/latex/
 ```
 
-This mode generates one `run_darp_<heuristic>.sh` per DARP heuristic, plus `run_prost_server.sh` and `run_prost_client.sh`, then opens the DARP variants, rddlsim server, and PROST client with `gnome-terminal`. The PROST client waits until the server log reports initialization before starting; the original terminal keeps waiting for the logs and trace, then prints the same metrics table.
+Open this file with LaTeX Workshop to preview the aggregate table:
 
-The default PROST path is `/home/shaocong/Desktop/prost-planner`, the rddlsim path comes from `RDDLSIM_ROOT` or `/home/shaocong/Desktop/rddlsim`, and the PROST helper Python uses the conda `rddl` environment. `examples/rddl/tiny_grid_*` now uses the shared RDDL subset accepted by both DARP/pyRDDLGym and PROST/rddlsim: `location` is an `object` type, objects live in the instance `objects` block, and the domain expresses goals, risks, penalty directions, and the transition graph through non-fluents instead of hard-coded enum constants. Tiny grid uses negative-cost rewards: ordinary moves are `-1`, non-goal noop is `-2`, risky directions are `-10`, and goal states yield `0`; maximizing reward therefore means reaching the goal quickly while avoiding risky directions.
+```text
+experiments/latex/preview_summary_table.tex
+```
 
-## Duration Sidecar
+## Duration Sidecars
 
-A duration sidecar describes only the action-duration model, not fields already defined by RDDL. The `horizon` comes from the RDDL instance; do not put `horizon` or `version` in the sidecar.
+A duration sidecar only describes action durations and optional risk. It does not duplicate the RDDL instance `horizon`. The shared fixed-duration=1 config lives at `examples/durations/fixed_1.yaml` and is the recommended explicit unit-duration sidecar for DARP/PROST comparisons.
 
-Minimal fixed-duration example:
+Fixed duration:
 
 ```yaml
 kind: fixed
@@ -136,9 +190,7 @@ actions:
   move-south: 1
 ```
 
-`default` is the fallback duration for actions not explicitly listed in `actions`. In the example above, if the RDDL model also has `move-west` and the sidecar omits it, DARP uses `default: 1` as its duration.
-
-Fixed-duration C-POMDP risk constraints can be declared in the same sidecar. The example below treats entering `at___c22` as a risk cost and sets the total risk budget:
+Fixed duration with a chance-constraint risk budget:
 
 ```yaml
 kind: fixed
@@ -146,17 +198,13 @@ default: 1
 actions:
   move-east: 1
   move-south: 1
-  move-west: 1
-  move-north: 1
 risk:
   budget: 0.25
   next_state_fluents:
     at___c22: 1
 ```
 
-In full-ILP, DARP follows the paper's Lemma 3.3 safe-belief chance constraint: the ILP right-hand side is `R = Delta - r(b0)`, and each action history uses the risk coefficient `rho*(q) * r(b_q)`. `rho*(q)` and the safe belief `b*` are propagated along the AND-OR tree instead of simply accumulating ordinary-belief expected costs.
-
-Stochastic Duration with Percentile Risk Criteria uses `kind: gaussian` and `zeta`. `zeta` is the paper's percentile threshold `\varsigma`; DARP computes action-duration means/variances from Algorithm 2 smoothed-belief marginals and uses them in `tau(q)`:
+Gaussian percentile duration:
 
 ```yaml
 kind: gaussian
@@ -168,192 +216,68 @@ state_actions:
     move-east:
       mean: 2
       variance: 0.25
-risk:
-  budget: 0.25
-  next_state_fluents:
-    at___c22: 1
-```
-
-Write the online trace as JSON:
-
-```bash
-darp \
-  --domain examples/rddl/tiny_grid_domain.rddl \
-  --instance examples/rddl/tiny_grid_instance.rddl \
-  --output tiny_grid_pyrddlgym_trace.json
-```
-
-Inspect pyRDDLGym problem components and planner-interface boundaries:
-
-```bash
-python -m darp.adapter.loader \
-  examples/rddl/tiny_grid_domain.rddl \
-  examples/rddl/tiny_grid_instance.rddl
-```
-
-## Execution Flow
-
-The current main path is deliberately small:
-
-```text
-darp CLI
-  -> adapter.RDDLLoader.load(domain, instance)
-  -> pyRDDLGym.make(...)
-  -> PyRDDLGymProblem(env, model, native_ast)
-  -> adapter.PyRDDLGymRuntime.reset/step
-  -> planning.RolloutPlanner.choose_action (default fast path)
-  -> planning.run_online_session manages action, observation, state, belief, and trace
-```
-
-The paper-aligned path is:
-
-```text
-PyRDDLGymProblem.build_grounded_model()
-  -> pyRDDLGym.core.compiler.model.RDDLGroundedModel
-  -> adapter.GroundedRDDLView (reusing pyRDDLGym grounding)
-  -> model.ANDORNode / History
-  -> model.DurationModel (from YAML/JSON sidecar or default unit duration)
-  -> planning.preprocess / planning.expand
-  -> planning.FullILPPlanner / planning.HILPPlanner
-  -> Gurobi full ILP / p-ILP solve
-  -> OnlineSession takes one action and receives observation/reward/state from pyRDDLGym env
 ```
 
 ## Architecture
 
-- pyRDDLGym: standard RDDL parser, semantic handling, grounder, Gym-style environment, and simulator.
-- DARP `adapter/`: fixed pyRDDLGym adapter for loading, grounded-model views, runtime reset/step, and lightweight belief helpers.
-- DARP `model/`: stores DARP-native planning data structures such as duration models, histories, and AND-OR tree nodes; this package does not directly depend on pyRDDLGym.
-- DARP `planning/`: stores the rollout baseline, paper search scaffolding, HILP/full-tree planners, online sessions, and traces; this package reaches the simulator through the pyRDDLGym runtime.
-- DARP `ilp/`: stores the binary ILP schema and Gurobi adapter; `planning/` encodes exact AND-OR trees/frontiers into full ILP or HILP p-ILP models.
+```text
+darp CLI
+  -> adapter.RDDLLoader
+  -> pyRDDLGym env/model/native AST
+  -> adapter.GroundedRDDLView
+  -> adapter.ExactRDDLKernel
+  -> model.ANDORNode / History / DurationModel
+  -> planning.preprocess / planning.expand
+  -> planning.FullILPPlanner or planning.HILPPlanner
+  -> ilp.GurobiSolver
+  -> planning.OnlineSession
+```
 
-## File Layout
+Repository layout:
 
 ```text
 DARP/
-├── README.md                         # Chinese primary documentation.
-├── README-EN.md                      # English mirror documentation.
-├── pyproject.toml                    # Python package metadata and the Gurobi solver extra.
-├── requirements.txt                  # Runtime dependencies, including pyRDDLGym.
-├── requirements-dev.txt              # Development/test dependencies.
-├── scripts/
-│   ├── darp_prost_compare.py        # Reusable runner for DARP/PROST comparison experiments.
-│   └── tiny_grid_fixed_1.py         # Runner configuration for tiny_grid with fixed duration=1.
-│
-├── examples/
-│   ├── benchmarks/                   # PROST/IPC RDDL MDP benchmark corpus.
-│   │   ├── README.md                 # Benchmark source notes and import list.
-│   │   └── <domain-year>/            # Individual benchmark domain directory.
-│   ├── durations/                    # DARP duration sidecar examples.
-│   │   ├── tiny_grid.yaml            # Tiny-grid fixed-duration + risk sidecar.
-│   │   └── tiny_grid_gaussian.yaml   # Tiny-grid Gaussian percentile duration sidecar.
-│   └── rddl/                         # Small hand-written RDDL examples.
-│       ├── tiny_grid_domain.rddl     # Tiny-grid standard RDDL domain.
-│       ├── tiny_grid_instance.rddl   # Tiny-grid instance.
-│       ├── factored_door_domain.rddl # Partial-observation toy domain for future adapter regression.
-│       └── factored_door_instance.rddl # Factored-door instance.
-│
 ├── src/darp/
-│   ├── __init__.py                   # Package version entrypoint.
-│   ├── __main__.py                   # Top-level `darp` CLI.
-│   ├── adapter/                      # Adapter layer for the current single external system, pyRDDLGym.
-│   │   ├── __init__.py               # Adapter package entrypoint.
-│   │   ├── problem.py                # PyRDDLGymProblem container, load errors, and pyRDDLGym grounder entrypoint.
-│   │   ├── loader.py                 # Loads standard RDDL with pyRDDLGym.
-│   │   ├── grounded.py               # GroundedRDDLView wrapper over pyRDDLGym grounded models.
-│   │   ├── exact.py                  # Exact finite transition/observation/reward/risk kernel from grounded CPFs.
-│   │   └── runtime.py                # pyRDDLGym reset/step/action/belief runtime.
-│   ├── model/                        # DARP-native planning data structures.
-│   │   ├── __init__.py               # Model package entrypoint.
-│   │   ├── and_or_tree.py            # Base AND-OR history tree nodes and history structures.
-│   │   ├── duration.py               # DurationModel, HistoryDurationEvaluator, and tau(q) calculations.
-│   │   └── duration_sidecar.py       # JSON/YAML duration sidecar loader.
-│   ├── ilp/                          # DARP binary ILP schema and Gurobi solver adapter.
-│   │   ├── __init__.py               # ILP package entrypoint.
-│   │   ├── model.py                  # ILPVariable, ILPLinearConstraint, ILPModelSpec, and solve results.
-│   │   └── gurobi.py                 # Gurobi adapter; the only ILP solver for the paper path.
-│   └── planning/                     # Planners and online execution orchestration.
-│       ├── __init__.py               # Planning package entrypoint.
-│       ├── preprocess.py             # Root-frontier initialization helper for Algorithm 1.
-│       ├── expand.py                 # Paper Expand operation; computes rho/u/r/tau, backward messages, and smoothed beliefs.
-│       ├── ilp_tree.py               # Runs Algorithm 1 preprocessing and encodes full ILP and HILP p-ILP models.
-│       ├── full_ilp.py               # Gurobi-only full-tree ILP planner; builds the policy tree via paper Algorithms 1/2 before solving.
-│       ├── hilp.py                   # HILP partial-tree search that maintains Algorithm 3 E/F frontier sets and repeatedly solves Gurobi p-ILPs.
-│       ├── rollout.py                # Current pyRDDLGym rollout baseline planner.
-│       └── session.py                # Online session loop and trace structures.
-└── tests/
-    ├── test_darp_entrypoint.py       # Top-level CLI and pyRDDLGym online-trace tests.
-    ├── test_and_or_tree.py           # DARP AND-OR tree base-structure tests.
-    ├── test_duration_sidecar.py      # Duration sidecar and history-duration tests.
-    ├── test_exact_kernel.py          # Exact finite kernel, risk sidecar, and Gaussian percentile duration tests.
-    ├── test_gurobi_ilp.py            # Phase 8 ILP schema, fake Gurobi, full ILP, and HILP p-ILP tests.
-    ├── test_pyrddlgym_runtime.py     # pyRDDLGym runtime and simple online-trace tests.
-    └── test_rddl_loader.py           # pyRDDLGym loader, summary, and grounder-reuse tests.
+│   ├── adapter/        # pyRDDLGym loading, grounded view, exact kernel, runtime.
+│   ├── model/          # AND-OR tree, history, duration sidecar, duration evaluator.
+│   ├── planning/       # online session, rollout baseline, full-ILP, HILP, Expand.
+│   ├── ilp/            # DARP ILP schema and Gurobi adapter.
+│   └── visualization/  # Replay frame schema, graphs, trace parsing, domain-specific decoders.
+├── examples/
+│   ├── rddl/           # Small hand-written RDDL examples.
+│   ├── durations/      # Duration/risk sidecar examples.
+│   └── benchmarks/     # PROST/IPC benchmark RDDL files.
+├── experiments/        # Versioned configs; generated run artifacts are ignored.
+├── scripts/            # Installation, comparison, visualization, and aggregation scripts.
+└── tests/              # Unit and lightweight integration tests.
 ```
 
 ## Roadmap
 
-- [x] Phase 1: Project foundation
-  - [x] 1.1: README/README-EN, package metadata, and test entrypoint
-  - [x] 1.2: Minimal CLI, duration abstractions, and pyRDDLGym runtime tests
-  - [x] 1.3: Import PROST/IPC benchmark corpus
-- [x] Phase 2: pyRDDLGym-first RDDL input
-  - [x] 2.1: Move standard RDDL parser/simulator responsibility to pyRDDLGym
-  - [x] 2.2: Remove the DARP-owned parser path and standardize on the pyRDDLGym parser
-  - [x] 2.3: Provide `PyRDDLGymProblem` summaries and pyRDDLGym grounder-reuse tests
-- [x] Phase 3: pyRDDLGym generative runtime adapter
-  - [x] 3.1: Define a DARP planner-facing runtime protocol around pyRDDLGym `reset/step/model`
-  - [x] 3.2: Extract type/object/fluent/action metadata while keeping native pyRDDLGym references
-  - [x] 3.3: Implement initial bool action candidates, noop/default actions, and action-constraint error propagation
-  - [x] 3.4: Define MDP/POMDP observation/state/belief boundaries, with sampling/particle interfaces when states are not enumerable
-  - [x] 3.5: Make `darp --domain --instance` execute an online step trace through the pyRDDLGym runtime
-- [x] Phase 4: pyRDDLGym grounded-model view
-  - [x] 4.1: Wrap pyRDDLGym `RDDLGroundedModel` behind state/action/observation/reward/CPF accessors
-  - [x] 4.2: Build the action/observation/history interface required by the AND-OR tree from the grounded model and runtime
-  - [x] 4.3: Report unsupported RDDL structures clearly
-- [ ] Phase 5: Verifiable execution workflow
-  - [x] 5.1: Wire the `full-ilp` / `hilp` paper planners into online sessions and the CLI
-  - [x] 5.2: Record planner, duration, decision value, and solve elapsed time in CLI/JSON traces
-  - [ ] 5.3: Tune HILP/full-ILP runtime so the paper path can become the default planner
-  - [ ] 5.4: Add offline policy JSON plus replay/evaluation workflow
-- [x] Phase 6: DurationModel and DARP sidecars
-  - [x] 6.1: Design a YAML/JSON duration sidecar schema without `version` / `horizon`
-  - [x] 6.2: Wire fixed, expected, and Gaussian durations into history tree and HILP `tau(q)` evaluation
-  - [x] 6.3: Keep durations in YAML/JSON sidecars without changing standard RDDL grammar
-- [x] Phase 7: Paper search algorithm scaffolding
-  - [x] 7.1: Implement AND-OR history tree
-  - [x] 7.2: Implement paper `Expand` and preprocessing
-  - [x] 7.3: Implement exact policy-tree preprocessing/Expand scaffolding for full-ILP constants
-  - [x] 7.4: Implement E/F bookkeeping for HILP-style partial frontier search
-- [x] Phase 8: Gurobi ILP solving
-  - [x] 8.1: Encode finite exact CC-POMDP trees into full ILP / p-ILP variables, objectives, and constraints
-  - [x] 8.2: Solve exact/full-tree ILP with Gurobi as the only solver
-  - [x] 8.3: Solve the current HILP `E ∪ F` partial-tree p-ILP with Gurobi and support `one-step-greedy` / `reachable-bellman` frontier heuristics for selecting refinements
-  - [x] 8.4: Record Gurobi status, runtime, MIP gap, objective, and selected variables through `ILPSolveResult`
-  - [x] 8.5: Wire duration-sidecar safe-belief chance constraints, Algorithm 2 backward messages / smoothed beliefs, and Gaussian percentile `tau(q)`
-  - [x] 8.6: Make online full-ILP/HILP maintain the root belief through `ExactBeliefState` and exact Bayes updates instead of particle belief
-- [ ] Phase 9: Benchmarks, experiments, and syntax extension
-  - [ ] 9.1: Implement benchmark runner and pyRDDLGym/rddlrepository import checks
-  - [ ] 9.2: Implement PROST/rddlsim-style online protocol compatibility
-  - [ ] 9.3: Add paper-style experiment scripts
-  - [ ] 9.4: Extend action-space enumeration for concurrent action combinations and non-bool actions
-  - [ ] 9.5: Implement augmented-state chance-constrained duration and broader random-expression / continuous-distribution support
-  - [ ] 9.6: If native durative-action syntax is needed, extend the pyRDDLGym parser by inheritance
+- [x] Use pyRDDLGym as the standard RDDL parser/grounder/simulator.
+- [x] Build DARP AND-OR history tree, duration sidecars, and exact finite kernels.
+- [x] Implement Gurobi-backed full-tree ILP and HILP partial-tree solving paths.
+- [x] Support fixed duration, Gaussian percentile duration, and sidecar risk budgets.
+- [x] Provide DARP/PROST comparison runner, CSV/JSON outputs, LaTeX tables, and HTML replay.
+- [x] Split replay visualization into frame schema, graph, trace, and benchmark-specific decoder modules.
+- [ ] Improve HILP benchmark-scale pruning and large action-space handling.
+- [ ] Support concurrent action combinations and non-boolean actions.
+- [ ] Add more benchmark-specific PROST state parsers and replay renderers.
+- [ ] Implement a PROST/rddlsim-style online protocol compatibility layer.
+- [ ] If needed, extend native durative-action RDDL syntax through the pyRDDLGym parser.
 
-## Testing
+## Tests
 
 ```bash
 python -m pytest
 ```
 
-Phase 8 unit tests use a fake `gurobipy` module to cover DARP's ILP encoding and adapter boundaries, so the base test suite does not require a local Gurobi install. Real solve experiments still require `pip install -e ".[gurobi]"` and a valid license.
+Basic tests do not require a local Gurobi license; real full-ILP/HILP experiments do.
 
 ## Current Limitations
 
-- RDDL inputs currently execute online traces through a pyRDDLGym generative runtime; DARP no longer maintains a separate `PlanningProblem` compilation path.
-- The default CLI planner remains the fast rollout baseline. `hilp` now uses partial-tree p-ILPs to avoid full-horizon enumeration, but still needs benchmark-scale pruning before becoming the default; `full-ilp` expands to the full remaining RDDL horizon and grows exponentially with action/observation histories.
-- The grounded AND-OR interface and pyRDDLGym rollout baseline currently enumerate noop and single bool actions only; action combinations and non-bool actions produce clear unsupported errors and remain future planner/action-space work.
-- The rollout baseline still uses a lightweight particle approximation for POMDP belief. Online full-ILP/HILP uses exact Bayes belief updates. Benchmark-quality POMDP evaluation still needs richer initial-belief modeling, reachable-state pruning, and scalable belief representations.
-- DARP reuses pyRDDLGym grounding; finite bool grounded models can be enumerated exactly through `ExactRDDLKernel`, while continuous distributions, large state spaces, and complex random expressions remain later benchmark work.
-- Native DARP-RDDL syntax is not maintained on main; durative actions currently enter only through YAML/JSON sidecars.
-- Phase 8 ILP now supports exact finite transition/observation branches, Algorithm 2 smoothed beliefs, sidecar safe-belief chance constraints, and duration percentile `tau(q)`; augmented-state chance-constrained duration, benchmark-scale pruning, continuous distributions, and complex random expressions remain Phase 9 work.
+- The exact kernel currently targets finite, grounded, boolean fluent/action RDDL problems.
+- full-ILP expands the full remaining horizon, so its size grows exponentially with action/observation histories.
+- HILP is partial-tree refinement and is not a global optimality certificate unless it expands to the full tree or gets strict bounds/certificates.
+- PROST does not support DARP duration sidecars; fair comparisons usually use fixed duration=1.
+- In the navigation benchmark, `P(x,y)` is a transition failure probability, not a chance constraint automatically inferred by DARP. Generic chance constraints must come from an explicit risk sidecar or a future standardized modeling interface.

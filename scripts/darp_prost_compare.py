@@ -10,6 +10,7 @@ scenario-specific PROST state parser.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import re
@@ -21,15 +22,72 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from statistics import mean, stdev
 from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_PROST_ROOT = Path("/home/shaocong/Desktop/prost-planner")
-DEFAULT_RDDLSIM_ROOT = Path("/home/shaocong/Desktop/rddlsim")
-DEFAULT_PROST_PYTHON = Path("/home/shaocong/miniconda3/envs/rddl/bin/python")
+DEFAULT_PROST_ROOT = Path(os.environ.get("PROST_ROOT", str(REPO_ROOT.parent / "prost-planner")))
+DEFAULT_RDDLSIM_ROOT = Path(os.environ.get("RDDLSIM_ROOT", str(REPO_ROOT.parent / "rddlsim")))
+DEFAULT_PROST_PYTHON = Path(os.environ.get("PROST_PYTHON", sys.executable))
 
 ProstStateTraceParser = Callable[[str, tuple[str, ...]], tuple[str, ...]]
+
+RUN_CSV_COLUMNS = (
+    "scenario",
+    "seed",
+    "system",
+    "variant",
+    "planner",
+    "heuristic",
+    "domain",
+    "instance",
+    "duration",
+    "total_reward",
+    "turns",
+    "runtime_s",
+    "decision_ms",
+    "planner_elapsed_ms",
+    "rddl_load_ms",
+    "grounding_ms",
+    "and_or_interface_ms",
+    "initial_belief_ms",
+    "frontier_expand_ms",
+    "heuristic_eval_ms",
+    "ilp_encode_ms",
+    "tree_ilp_build_ms",
+    "gurobi_call_ms",
+    "postprocess_ms",
+    "expanded_nodes",
+    "performed_trials",
+    "ilp_vars",
+    "ilp_constraints",
+    "gurobi_ms",
+    "prost_parsing_ms",
+    "prost_instantiating_ms",
+    "prost_simplifying_ms",
+    "prost_analyzing_ms",
+    "risk_budget",
+    "constraint_violation",
+    "returncode",
+    "actions",
+    "states",
+)
+
+SUMMARY_GROUP_COLUMNS = ("scenario", "system", "variant", "planner", "heuristic")
+SUMMARY_NUMERIC_COLUMNS = (
+    "total_reward",
+    "turns",
+    "runtime_s",
+    "decision_ms",
+    "planner_elapsed_ms",
+    "grounding_ms",
+    "expanded_nodes",
+    "performed_trials",
+    "ilp_vars",
+    "ilp_constraints",
+    "gurobi_ms",
+)
 
 
 @dataclass(frozen=True)
@@ -46,10 +104,10 @@ class DARPProstExperimentSpec:
     prost_state_trace_parser: ProstStateTraceParser | None = None
     prost_state_note: str = "PROST state trace is not parsed for this scenario"
     default_planner: str = "hilp"
-    default_lookahead_depth: int = 4
-    default_hilp_iterations: int = 4
+    default_heuristic_lookahead_depth: int = 4
+    default_expansion_rounds: int | None = None
     default_frontier_width: int = 1
-    default_hilp_heuristics: tuple[str, ...] = ("one-step-greedy", "reachable-bellman")
+    default_hilp_heuristics: tuple[str, ...] = ("reachable-bellman",)
     default_prost_config: str = "[Prost -s {seed} -se [IPC2014]]"
 
 
@@ -108,8 +166,6 @@ class RunSummary:
 def run_experiment(spec: DARPProstExperimentSpec, argv: list[str] | None = None) -> int:
     """Run one configured DARP-vs-PROST comparison experiment."""
     args = build_parser(spec).parse_args(argv)
-    if not args.skip_prost and args.port != 2323:
-        raise ValueError("PROST client expects the default rddlsim port 2323; do not override --port.")
     seeds = tuple(_parse_seeds(args.seeds))
     darp_variants = _darp_variants(args)
     output_dir = Path(args.output_dir).resolve()
@@ -131,13 +187,33 @@ def run_experiment(spec: DARPProstExperimentSpec, argv: list[str] | None = None)
         prost_result = None if args.skip_prost else run_prost(spec, args, seed, run_dir)
         summaries.append(summary_from_results(seed, darp_results, prost_result))
 
-    summary_path = output_dir / "summary.json"
-    summary_path.write_text(
+    artifacts = write_experiment_artifacts(spec, summaries, output_dir)
+    print_summary(spec, summaries, artifacts["summary_json"])
+    return 0
+
+
+def write_experiment_artifacts(
+    spec: DARPProstExperimentSpec,
+    summaries: list[RunSummary],
+    output_dir: Path,
+) -> dict[str, Path]:
+    """Write JSON and CSV files for one experiment."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    summary_json = output_dir / "summary.json"
+    summary_json.write_text(
         json.dumps([summary.to_dict() for summary in summaries], indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    print_summary(spec, summaries, summary_path)
-    return 0
+    run_rows = run_rows_from_summaries(spec, summaries)
+    runs_csv = output_dir / "runs.csv"
+    write_csv_rows(runs_csv, run_rows, RUN_CSV_COLUMNS)
+    summary_csv = output_dir / "summary.csv"
+    write_csv_rows(summary_csv, summary_rows_from_run_rows(run_rows), summary_csv_columns())
+    return {
+        "summary_json": summary_json,
+        "runs_csv": runs_csv,
+        "summary_csv": summary_csv,
+    }
 
 
 def build_parser(spec: DARPProstExperimentSpec) -> argparse.ArgumentParser:
@@ -169,15 +245,25 @@ def build_parser(spec: DARPProstExperimentSpec) -> argparse.ArgumentParser:
     parser.add_argument("--prost-root", default=str(DEFAULT_PROST_ROOT), help="PROST checkout")
     parser.add_argument(
         "--rddlsim-root",
-        default=os.environ.get("RDDLSIM_ROOT", str(DEFAULT_RDDLSIM_ROOT)),
+        default=str(DEFAULT_RDDLSIM_ROOT),
         help="rddlsim checkout",
     )
     parser.add_argument("--port", type=int, default=2323, help="rddlsim server port")
     parser.add_argument("--host", default="127.0.0.1", help="rddlsim host")
     parser.add_argument("--timeout", type=float, default=120.0, help="per-command timeout in seconds")
     parser.add_argument("--planner", default=spec.default_planner, help="DARP planner name")
-    parser.add_argument("--lookahead-depth", type=int, default=spec.default_lookahead_depth, help="DARP HILP lookahead depth")
-    parser.add_argument("--hilp-iterations", type=int, default=spec.default_hilp_iterations, help="DARP HILP refinement iterations")
+    parser.add_argument(
+        "--heuristic-lookahead-depth",
+        type=int,
+        default=spec.default_heuristic_lookahead_depth,
+        help="DARP reachable-bellman heuristic future Bellman layers",
+    )
+    parser.add_argument(
+        "--expansion-rounds",
+        type=int,
+        default=spec.default_expansion_rounds,
+        help="optional HILP frontier expansion budget; omit for horizon-bounded exhaustive refinement",
+    )
     parser.add_argument("--frontier-width", type=int, default=spec.default_frontier_width, help="DARP HILP frontier width")
     parser.add_argument(
         "--hilp-heuristics",
@@ -333,22 +419,33 @@ def run_darp(
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO_ROOT / "src")
     started_at = time.monotonic()
-    completed = subprocess.run(
-        _darp_command(spec, args, seed, run_dir, variant),
-        cwd=REPO_ROOT,
-        env=env,
-        text=True,
-        capture_output=True,
-        timeout=args.timeout,
-        check=False,
-    )
+    timed_out = False
+    try:
+        completed = subprocess.run(
+            _darp_command(spec, args, seed, run_dir, variant),
+            cwd=REPO_ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=args.timeout,
+            check=False,
+        )
+        stdout = completed.stdout
+        stderr = completed.stderr
+        returncode = completed.returncode
+    except subprocess.TimeoutExpired as error:
+        timed_out = True
+        stdout = _timeout_output(error.stdout)
+        stderr = _timeout_output(error.stderr) + f"\nDARP timed out after {args.timeout} seconds.\n"
+        returncode = -1
     runtime_seconds = time.monotonic() - started_at
-    stdout_path.write_text(completed.stdout, encoding="utf-8")
-    stderr_path.write_text(completed.stderr, encoding="utf-8")
+    stdout_path.write_text(stdout, encoding="utf-8")
+    stderr_path.write_text(stderr, encoding="utf-8")
     result = parse_darp_trace(trace_path)
     result["heuristic"] = variant["heuristic"]
-    result["returncode"] = completed.returncode
+    result["returncode"] = returncode
     result["runtime_seconds"] = runtime_seconds
+    result["timed_out"] = timed_out
     return result
 
 
@@ -375,6 +472,7 @@ def run_prost(
     server_env = dict(os.environ)
     server_env["RDDLSIM_ROOT"] = str(rddlsim_root)
     with server_stdout.open("w", encoding="utf-8") as server_file:
+        prost_started_at = time.monotonic()
         server = subprocess.Popen(
             _prost_server_command(spec, args, seed, benchmark_dir, log_dir),
             cwd=prost_root / "testbed",
@@ -386,17 +484,27 @@ def run_prost(
         try:
             _wait_for_server_log(server_stdout, timeout=min(30.0, args.timeout))
             client_started_at = time.monotonic()
-            client = subprocess.run(
-                _prost_client_command(spec, args, seed),
-                cwd=prost_work_dir,
-                text=True,
-                capture_output=True,
-                timeout=args.timeout,
-                check=False,
-            )
+            timed_out = False
+            try:
+                client = subprocess.run(
+                    _prost_client_command(spec, args, seed),
+                    cwd=prost_work_dir,
+                    text=True,
+                    capture_output=True,
+                    timeout=args.timeout,
+                    check=False,
+                )
+                client_stdout_text = client.stdout
+                client_stderr_text = client.stderr
+                client_returncode = client.returncode
+            except subprocess.TimeoutExpired as error:
+                timed_out = True
+                client_stdout_text = _timeout_output(error.stdout)
+                client_stderr_text = _timeout_output(error.stderr) + f"\nPROST timed out after {args.timeout} seconds.\n"
+                client_returncode = -1
             client_runtime_seconds = time.monotonic() - client_started_at
-            client_stdout.write_text(client.stdout, encoding="utf-8")
-            client_stderr.write_text(client.stderr, encoding="utf-8")
+            client_stdout.write_text(client_stdout_text, encoding="utf-8")
+            client_stderr.write_text(client_stderr_text, encoding="utf-8")
             try:
                 server.wait(timeout=15.0)
             except subprocess.TimeoutExpired:
@@ -404,8 +512,18 @@ def run_prost(
                 server.wait(timeout=10.0)
             parsed = parse_rddlsim_log(log_dir / f"logs-{args.port}.log")
             parsed.update(parse_prost_client_output(spec, client_stdout))
-            parsed["returncode"] = client.returncode
+            parsed["returncode"] = client_returncode
             parsed["runtime_seconds"] = client_runtime_seconds
+            parsed["timed_out"] = timed_out
+            return parsed
+        except TimeoutError as error:
+            client_stdout.write_text("", encoding="utf-8")
+            client_stderr.write_text(str(error) + "\n", encoding="utf-8")
+            parsed = parse_rddlsim_log(log_dir / f"logs-{args.port}.log")
+            parsed.update(parse_prost_client_output(spec, client_stdout))
+            parsed["returncode"] = -1
+            parsed["runtime_seconds"] = time.monotonic() - prost_started_at
+            parsed["timed_out"] = True
             return parsed
         finally:
             if server.poll() is None:
@@ -426,6 +544,15 @@ def parse_rddlsim_log(log_path: Path) -> dict[str, Any]:
     session_rewards = tuple(float(value) for value in re.findall(r"<total-reward>([-0-9.]+)</total-reward>", text))
     reward = session_rewards[-1] if session_rewards else (sum(round_rewards) if round_rewards else None)
     return {"reward": reward, "round_rewards": round_rewards, "turns": turns}
+
+
+def _timeout_output(value: str | bytes | None) -> str:
+    """Normalize subprocess timeout output."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def parse_prost_client_output(spec: DARPProstExperimentSpec, output_path: Path) -> dict[str, Any]:
@@ -562,11 +689,121 @@ def parse_darp_trace(trace_path: Path) -> dict[str, Any]:
 def print_summary(spec: DARPProstExperimentSpec, summaries: list[RunSummary], summary_path: Path) -> None:
     """Print compact terminal metric tables."""
     print(f"Wrote summary: {summary_path}")
+    print(f"Wrote run CSV: {summary_path.parent / 'runs.csv'}")
+    print(f"Wrote summary CSV: {summary_path.parent / 'summary.csv'}")
     rows: list[dict[str, str]] = []
     for summary in summaries:
         rows.extend(_metric_rows(spec, summary))
     darp_headers = _darp_headers(summaries)
     _print_table(rows, headers=["seed", "metric", *darp_headers, "PROST", "note"])
+
+
+def run_rows_from_summaries(
+    spec: DARPProstExperimentSpec,
+    summaries: list[RunSummary],
+) -> list[dict[str, str]]:
+    """Flatten seed summaries into one machine-readable CSV row per solver variant."""
+    rows: list[dict[str, str]] = []
+    for summary in summaries:
+        for variant in summary.darp_variants:
+            rows.append(_darp_run_row(spec, summary.seed, variant))
+        if summary.prost_metrics or summary.prost_reward is not None or summary.prost_actions:
+            rows.append(_prost_run_row(spec, summary))
+    return rows
+
+
+def summary_rows_from_run_rows(run_rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Aggregate long-form run rows into mean/std rows for paper tables."""
+    grouped: dict[tuple[str, ...], list[dict[str, str]]] = {}
+    for row in run_rows:
+        key = tuple(row.get(column, "") for column in SUMMARY_GROUP_COLUMNS)
+        grouped.setdefault(key, []).append(row)
+    summary_rows: list[dict[str, str]] = []
+    for key, rows in sorted(grouped.items()):
+        summary = dict(zip(SUMMARY_GROUP_COLUMNS, key, strict=True))
+        summary["seeds"] = str(len(rows))
+        successes = [
+            row
+            for row in rows
+            if row.get("returncode", "") in {"", "0", "0.0"}
+        ]
+        summary["successes"] = str(len(successes))
+        for column in SUMMARY_NUMERIC_COLUMNS:
+            values = [_csv_float(row.get(column, "")) for row in rows]
+            clean_values = [value for value in values if value is not None]
+            summary[f"{column}_mean"] = _csv_number(mean(clean_values)) if clean_values else ""
+            summary[f"{column}_std"] = _csv_number(stdev(clean_values)) if len(clean_values) > 1 else ""
+        summary_rows.append(summary)
+    return summary_rows
+
+
+def write_csv_rows(path: Path, rows: list[dict[str, str]], columns: tuple[str, ...]) -> None:
+    """Write stable-column CSV rows."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({column: row.get(column, "") for column in columns})
+
+
+def write_latex_csv_table(path: Path, csv_filename: str) -> None:
+    """Write a LaTeX table snippet that reads data from an external CSV file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            [
+                "% Auto-generated by scripts/darp_prost_compare.py.",
+                "% Requires: \\usepackage{booktabs,pgfplotstable}",
+                "% Keep data in CSV; override \\darpSummaryCsv before \\input if needed.",
+                f"\\providecommand{{\\darpSummaryCsv}}{{{csv_filename}}}",
+                "\\pgfplotstableset{",
+                "  col sep=comma,",
+                "  string type,",
+                "  columns/scenario/.style={column name=Scenario},",
+                "  columns/system/.style={column name=System},",
+                "  columns/variant/.style={column name=Variant},",
+                "  columns/total_reward_mean/.style={column name={$\\bar R$}},",
+                "  columns/total_reward_std/.style={column name={$\\sigma_R$}},",
+                "  columns/turns_mean/.style={column name={Turns}},",
+                "  columns/decision_ms_mean/.style={column name={Decision ms}},",
+                "  columns/runtime_s_mean/.style={column name={Runtime s}},",
+                "}",
+                "\\pgfplotstabletypeset[",
+                "  columns={scenario,system,variant,total_reward_mean,total_reward_std,turns_mean,decision_ms_mean,runtime_s_mean},",
+                "  every head row/.style={before row=\\toprule, after row=\\midrule},",
+                "  every last row/.style={after row=\\bottomrule}",
+                "]{\\darpSummaryCsv}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def write_latex_preview(path: Path) -> None:
+    """Write a complete LaTeX document for previewing the generated table snippet."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            [
+                "\\documentclass{article}",
+                "",
+                "\\usepackage[margin=1in]{geometry}",
+                "\\usepackage{booktabs}",
+                "\\usepackage{pgfplotstable}",
+                "\\usepackage[strings]{underscore}",
+                "",
+                "\\begin{document}",
+                "",
+                "\\input{summary_table.tex}",
+                "",
+                "\\end{document}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
 
 def clear_open_terminal_outputs(args: argparse.Namespace, run_dir: Path) -> None:
@@ -615,10 +852,8 @@ def _darp_command(
         [
             "--planner",
             args.planner,
-            "--lookahead-depth",
-            str(args.lookahead_depth),
-            "--hilp-iterations",
-            str(args.hilp_iterations),
+            "--heuristic-lookahead-depth",
+            str(args.heuristic_lookahead_depth),
             "--frontier-width",
             str(args.frontier_width),
             "--hilp-heuristic",
@@ -629,6 +864,8 @@ def _darp_command(
             str(run_dir / f"darp_{variant['key']}_trace.json"),
         ]
     )
+    if args.expansion_rounds is not None:
+        command.extend(["--expansion-rounds", str(args.expansion_rounds)])
     return command
 
 
@@ -662,6 +899,10 @@ def _prost_client_command(spec: DARPProstExperimentSpec, args: argparse.Namespac
     """Return the PROST client command."""
     return [
         "./search-release",
+        "-h",
+        args.host,
+        "-p",
+        str(args.port),
         spec.prost_instance_name,
         args.prost_config.format(seed=seed),
     ]
@@ -941,6 +1182,107 @@ def _darp_metric_map(result: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _darp_run_row(
+    spec: DARPProstExperimentSpec,
+    seed: int,
+    variant: DARPVariantSummary,
+) -> dict[str, str]:
+    """Return one long-form CSV row for a DARP variant."""
+    result = variant.result
+    return {
+        "scenario": spec.name,
+        "seed": str(seed),
+        "system": "DARP",
+        "variant": variant.label,
+        "planner": str(result.get("planner", spec.default_planner)),
+        "heuristic": variant.heuristic,
+        "domain": str(spec.domain_path),
+        "instance": str(spec.instance_path),
+        "duration": str(spec.duration_path) if spec.duration_path is not None else "fixed-unit-default",
+        "total_reward": _csv_number(_optional_float(result.get("reward"))),
+        "turns": _csv_number(float(len(result.get("actions", ()))) if result.get("actions") else None),
+        "runtime_s": _csv_number(_optional_float(result.get("runtime_seconds"))),
+        "decision_ms": _csv_number(_optional_float(result.get("decision_ms"))),
+        "planner_elapsed_ms": _csv_number(_optional_float(result.get("planner_elapsed_ms"))),
+        "rddl_load_ms": _csv_number(_optional_float(result.get("rddl_load_ms"))),
+        "grounding_ms": _csv_number(_optional_float(result.get("grounding_ms"))),
+        "and_or_interface_ms": _csv_number(_optional_float(result.get("and_or_interface_ms"))),
+        "initial_belief_ms": _csv_number(_optional_float(result.get("initial_belief_ms"))),
+        "frontier_expand_ms": _csv_number(_optional_float(result.get("frontier_expand_ms"))),
+        "heuristic_eval_ms": _csv_number(_optional_float(result.get("heuristic_eval_ms"))),
+        "ilp_encode_ms": _csv_number(_optional_float(result.get("ilp_encode_ms"))),
+        "tree_ilp_build_ms": _csv_number(_optional_float(result.get("tree_ilp_build_ms"))),
+        "gurobi_call_ms": _csv_number(_optional_float(result.get("gurobi_call_ms"))),
+        "postprocess_ms": _csv_number(_optional_float(result.get("postprocess_ms"))),
+        "expanded_nodes": _csv_number(_optional_float(result.get("expanded_nodes"))),
+        "performed_trials": "",
+        "ilp_vars": _csv_number(_optional_float(result.get("ilp_variables"))),
+        "ilp_constraints": _csv_number(_optional_float(result.get("ilp_constraints"))),
+        "gurobi_ms": _csv_number(_optional_float(result.get("gurobi_ms"))),
+        "prost_parsing_ms": "",
+        "prost_instantiating_ms": "",
+        "prost_simplifying_ms": "",
+        "prost_analyzing_ms": "",
+        "risk_budget": "",
+        "constraint_violation": "",
+        "returncode": _csv_number(_optional_float(result.get("returncode"))),
+        "actions": ",".join(str(action) for action in result.get("actions", ())),
+        "states": "->".join(str(state) for state in result.get("state_trace", ())),
+    }
+
+
+def _prost_run_row(spec: DARPProstExperimentSpec, summary: RunSummary) -> dict[str, str]:
+    """Return one long-form CSV row for PROST."""
+    return {
+        "scenario": spec.name,
+        "seed": str(summary.seed),
+        "system": "PROST",
+        "variant": "PROST",
+        "planner": "prost",
+        "heuristic": "",
+        "domain": str(spec.domain_path),
+        "instance": str(spec.instance_path),
+        "duration": "not-used-by-prost",
+        "total_reward": _csv_number(_optional_float(summary.prost_reward)),
+        "turns": _csv_number(float(summary.prost_turns[-1]) if summary.prost_turns else None),
+        "runtime_s": _csv_number(_optional_float(summary.prost_runtime_seconds)),
+        "decision_ms": _csv_number(_optional_float(summary.prost_search_ms)),
+        "planner_elapsed_ms": "",
+        "rddl_load_ms": _csv_number(_prost_metric(summary, "parser_complete_ms")),
+        "grounding_ms": _csv_number(_prost_metric(summary, "instantiating_ms")),
+        "and_or_interface_ms": "",
+        "initial_belief_ms": "",
+        "frontier_expand_ms": "",
+        "heuristic_eval_ms": "",
+        "ilp_encode_ms": "",
+        "tree_ilp_build_ms": "",
+        "gurobi_call_ms": "",
+        "postprocess_ms": "",
+        "expanded_nodes": _csv_number(_prost_metric(summary, "created_search_nodes")),
+        "performed_trials": _csv_number(_prost_metric(summary, "performed_trials")),
+        "ilp_vars": "",
+        "ilp_constraints": "",
+        "gurobi_ms": "",
+        "prost_parsing_ms": _csv_number(_prost_metric(summary, "parsing_ms")),
+        "prost_instantiating_ms": _csv_number(_prost_metric(summary, "instantiating_ms")),
+        "prost_simplifying_ms": _csv_number(_prost_metric(summary, "simplifying_ms")),
+        "prost_analyzing_ms": _csv_number(_prost_metric(summary, "analyzing_ms")),
+        "risk_budget": "",
+        "constraint_violation": "",
+        "returncode": _csv_number(float(summary.prost_returncode) if summary.prost_returncode is not None else None),
+        "actions": ",".join(summary.prost_actions),
+        "states": "->".join(summary.prost_state_trace),
+    }
+
+
+def summary_csv_columns() -> tuple[str, ...]:
+    """Return stable columns for aggregate CSV files."""
+    numeric_columns: list[str] = []
+    for column in SUMMARY_NUMERIC_COLUMNS:
+        numeric_columns.extend([f"{column}_mean", f"{column}_std"])
+    return (*SUMMARY_GROUP_COLUMNS, "seeds", "successes", *numeric_columns)
+
+
 def _prost_metric(summary: RunSummary, key: str) -> float | None:
     """Return one optional numeric PROST metric."""
     return _optional_float(summary.prost_metrics.get(key))
@@ -989,6 +1331,8 @@ def _state_label(state: Any) -> str:
         return ""
     active = [name for name, value in sorted(state.items()) if value is True]
     if not active:
+        if any(str(name).startswith("robot-at___") for name in state):
+            return "lost"
         return ""
     return "+".join(_short_state_name(name) for name in active)
 
@@ -1060,6 +1404,23 @@ def _print_table(rows: list[dict[str, str]], *, headers: list[str]) -> None:
 def _format_optional_float(value: float | None) -> str:
     """Format an optional float for a compact table."""
     return "" if value is None else f"{value:.3f}"
+
+
+def _csv_number(value: float | None) -> str:
+    """Format an optional number for machine-readable CSV output."""
+    if value is None:
+        return ""
+    return f"{value:.12g}"
+
+
+def _csv_float(value: str) -> float | None:
+    """Parse an optional CSV number."""
+    if value == "":
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
 
 
 def _clip(value: str, *, limit: int = 88) -> str:

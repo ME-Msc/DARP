@@ -43,8 +43,8 @@ class HILPSearchStats:
 class HILPPlanner:
     """Run paper Algorithm 3 style frontier expansion. / 运行论文 Algorithm 3 风格的 frontier expansion。"""
 
-    lookahead_depth: int = 4
-    max_iterations: int = 4
+    heuristic_lookahead_depth: int = 4
+    expansion_rounds: int | None = None
     frontier_width: int = 1
     heuristic_mode: HILPHeuristicMode = "one-step-greedy"
     risk_budget: float | None = None
@@ -88,10 +88,10 @@ class HILPPlanner:
         """
 
         started_at = perf_counter()
-        if self.lookahead_depth < 1:
-            raise ValueError("lookahead_depth must be at least 1.")
-        if self.max_iterations < 1:
-            raise ValueError("max_iterations must be at least 1.")
+        if self.heuristic_lookahead_depth < 0:
+            raise ValueError("heuristic_lookahead_depth must be at least 0.")
+        if self.expansion_rounds is not None and self.expansion_rounds < 0:
+            raise ValueError("expansion_rounds must be non-negative when provided.")
         if self.frontier_width < 1:
             raise ValueError("frontier_width must be at least 1.")
         if remaining_depth < 1:
@@ -99,9 +99,12 @@ class HILPPlanner:
         if self.heuristic_mode not in ("one-step-greedy", "reachable-bellman"):
             raise ValueError(f"Unsupported HILP heuristic mode: {self.heuristic_mode}")
 
-        # HILP limits how deep the partial tree and optional reachable Bellman
-        # heuristic may look. / HILP 限制 partial tree 和可选 reachable Bellman 的深度。
-        expansion_depth_limit = max(1, min(self.lookahead_depth, remaining_depth))
+        # HILP tree expansion is bounded by the RDDL remaining horizon and the
+        # duration stopping condition.  `heuristic_lookahead_depth` is only for
+        # frontier scoring, not for truncating the partial policy tree.
+        # HILP 树展开由 RDDL 剩余 horizon 和 duration stopping condition 限制；
+        # `heuristic_lookahead_depth` 只用于 frontier 估值，不截断 partial tree。
+        expansion_depth_limit = max(1, remaining_depth)
         root_frontier = initialize_root_frontier(runtime, interface, root_belief=root_belief)
         # Algorithm 3: $$F$$ starts from all root action histories. / 初始 frontier。
         frontier_f: dict[str, FrontierItem] = {
@@ -127,9 +130,10 @@ class HILPPlanner:
             "gurobi_call_ms": 0.0,
         }
 
-        for _ in range(self.max_iterations):
-            if not frontier_f:
-                break
+        while frontier_f and (
+            self.expansion_rounds is None
+            or expansion_rounds < self.expansion_rounds
+        ):
             partial_tree, partial_result = self._solve_partial_policy_ilp(
                 runtime,
                 interface,
@@ -233,7 +237,8 @@ class HILPPlanner:
                 "ilp_constraints": float(len(partial_tree.spec.constraints)),
                 "expanded_nodes": float(len(expanded_e)),
                 "frontier_nodes": float(len(frontier_f)),
-                "hilp_iterations": float(expansion_rounds),
+                "expansion_rounds": float(expansion_rounds),
+                "heuristic_lookahead_depth": float(self.heuristic_lookahead_depth),
                 "hilp_heuristic_one_step_greedy": 1.0 if self.heuristic_mode == "one-step-greedy" else 0.0,
                 "hilp_heuristic_reachable_bellman": 1.0 if self.heuristic_mode == "reachable-bellman" else 0.0,
             },
@@ -276,7 +281,10 @@ class HILPPlanner:
                 frontier_expansions,
                 heuristic_cache,
                 heuristic_mode=self.heuristic_mode,
-                expansion_depth_limit=expansion_depth_limit,
+                heuristic_lookahead_depth=min(
+                    self.heuristic_lookahead_depth,
+                    max(0, expansion_depth_limit - item.node.history.depth),
+                ),
             )
             frontier_records_list.append(record)
             frontier_expand_ms += record_timing["frontier_expand_ms"]
@@ -352,7 +360,7 @@ def _frontier_leaf_record(
     heuristic_cache: dict[tuple[object, ...], object],
     *,
     heuristic_mode: HILPHeuristicMode,
-    expansion_depth_limit: int,
+    heuristic_lookahead_depth: int,
 ) -> tuple[Algorithm1ExpansionRecord, dict[str, float]]:
     r"""Return a frontier leaf record with the selected utility heuristic.
 
@@ -391,7 +399,7 @@ def _frontier_leaf_record(
             item,
             interface,
             heuristic_cache,
-            expansion_depth_limit=expansion_depth_limit,
+            heuristic_lookahead_depth=heuristic_lookahead_depth,
         )
         expanded = replace(
             expanded,
@@ -422,7 +430,7 @@ def _reachable_bellman_frontier_utility(
     interface: ANDORSearchInterface,
     heuristic_cache: dict[tuple[object, ...], object],
     *,
-    expansion_depth_limit: int,
+    heuristic_lookahead_depth: int,
 ) -> float:
     r"""Return $$h_q^u$$ from a reachable-state fully observable Bellman table.
 
@@ -441,7 +449,7 @@ def _reachable_bellman_frontier_utility(
     if not belief:
         return 0.0
     action = _action_assignment(item)
-    remaining_steps = max(1, expansion_depth_limit - item.node.history.depth + 1)
+    future_horizon = max(0, heuristic_lookahead_depth)
     successor_states: set[StateKey] = set()
     for state, probability in belief.items():
         if float(probability) <= 0.0:
@@ -459,7 +467,7 @@ def _reachable_bellman_frontier_utility(
         exact_kernel,
         interface,
         seed_states=tuple(successor_states),
-        horizon=max(0, remaining_steps - 1),
+        horizon=future_horizon,
         heuristic_cache=heuristic_cache,
     )
     expected_q = sum(
