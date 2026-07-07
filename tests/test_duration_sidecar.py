@@ -18,9 +18,9 @@ from darp.model.duration_sidecar import (
     load_duration_sidecar,
 )
 
-DOMAIN = "examples/rddl/tiny_grid_domain.rddl"
-INSTANCE = "examples/rddl/tiny_grid_instance.rddl"
-DURATIONS = "examples/durations/tiny_grid.yaml"
+DOMAIN = "experiments/inputs/rddl/tiny_grid_domain.rddl"
+INSTANCE = "experiments/inputs/rddl/tiny_grid_instance.rddl"
+DURATIONS = "experiments/inputs/durations/tiny_grid.yaml"
 
 
 def test_yaml_fixed_duration_sidecar_matches_grounded_actions():

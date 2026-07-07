@@ -1,4 +1,4 @@
-"""Generate side-by-side HTML replays for DARP/PROST experiment results.
+"""Generate side-by-side HTML replays for solver comparison results.
 
 The visualizer reads the long-format `runs.csv` produced by the experiment
 runner. It uses pyRDDLGym through DARP's loader to extract grid/navigation
@@ -19,7 +19,6 @@ from typing import Any
 from darp.visualization.graph import graph_from_rows, graph_with_replay_states
 from darp.visualization.traces import (
     enrich_rows_from_darp_traces,
-    enrich_rows_from_prost_logs,
     reachable_bellman_replay_rows,
     run_payload,
 )
@@ -27,7 +26,7 @@ from darp.visualization.traces import (
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the experiment visualizer CLI parser."""
-    parser = argparse.ArgumentParser(description="Generate a DARP/PROST side-by-side replay HTML file.")
+    parser = argparse.ArgumentParser(description="Generate a side-by-side solver replay HTML file.")
     parser.add_argument("runs_csv", help="long-format runs.csv from an experiment directory")
     parser.add_argument("--output", help="HTML output path; defaults to replay.html beside runs.csv")
     parser.add_argument("--title", help="optional page title")
@@ -52,7 +51,6 @@ def build_replay_html(runs_csv: str | Path, output: str | Path, *, title: str | 
         raise ValueError(f"No experiment rows found in {runs_path}.")
     rows = enrich_rows_from_darp_traces(rows, runs_path.parent)
     graph = graph_from_rows(rows)
-    rows = enrich_rows_from_prost_logs(rows, runs_path.parent, graph)
     replay_rows = reachable_bellman_replay_rows(rows)
     runs = [run_payload(row, graph) for row in replay_rows]
     graph = graph_with_replay_states(graph, runs)
@@ -329,7 +327,7 @@ def _html_document(payload: dict[str, Any]) -> str:
     </section>
     <section id="right-panel">
       <div class="panel-head">
-        <strong>PROST</strong>
+        <strong>Baseline</strong>
         <select id="right-select"></select>
         <div class="panel-toolbar">
           <button data-side="right" data-action="reset">Reset</button>
@@ -352,7 +350,7 @@ def _html_document(payload: dict[str, Any]) -> str:
 
     const bySystem = {{
       left: DATA.runs.filter(r => r.system === 'DARP'),
-      right: DATA.runs.filter(r => r.system === 'PROST'),
+      right: DATA.runs.filter(r => r.system !== 'DARP'),
     }};
 
     function setup() {{
@@ -387,7 +385,7 @@ def _html_document(payload: dict[str, Any]) -> str:
       select.innerHTML = '';
       if (!runs.length) {{
         const option = document.createElement('option');
-        option.textContent = side === 'left' ? 'No DARP run' : 'No PROST run';
+        option.textContent = side === 'left' ? 'No DARP run' : 'No baseline run';
         select.appendChild(option);
         state[side].run = null;
         return;

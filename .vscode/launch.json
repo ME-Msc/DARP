@@ -15,9 +15,9 @@
       },
       "args": [
         "--domain",
-        "examples/rddl/tiny_grid_domain.rddl",
+        "experiments/inputs/rddl/tiny_grid_domain.rddl",
         "--instance",
-        "examples/rddl/tiny_grid_instance.rddl",
+        "experiments/inputs/rddl/tiny_grid_instance.rddl",
         "--planner",
         "rollout",
         "--rollout-lookahead-depth",
@@ -42,11 +42,11 @@
       },
       "args": [
         "--domain",
-        "examples/rddl/tiny_grid_domain.rddl",
+        "experiments/inputs/rddl/tiny_grid_domain.rddl",
         "--instance",
-        "examples/rddl/tiny_grid_instance.rddl",
+        "experiments/inputs/rddl/tiny_grid_instance.rddl",
         "--duration",
-        "examples/durations/tiny_grid.yaml",
+        "experiments/inputs/durations/tiny_grid.yaml",
         "--planner",
         "full-ilp",
         "--seed",
@@ -69,11 +69,11 @@
       },
       "args": [
         "--domain",
-        "examples/rddl/tiny_grid_domain.rddl",
+        "experiments/inputs/rddl/tiny_grid_domain.rddl",
         "--instance",
-        "examples/rddl/tiny_grid_instance.rddl",
+        "experiments/inputs/rddl/tiny_grid_instance.rddl",
         "--duration",
-        "examples/durations/tiny_grid.yaml",
+        "experiments/inputs/durations/tiny_grid.yaml",
         "--planner",
         "hilp",
         "--heuristic-lookahead-depth",
@@ -104,11 +104,11 @@
       },
       "args": [
         "--domain",
-        "examples/rddl/tiny_grid_domain.rddl",
+        "experiments/inputs/rddl/tiny_grid_domain.rddl",
         "--instance",
-        "examples/rddl/tiny_grid_instance.rddl",
+        "experiments/inputs/rddl/tiny_grid_instance.rddl",
         "--duration",
-        "examples/durations/tiny_grid.yaml",
+        "experiments/inputs/durations/tiny_grid.yaml",
         "--planner",
         "hilp",
         "--heuristic-lookahead-depth",
@@ -123,46 +123,6 @@
         "0",
         "--output",
         "/tmp/darp_tiny_grid_hilp_bellman.json"
-      ]
-    },
-    {
-      "name": "PROST server: tiny grid rddlsim",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "/home/shaocong/Desktop/prost-planner/testbed/run-server.py",
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "python": "/home/shaocong/miniconda3/envs/rddl/bin/python",
-      "cwd": "/home/shaocong/Desktop/prost-planner/testbed",
-      "env": {
-        "RDDLSIM_ROOT": "/home/shaocong/Desktop/rddlsim"
-      },
-      "args": [
-        "-b",
-        "${workspaceFolder}/examples/rddl",
-        "-p",
-        "2323",
-        "-r",
-        "1",
-        "-s",
-        "0",
-        "--separate-session",
-        "-l",
-        "/tmp/darp_prost_rddlsim_logs"
-      ]
-    },
-    {
-      "name": "PROST client: tiny grid IPC2014",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "/home/shaocong/Desktop/prost-planner/prost.py",
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "python": "/home/shaocong/miniconda3/envs/rddl/bin/python",
-      "cwd": "/home/shaocong/Desktop/prost-planner",
-      "args": [
-        "tiny_grid_inst",
-        "[Prost -s 0 -se [IPC2014]]"
       ]
     },
     {

@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--planner",
         choices=("hilp", "full-ilp", "rollout"),
         default="rollout",
-        help="online planner to use; rollout is the fast default, hilp/full-ilp enable the paper path",
+        help="online planner to use; rollout is the fast default, hilp/full-ilp enable exact paper-path planning",
     )
     parser.add_argument("--seed", type=int, default=0, help="runtime random seed")
     parser.add_argument(

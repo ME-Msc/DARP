@@ -1,0 +1,3 @@
+scenario,seed,system,variant,planner,returncode,total_reward,turns,decision_ms,planner_elapsed_ms,rddl_load_ms,grounding_ms,and_or_interface_ms,actions,states,action_trace,state_trace,output_json
+tiny_grid_fixed_1,0,DARP,darp_hilp_reachable_bellman,hilp,0,-4.0,8,0.0,0.0,0.0,0.0,0.0,,,,,
+tiny_grid_fixed_1,0,RAO*,rao_star,rao-star,0,-4.0,8,0.0,0.0,0.0,0.0,0.0,,,,,

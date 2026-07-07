@@ -125,7 +125,7 @@ def run_online_session(
     trace_output_path: str | Path | None = None,
     trace_timing: Mapping[str, float] | None = None,
 ) -> OnlineSessionResult:
-    """Run a PROST-like online loop against pyRDDLGym. / 基于 pyRDDLGym 运行 PROST 风格在线循环。"""
+    """Run an online planner loop against pyRDDLGym. / 基于 pyRDDLGym 运行在线 planner 循环。"""
     runtime = PyRDDLGymRuntime.from_problem(problem)
     duration = duration_sidecar or _default_duration_sidecar()
     sidecar_risk = duration.risk_spec()

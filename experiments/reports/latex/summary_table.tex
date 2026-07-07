@@ -1,0 +1,32 @@
+% DARP-vs-RAO* comparison table.
+% Requires: \usepackage{booktabs,graphicx,pgfplotstable}
+% Keep data in CSV. Override \darpSummaryCsv before \input to use a real
+% experiment output, for example:
+% \renewcommand{\darpSummaryCsv}{../../outputs/tiny_grid_fixed_1/summary.csv}
+\providecommand{\darpSummaryCsv}{sample-summary.csv}
+\pgfplotstableset{
+  col sep=comma,
+  string type,
+  columns/scenario/.style={column name=Scenario},
+  columns/system/.style={column name=System},
+  columns/variant/.style={column name=Variant},
+  columns/seed/.style={column name=Seed},
+  columns/total_reward/.style={column name=Reward},
+  columns/turns/.style={column name=Turns},
+  columns/decision_ms/.style={column name={Decision ms}},
+  columns/planner_elapsed_ms/.style={column name={Planner ms}},
+  columns/rddl_load_ms/.style={column name={RDDL load ms}},
+  columns/grounding_ms/.style={column name={Grounding ms}},
+  columns/and_or_interface_ms/.style={column name={AND-OR ms}},
+}
+\begingroup
+\scriptsize
+\noindent\makebox[\textwidth][c]{%
+\resizebox{\textwidth}{!}{%
+\pgfplotstabletypeset[
+  columns={scenario,system,variant,seed,total_reward,turns,decision_ms,planner_elapsed_ms,rddl_load_ms,grounding_ms,and_or_interface_ms},
+  every head row/.style={before row=\toprule, after row=\midrule},
+  every last row/.style={after row=\bottomrule}
+]{\darpSummaryCsv}%
+}}
+\endgroup

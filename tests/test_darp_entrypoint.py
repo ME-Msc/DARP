@@ -24,6 +24,7 @@ def test_darp_help_exits_successfully(capsys):
     assert "--expansion-rounds" in help_text
     assert "--hilp-heuristic" in help_text
     assert "--particles" in help_text
+    assert "rao-star" not in help_text
 
 
 def test_darp_rddl_arguments_parse():
@@ -103,9 +104,9 @@ def test_darp_runs_rddl_online_through_pyrddlgym(capsys):
     exit_code = main(
         [
             "--domain",
-            "examples/rddl/tiny_grid_domain.rddl",
+            "experiments/inputs/rddl/tiny_grid_domain.rddl",
             "--instance",
-            "examples/rddl/tiny_grid_instance.rddl",
+            "experiments/inputs/rddl/tiny_grid_instance.rddl",
         ]
     )
     captured = capsys.readouterr()
@@ -124,9 +125,9 @@ def test_darp_rddl_output_writes_json_trace(tmp_path, capsys):
     exit_code = main(
         [
             "--domain",
-            "examples/rddl/tiny_grid_domain.rddl",
+            "experiments/inputs/rddl/tiny_grid_domain.rddl",
             "--instance",
-            "examples/rddl/tiny_grid_instance.rddl",
+            "experiments/inputs/rddl/tiny_grid_instance.rddl",
             "--output",
             str(output),
         ]

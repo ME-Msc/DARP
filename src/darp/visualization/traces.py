@@ -1,6 +1,7 @@
-"""Trace normalization helpers for DARP/PROST replay visualizations."""
+"""Trace normalization helpers for solver replay visualizations."""
 
-# TODO(visualization): Add more PROST state-vector decoders through domain modules.
+# TODO(visualization): Add RAO*/DARP domain-specific frame decoders as
+# benchmark adapters mature.
 
 from __future__ import annotations
 
@@ -15,7 +16,6 @@ from darp.visualization.graph import (
     graph_next_state,
 )
 from darp.visualization.schema import ReplayFrame, frame_from_mapping
-from darp.visualization.domains.crossing_traffic import prost_sequences as crossing_traffic_prost_sequences
 
 
 def enrich_rows_from_darp_traces(rows: list[dict[str, str]], experiment_dir: Path) -> list[dict[str, str]]:
@@ -33,31 +33,15 @@ def enrich_rows_from_darp_traces(rows: list[dict[str, str]], experiment_dir: Pat
     return enriched
 
 
-def enrich_rows_from_prost_logs(
-    rows: list[dict[str, str]],
-    experiment_dir: Path,
-    graph: dict[str, Any],
-) -> list[dict[str, str]]:
-    """Fill PROST robot/obstacle traces from client stdout when the CSV lacks them."""
-    enriched = []
-    for row in rows:
-        row = dict(row)
-        if row.get("system") == "PROST":
-            actions = split_sequence(row.get("actions", ""), separator=",")
-            frames = _prost_trace_frames(experiment_dir, row, actions, graph)
-            if frames:
-                row["frames"] = json.dumps([frame.to_dict() for frame in frames])
-                if not row.get("states"):
-                    row["states"] = "->".join(frame.agent for frame in frames if frame.agent)
-                if not row.get("obstacles"):
-                    row["obstacles"] = json.dumps([list(frame.obstacles) for frame in frames])
-        enriched.append(row)
-    return enriched
-
-
 def reachable_bellman_replay_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Keep only reachable-bellman DARP rows while preserving PROST rows."""
+    """Keep reachable-bellman rows when present, otherwise preserve all rows."""
     replay_rows = []
+    has_reachable = any(
+        row.get("heuristic") == "reachable-bellman" or "reachable-bellman" in row.get("variant", "")
+        for row in rows
+    )
+    if not has_reachable:
+        return rows
     for row in rows:
         if row.get("system") != "DARP":
             replay_rows.append(row)
@@ -165,40 +149,6 @@ def _darp_trace_sequences(experiment_dir: Path, row: dict[str, str]) -> tuple[li
     return [frame.agent for frame in frames if frame.agent], [list(frame.obstacles) for frame in frames]
 
 
-def _prost_trace_sequences(
-    experiment_dir: Path,
-    row: dict[str, str],
-    actions: list[str],
-    graph: dict[str, Any],
-) -> tuple[list[str], list[list[str]]]:
-    """Read PROST robot and obstacle traces from seed_N/prost_client_stdout.txt."""
-    seed = row.get("seed", "")
-    if not seed:
-        return [], []
-    output_path = experiment_dir / f"seed_{seed}" / "prost_client_stdout.txt"
-    if not output_path.exists():
-        output_path = experiment_dir / f"seed_{seed}" / "prost_client_terminal.log"
-    if not output_path.exists():
-        return [], []
-    text = output_path.read_text(encoding="utf-8", errors="replace")
-    if "crossing_traffic" in row.get("domain", ""):
-        return crossing_traffic_prost_sequences(text, actions, graph)
-    return [], []
-
-
-def _prost_trace_frames(
-    experiment_dir: Path,
-    row: dict[str, str],
-    actions: list[str],
-    graph: dict[str, Any],
-) -> list[ReplayFrame]:
-    """Decode PROST logs into the same frame schema used for DARP traces."""
-    states, obstacles = _prost_trace_sequences(experiment_dir, row, actions, graph)
-    if not states:
-        states = _complete_state_sequence(states, actions, graph)
-    return _frames_from_sequences(states, obstacles, actions, include_action_tail=False)
-
-
 def _frame_sequence(value: str) -> list[ReplayFrame]:
     """Parse a JSON-encoded replay-frame sequence."""
     if not value:
@@ -248,7 +198,7 @@ def _frames_from_sequences(
 
 
 def _normalize_state_label(label: str) -> str:
-    """Normalize DARP/PROST state labels to graph node ids when possible."""
+    """Normalize solver state labels to graph node ids when possible."""
     if not label or label in {"(none)", "noop"}:
         return ""
     if label == "lost":

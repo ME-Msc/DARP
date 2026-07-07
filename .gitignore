@@ -224,28 +224,11 @@ __marimo__/
 # Generated visualizer artifacts
 *_ast.html
 
-# Generated experiment outputs; keep experiment folders, configs, notes, and scripts versioned.
-experiments/runs.csv
-experiments/summary.csv
-experiments/summary.json
-experiments/summary_table.tex
-experiments/replay.html
-experiments/latex/build/
-experiments/latex/*.aux
-experiments/latex/*.log
-experiments/latex/*.pdf
-experiments/latex/*.synctex.gz
-experiments/*/runs.csv
-experiments/*/summary.csv
-experiments/*/summary.json
-experiments/*/replay.html
-experiments/*/seed_*/
-experiments/*/prost_rddl/
-experiments/*/prost_client_work/
-experiments/*/prost_rddlsim_logs/
-experiments/*/*_stdout.txt
-experiments/*/*_stderr.txt
-experiments/*/*_terminal.log
-experiments/*/*_trace.json
-experiments/*/*_started_at.txt
-experiments/*/*_finished_at.txt
+# Generated experiment outputs; keep inputs, baselines, scripts, and report templates versioned.
+experiments/outputs/*
+!experiments/outputs/.gitkeep
+experiments/reports/latex/build/
+experiments/reports/latex/*.aux
+experiments/reports/latex/*.log
+experiments/reports/latex/*.pdf
+experiments/reports/latex/*.synctex.gz

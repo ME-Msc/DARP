@@ -11,10 +11,10 @@ from darp.planning.expand import expand_frontier_item
 from darp.planning.ilp_tree import build_full_tree_ilp
 from darp.planning.preprocess import initialize_root_frontier
 
-DOMAIN = "examples/rddl/tiny_grid_domain.rddl"
-INSTANCE = "examples/rddl/tiny_grid_instance.rddl"
-FIXED_DURATION = "examples/durations/tiny_grid.yaml"
-GAUSSIAN_DURATION = "examples/durations/tiny_grid_gaussian.yaml"
+DOMAIN = "experiments/inputs/rddl/tiny_grid_domain.rddl"
+INSTANCE = "experiments/inputs/rddl/tiny_grid_instance.rddl"
+FIXED_DURATION = "experiments/inputs/durations/tiny_grid.yaml"
+GAUSSIAN_DURATION = "experiments/inputs/durations/tiny_grid_gaussian.yaml"
 
 
 def _exact_inputs(duration_path=FIXED_DURATION):

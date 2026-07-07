@@ -10,8 +10,8 @@ from darp.model.and_or_tree import ANDORSearchInterface, ActionChoice, Observati
 from darp.planning.rollout import action_label
 from darp.planning.session import run_online_session
 
-DOMAIN = "examples/rddl/tiny_grid_domain.rddl"
-INSTANCE = "examples/rddl/tiny_grid_instance.rddl"
+DOMAIN = "experiments/inputs/rddl/tiny_grid_domain.rddl"
+INSTANCE = "experiments/inputs/rddl/tiny_grid_instance.rddl"
 
 
 def test_pyrddlgym_runtime_exposes_noop_and_single_action_candidates():

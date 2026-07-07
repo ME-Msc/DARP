@@ -11,8 +11,8 @@ from darp.adapter.problem import PyRDDLGymProblem, RDDLLoadError
 from darp.adapter.runtime import PyRDDLGymRuntime
 from darp.model.and_or_tree import ANDORNodeKind
 
-DOMAIN = "examples/rddl/tiny_grid_domain.rddl"
-INSTANCE = "examples/rddl/tiny_grid_instance.rddl"
+DOMAIN = "experiments/inputs/rddl/tiny_grid_domain.rddl"
+INSTANCE = "experiments/inputs/rddl/tiny_grid_instance.rddl"
 
 
 def test_pyrddlgym_loader_returns_model_and_env_when_installed():

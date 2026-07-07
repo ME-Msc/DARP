@@ -528,6 +528,7 @@ class ExactRDDLKernel:
         for state_key, state_prob in prior_belief.items():
             state = self.state_from_key(state_key)
             context = self._context(state, action)
+            context.update({f"{name}'": state.get(name, False) for name in self.state_names})
             obs_dist = self._observation_distribution(context)
             for obs_key, obs_prob in obs_dist.items():
                 weighted = state_prob * obs_prob
@@ -567,6 +568,7 @@ class ExactRDDLKernel:
             observed_state = observation[0][1]
             return 1.0 if observed_state == state else 0.0
         context = self._context(self.state_from_key(state), action)
+        context.update({f"{name}'": context.get(name, False) for name in self.state_names})
         return float(self._observation_distribution(context).get(observation, 0.0))
 
     def expected_reward(self, context: Mapping[str, Any]) -> float:
