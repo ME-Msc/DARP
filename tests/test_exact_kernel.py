@@ -1,5 +1,6 @@
 """Tests for exact finite kernels built from pyRDDLGym grounding."""
 
+import numpy as np
 import pytest
 
 from darp.adapter.exact import ExactBeliefState
@@ -58,6 +59,29 @@ def test_exact_kernel_computes_sidecar_next_state_risk():
 
     assert sidecar.risk_spec().budget == 0.25
     assert expansion.risk == 1.0
+
+
+def test_exact_kernel_lazily_indexes_and_caches_sparse_transitions():
+    """Check reached states use NumPy ids and repeated CPF rows hit cache. / 检查触达状态使用 NumPy 编号且重复 CPF 转移命中缓存。"""
+    runtime, interface, _, _ = _exact_inputs()
+    exact = interface.exact_kernel
+    assert exact is not None
+    belief = exact.initial_belief_from_state(runtime.state)
+    sparse = exact.sparse_belief(belief)
+    action = next(choice.assignment for choice in interface.actions if choice.label == "move-east")
+
+    first = exact.expand_action(belief, action)
+    after_first = exact.cache_info()
+    second = exact.expand_action(belief, action)
+    after_second = exact.cache_info()
+
+    assert isinstance(sparse.state_ids, np.ndarray)
+    assert isinstance(sparse.probabilities, np.ndarray)
+    assert after_first["discovered_states"] < 2 ** len(exact.state_names)
+    assert after_second["transition_rows"] == after_first["transition_rows"]
+    assert after_second["transition_hits"] > after_first["transition_hits"]
+    assert second.prior_belief == first.prior_belief
+    assert second.utility == first.utility
 
 
 def test_exact_full_ilp_contains_sidecar_risk_row():
@@ -196,8 +220,8 @@ class _TinyRuntime:
     state = {}
 
     def clone(self):
-        """Return an isolated runtime copy. / 返回隔离 runtime 副本。"""
-        return _TinyRuntime()
+        """Reject copies because exact Algorithm 1/2 must not clone environments. / 拒绝复制以确保 exact Algorithm 1/2 不克隆环境。"""
+        raise AssertionError("Exact tree expansion must not clone the pyRDDLGym runtime.")
 
 
 class _TwoStatePOMDPKernel:

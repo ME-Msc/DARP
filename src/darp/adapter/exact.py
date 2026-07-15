@@ -2,8 +2,8 @@
 
 # TODO(phase-9.1): Extend finite expression support beyond Bernoulli/Discrete
 # random variables when benchmark domains require additional finite laws.
-# TODO(phase-9.1): Replace bool-state Cartesian enumeration with invariant-aware
-# reachable-state generation for large benchmark domains.
+# TODO(phase-9.2): Add dependency-aware factored CPF evaluation so one
+# stochastic CPF does not require materializing unrelated state factors.
 
 from __future__ import annotations
 
@@ -12,9 +12,50 @@ from itertools import product
 from math import prod
 from typing import Any, Hashable, Mapping, Sequence
 
+import numpy as np
+
 StateKey = tuple[tuple[str, Hashable], ...]
 ObservationKey = tuple[tuple[str, Hashable], ...]
 Distribution = dict[Hashable, float]
+ActionKey = tuple[tuple[str, Hashable], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SparseProbabilityVector:
+    """Store an exact sparse distribution with integer state ids. / 用整数状态编号保存精确稀疏分布。"""
+
+    state_ids: np.ndarray  # Non-zero support ids. / 非零概率状态编号。
+    probabilities: np.ndarray  # Probabilities aligned with state_ids. / 与状态编号对齐的概率。
+
+
+@dataclass(frozen=True, slots=True)
+class SparseTransitionRow:
+    """Store one cached sparse row of $$T_a$$. / 保存 $$T_a$$ 的一条缓存稀疏行。"""
+
+    next_state_ids: np.ndarray  # Reachable successor ids. / 可达后继状态编号。
+    probabilities: np.ndarray  # $$T(s,a,s')$$ for each successor. / 每个后继的转移概率。
+
+
+@dataclass(slots=True)
+class _LazyStateIndex:
+    """Assign compact ids only to states reached by search. / 只为搜索触达的状态分配紧凑编号。"""
+
+    key_to_id: dict[StateKey, int] = field(default_factory=dict)
+    id_to_key: list[StateKey] = field(default_factory=list)
+
+    def register(self, state: StateKey) -> int:
+        """Return an existing id or append one discovered state. / 返回已有编号或登记新发现状态。"""
+        state_id = self.key_to_id.get(state)
+        if state_id is not None:
+            return state_id
+        state_id = len(self.id_to_key)
+        self.key_to_id[state] = state_id
+        self.id_to_key.append(state)
+        return state_id
+
+    def key(self, state_id: int) -> StateKey:
+        """Return the state key for an integer id. / 返回整数编号对应的状态键。"""
+        return self.id_to_key[state_id]
 
 
 class ExactKernelError(ValueError):
@@ -175,10 +216,54 @@ class ExactBeliefState:
 
 @dataclass(frozen=True)
 class ExactRDDLKernel:
-    """Compile a finite pyRDDLGym grounded model into exact DARP kernels. / 将 pyRDDLGym grounded model 编译成 DARP exact kernel。"""
+    """Lazily compile reached grounded states into exact sparse kernels. / 将触达的 grounded 状态按需编译为精确稀疏内核。"""
 
     grounded_model: Any
     risk: RiskConstraintSpec = field(default_factory=RiskConstraintSpec)
+    _state_names_cache: tuple[str, ...] = field(default=(), init=False, repr=False, compare=False)
+    _action_names_cache: tuple[str, ...] = field(default=(), init=False, repr=False, compare=False)
+    _observation_names_cache: tuple[str, ...] = field(default=(), init=False, repr=False, compare=False)
+    _non_fluents_cache: Mapping[str, Any] = field(default_factory=dict, init=False, repr=False, compare=False)
+    _cpfs_cache: Mapping[str, Any] = field(default_factory=dict, init=False, repr=False, compare=False)
+    _state_index: _LazyStateIndex = field(default_factory=_LazyStateIndex, init=False, repr=False, compare=False)
+    _action_ids: dict[ActionKey, int] = field(default_factory=dict, init=False, repr=False, compare=False)
+    _transition_rows: dict[tuple[int, int], SparseTransitionRow] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _reward_cache: dict[tuple[int, int], float] = field(default_factory=dict, init=False, repr=False, compare=False)
+    _state_cost_cache: dict[int, float] = field(default_factory=dict, init=False, repr=False, compare=False)
+    _next_state_cost_cache: dict[int, float] = field(default_factory=dict, init=False, repr=False, compare=False)
+    _observation_cache: dict[tuple[int, int], Mapping[ObservationKey, float]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _cache_hits: dict[str, int] = field(
+        default_factory=lambda: {"transition": 0, "reward": 0, "observation": 0},
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Freeze grounded metadata reused by every numeric evaluation. / 固定每次数值求值都会复用的 grounded 元数据。"""
+        object.__setattr__(
+            self,
+            "_state_names_cache",
+            tuple(sorted(_mapping_keys(getattr(self.grounded_model, "state_fluents", None)))),
+        )
+        object.__setattr__(
+            self,
+            "_action_names_cache",
+            tuple(sorted(_mapping_keys(getattr(self.grounded_model, "action_fluents", None)))),
+        )
+        object.__setattr__(
+            self,
+            "_observation_names_cache",
+            tuple(sorted(_mapping_keys(getattr(self.grounded_model, "observ_fluents", None)))),
+        )
+        non_fluents = getattr(self.grounded_model, "non_fluents", None)
+        cpfs = getattr(self.grounded_model, "cpfs", None)
+        object.__setattr__(self, "_non_fluents_cache", non_fluents if isinstance(non_fluents, Mapping) else {})
+        object.__setattr__(self, "_cpfs_cache", cpfs if isinstance(cpfs, Mapping) else {})
 
     @classmethod
     def from_grounded_model(
@@ -195,33 +280,70 @@ class ExactRDDLKernel:
     @property
     def state_names(self) -> tuple[str, ...]:
         """Return deterministic grounded state fluent names. / 返回确定性的 grounded state fluent 名称。"""
-        return tuple(sorted(_mapping_keys(getattr(self.grounded_model, "state_fluents", None))))
+        return self._state_names_cache
 
     @property
     def action_names(self) -> tuple[str, ...]:
         """Return deterministic grounded action fluent names. / 返回确定性的 grounded action fluent 名称。"""
-        return tuple(sorted(_mapping_keys(getattr(self.grounded_model, "action_fluents", None))))
+        return self._action_names_cache
 
     @property
     def observation_names(self) -> tuple[str, ...]:
         """Return deterministic grounded observation fluent names. / 返回确定性的 grounded observation fluent 名称。"""
-        return tuple(sorted(_mapping_keys(getattr(self.grounded_model, "observ_fluents", None))))
+        return self._observation_names_cache
 
     @property
     def non_fluents(self) -> Mapping[str, Any]:
         """Return grounded non-fluent values. / 返回 grounded non-fluent 值。"""
-        values = getattr(self.grounded_model, "non_fluents", None)
-        return dict(values) if isinstance(values, Mapping) else {}
+        return self._non_fluents_cache
 
     @property
     def cpfs(self) -> Mapping[str, Any]:
         """Return grounded CPF expressions. / 返回 grounded CPF 表达式。"""
-        values = getattr(self.grounded_model, "cpfs", None)
-        return dict(values) if isinstance(values, Mapping) else {}
+        return self._cpfs_cache
 
     def initial_belief_from_state(self, state: Mapping[str, Any]) -> Mapping[StateKey, float]:
         """Return a singleton belief from a pyRDDLGym state dict. / 从 pyRDDLGym state dict 返回单点 belief。"""
-        return {self.state_key(state): 1.0}
+        state_key = self.state_key(state)
+        self._state_index.register(state_key)
+        return {state_key: 1.0}
+
+    def cache_info(self) -> Mapping[str, int]:
+        """Return lazy-kernel sizes and hit counters. / 返回按需内核规模和缓存命中计数。"""
+        return {
+            "discovered_states": len(self._state_index.id_to_key),
+            "discovered_actions": len(self._action_ids),
+            "transition_rows": len(self._transition_rows),
+            "reward_entries": len(self._reward_cache),
+            "risk_entries": len(self._state_cost_cache) + len(self._next_state_cost_cache),
+            "observation_entries": len(self._observation_cache),
+            "transition_hits": self._cache_hits["transition"],
+            "reward_hits": self._cache_hits["reward"],
+            "observation_hits": self._cache_hits["observation"],
+        }
+
+    def sparse_belief(self, belief: Mapping[StateKey, float]) -> SparseProbabilityVector:
+        r"""Index and normalize an exact belief without enumerating absent states.
+
+        Only states in the non-zero support of $$b_q$$ receive ids. / 只为
+        $$b_q$$ 非零支持集中的状态分配编号并构造 NumPy 稀疏向量。
+        """
+        clean = _normalize_distribution(dict(belief))
+        ids = np.fromiter(
+            (self._state_index.register(state) for state in clean),
+            dtype=np.int64,
+            count=len(clean),
+        )
+        probabilities = np.fromiter(clean.values(), dtype=np.float64, count=len(clean))
+        return SparseProbabilityVector(ids, probabilities)
+
+    def belief_mapping(self, belief: SparseProbabilityVector) -> Mapping[StateKey, float]:
+        """Convert an indexed sparse belief back to the public mapping API. / 将编号稀疏 belief 转回公开 mapping 接口。"""
+        return {
+            self._state_index.key(int(state_id)): float(probability)
+            for state_id, probability in zip(belief.state_ids, belief.probabilities)
+            if abs(float(probability)) > 1e-15
+        }
 
     def update_belief(
         self,
@@ -278,22 +400,38 @@ class ExactRDDLKernel:
         / 将 root belief 条件化到初始安全事件；初始风险由 ILP risk budget
         单独扣除，后续 tree 中传播的是 safe belief。
         """
-        clean_belief = _normalize_distribution(dict(belief))
-        weighted = {
-            state: probability * (1.0 - self.state_failure_probability(state))
-            for state, probability in clean_belief.items()
-        }
-        return _normalize_distribution(weighted)
+        b_0 = self.sparse_belief(belief)
+        survival = np.fromiter(
+            (1.0 - self._state_failure_for_id(int(state_id)) for state_id in b_0.state_ids),
+            dtype=np.float64,
+            count=b_0.state_ids.size,
+        )
+        weights = b_0.probabilities * survival
+        positive = weights > 1e-15
+        total = float(np.sum(weights[positive]))
+        if total <= 0.0:
+            return {}
+        b_star_0 = SparseProbabilityVector(b_0.state_ids[positive], weights[positive] / total)
+        return self.belief_mapping(b_star_0)
 
     def fluent_belief(self, belief: Mapping[StateKey, float]) -> Mapping[str, float]:
-        """Return marginal probabilities that each state fluent is true. / 返回每个 state fluent 为真的边缘概率。"""
-        marginals = {name: 0.0 for name in self.state_names}
-        for state_key, probability in belief.items():
-            state = self.state_from_key(state_key)
-            for name in self.state_names:
-                if bool(state.get(name, False)):
-                    marginals[name] += probability
-        return marginals
+        r"""Return fluent marginals by matrix multiplication.
+
+        $$m=bF$$ where $$F_{s,f}=1$$ iff fluent $$f$$ is true in state $$s$$.
+        / 通过状态-fluent 指示矩阵计算边缘概率。
+        """
+        sparse = self.sparse_belief(belief)
+        if sparse.state_ids.size == 0:
+            return {name: 0.0 for name in self.state_names}
+        truth = np.asarray(
+            [
+                [bool(dict(self._state_index.key(int(state_id))).get(name, False)) for name in self.state_names]
+                for state_id in sparse.state_ids
+            ],
+            dtype=np.float64,
+        )
+        marginals = sparse.probabilities @ truth
+        return {name: float(marginals[index]) for index, name in enumerate(self.state_names)}
 
     def state_key(self, state: Mapping[str, Any]) -> StateKey:
         """Convert a state mapping to a stable key. / 将 state mapping 转成稳定 key。"""
@@ -328,23 +466,28 @@ class ExactRDDLKernel:
 
         / 精确计算 action 后的 prior belief、utility 与 risk/cost 常量。
         """
-        clean_belief = _normalize_distribution(dict(belief))  # belief of history q, which is $$b_q$$
-        prior: dict[StateKey, float] = {}
-        utility = 0.0
-        current_risk = 0.0
-        next_risk = 0.0
-        for state_key, state_prob in clean_belief.items():
-            state = self.state_from_key(state_key)
-            context = self._context(state, action)
-            utility += state_prob * self.expected_reward(context)  # expected_reward is $$U(s, a)$$
-            current_risk += state_prob * self._state_cost(state, self.risk.state_fluent_costs)
-            for next_state, trans_prob in self.transition_distribution(state, action).items():  # transition_distribution is $$T(s, a, s')$$
-                prior[next_state] = prior.get(next_state, 0.0) + state_prob * trans_prob # prior belief after action but before observation, $$b_{qa}(s')$$
-                next_risk += state_prob * trans_prob * self._state_cost(
-                    self.state_from_key(next_state),
-                    self.risk.next_state_fluent_costs,
-                )
-        prior = _normalize_distribution(prior)
+        b_q = self.sparse_belief(belief)  # Indexed non-zero support of $$b_q$$. / $$b_q$$ 的编号非零支持集。
+        action_id = self._action_id(action)
+        rewards = np.fromiter(
+            (self._reward_for_ids(int(state_id), action_id, action) for state_id in b_q.state_ids),
+            dtype=np.float64,
+            count=b_q.state_ids.size,
+        )
+        current_costs = np.fromiter(
+            (self._state_cost_for_id(int(state_id)) for state_id in b_q.state_ids),
+            dtype=np.float64,
+            count=b_q.state_ids.size,
+        )
+        utility = float(b_q.probabilities @ rewards)  # $$u_{qa}=b_q^T R_a$$. / belief 与 reward 向量点积。
+        current_risk = float(b_q.probabilities @ current_costs)  # $$b_q^T C_a$$. / 当前状态风险点积。
+        b_qa = self._propagate_sparse_belief(b_q, action_id, action)
+        next_costs = np.fromiter(
+            (self._next_state_cost_for_id(int(state_id)) for state_id in b_qa.state_ids),
+            dtype=np.float64,
+            count=b_qa.state_ids.size,
+        )
+        next_risk = float(b_qa.probabilities @ next_costs) if b_qa.state_ids.size else 0.0
+        prior = self.belief_mapping(b_qa)  # Public Algorithm 2 mapping. / Algorithm 2 对外使用的 belief mapping。
         observations = self.observation_outcomes(prior, action)
         return ExactActionExpansion(
             utility=utility,
@@ -379,8 +522,8 @@ class ExactRDDLKernel:
         / 计算 chance-constrained safe belief 递推；risk 是本 action 下发生
         failure 的条件概率，prior_belief 是已条件化 survival 的 safe prior。
         """
-        clean_belief = _normalize_distribution(dict(safe_belief))
-        if not clean_belief:
+        b_star_q = self.sparse_belief(safe_belief)
+        if b_star_q.state_ids.size == 0:
             return SafeActionExpansion(
                 utility=0.0,
                 risk=0.0,
@@ -388,27 +531,20 @@ class ExactRDDLKernel:
                 survival_probability=0.0,
                 observations=(),
             )
-        utility = 0.0
-        weighted_safe_prior: dict[StateKey, float] = {}
-        survival_probability = 0.0
-        for state_key, state_prob in clean_belief.items():
-            state = self.state_from_key(state_key)
-            utility += state_prob * self.expected_reward(self._context(state, action))
-            for next_state, transition_prob in self.transition_distribution(state, action).items():
-                safe_weight = (
-                    state_prob
-                    * transition_prob
-                    * self.transition_survival_probability(state_key, next_state)
-                )
-                if safe_weight <= 0.0:
-                    continue
-                weighted_safe_prior[next_state] = weighted_safe_prior.get(next_state, 0.0) + safe_weight
-                survival_probability += safe_weight
-        safe_prior = (
-            _normalize_distribution(weighted_safe_prior)
-            if survival_probability > 0.0
-            else {}
+        action_id = self._action_id(action)
+        rewards = np.fromiter(
+            (self._reward_for_ids(int(state_id), action_id, action) for state_id in b_star_q.state_ids),
+            dtype=np.float64,
+            count=b_star_q.state_ids.size,
         )
+        utility = float(b_star_q.probabilities @ rewards)
+        safe_qa, survival_probability = self._propagate_sparse_belief(
+            b_star_q,
+            action_id,
+            action,
+            condition_on_survival=True,
+        )
+        safe_prior = self.belief_mapping(safe_qa)
         return SafeActionExpansion(
             utility=utility,
             risk=max(0.0, min(1.0, 1.0 - survival_probability)),
@@ -438,29 +574,21 @@ class ExactRDDLKernel:
 
     def belief_state_risk_probability(self, belief: Mapping[StateKey, float]) -> float:
         """Return initial/root state risk probability r(b). / 返回初始/root state risk 概率 r(b)。"""
-        clean_belief = _normalize_distribution(dict(belief))
-        return max(
-            0.0,
-            min(
-                1.0,
-                sum(
-                    probability * self.state_failure_probability(state)
-                    for state, probability in clean_belief.items()
-                ),
-            ),
+        sparse = self.sparse_belief(belief)
+        failure = np.fromiter(
+            (self._state_failure_for_id(int(state_id)) for state_id in sparse.state_ids),
+            dtype=np.float64,
+            count=sparse.state_ids.size,
         )
+        return _clamped_probability(float(sparse.probabilities @ failure))
 
     def state_failure_probability(self, state: StateKey) -> float:
         """Return configured current-state failure probability. / 返回配置的当前 state failure 概率。"""
-        return _clamped_probability(
-            self._state_cost(self.state_from_key(state), self.risk.state_fluent_costs)
-        )
+        return self._state_failure_for_id(self._state_index.register(state))
 
     def next_state_failure_probability(self, state: StateKey) -> float:
         """Return configured next-state failure probability. / 返回配置的 next-state failure 概率。"""
-        return _clamped_probability(
-            self._state_cost(self.state_from_key(state), self.risk.next_state_fluent_costs)
-        )
+        return _clamped_probability(self._next_state_cost_for_id(self._state_index.register(state)))
 
     def transition_failure_probability(self, state: StateKey) -> float:
         """Return target-state failure probability for safe-belief recursion. / 返回 safe-belief 递推中的 target-state failure 概率。"""
@@ -473,24 +601,102 @@ class ExactRDDLKernel:
         state: Mapping[str, Any],
         action: Mapping[str, Any],
     ) -> Mapping[StateKey, float]:
-        """Return exact next-state distribution for one state/action. / 返回一个 state/action 的 exact next-state 分布。"""
+        """Return a cached sparse next-state row generated on first access. / 首次访问时生成并缓存稀疏后继行。"""
+        source = self.state_key(state)
+        source_id = self._state_index.register(source)
+        action_id = self._action_id(action)
+        row = self._transition_row(source_id, action_id, action)
+        return {
+            self._state_index.key(int(next_id)): float(probability)
+            for next_id, probability in zip(row.next_state_ids, row.probabilities)
+        }
+
+    def _transition_row(
+        self,
+        source_id: int,
+        action_id: int,
+        action: Mapping[str, Any],
+    ) -> SparseTransitionRow:
+        r"""Return cached $$T(s,a,\cdot)$$ and discover only its successors. / 返回缓存的转移行并仅发现其后继状态。"""
+        cache_key = (source_id, action_id)
+        cached = self._transition_rows.get(cache_key)
+        if cached is not None:
+            self._cache_hits["transition"] += 1
+            return cached
+        state = self.state_from_key(self._state_index.key(source_id))
         context = self._context(state, action)
         partials: dict[StateKey, float] = {(): 1.0}
         for state_name in self.state_names:
             expr = self._state_cpf_expression(state_name)
+            # Synchronous CPFs read the same current context, so evaluate each
+            # value distribution once per CPF. / 同步 CPF 共享当前上下文，每个 CPF 只求值一次。
+            value_dist = self.expression_distribution(expr, context)
             updated: dict[StateKey, float] = {}
             for partial_key, partial_prob in partials.items():
                 partial_state = dict(partial_key)
-                # RDDL state CPFs are synchronous: every s' CPF reads the same
-                # current (s, a) context, not partially computed next-state
-                # fluents. / RDDL 状态 CPF 同步更新：每个 s' 都读取同一份当前
-                # (s, a)，不能读取已经算出的局部 next-state。
-                value_dist = self.expression_distribution(expr, context)
                 for value, value_prob in value_dist.items():
                     next_partial = tuple(sorted({**partial_state, state_name: _plain_value(value)}.items()))
                     updated[next_partial] = updated.get(next_partial, 0.0) + partial_prob * value_prob
             partials = updated
-        return _normalize_distribution(partials)
+        distribution = _normalize_distribution(partials)
+        row = SparseTransitionRow(
+            next_state_ids=np.fromiter(
+                (self._state_index.register(state_key) for state_key in distribution),
+                dtype=np.int64,
+                count=len(distribution),
+            ),
+            probabilities=np.fromiter(distribution.values(), dtype=np.float64, count=len(distribution)),
+        )
+        self._transition_rows[cache_key] = row
+        return row
+
+    def _propagate_sparse_belief(
+        self,
+        belief: SparseProbabilityVector,
+        action_id: int,
+        action: Mapping[str, Any],
+        *,
+        condition_on_survival: bool = False,
+    ) -> SparseProbabilityVector | tuple[SparseProbabilityVector, float]:
+        r"""Compute sparse $$bT_a$$ with vectorized accumulation.
+
+        With safe conditioning, each branch is additionally multiplied by
+        $$Pr(safe\mid s,a,s')$$. / 用 NumPy 聚合同一后继状态；safe 模式额外乘生存概率。
+        """
+        target_chunks: list[np.ndarray] = []
+        weight_chunks: list[np.ndarray] = []
+        for source_id, source_probability in zip(belief.state_ids, belief.probabilities):
+            row = self._transition_row(int(source_id), action_id, action)
+            weights = float(source_probability) * row.probabilities
+            if condition_on_survival:
+                survival = np.fromiter(
+                    (
+                        self.transition_survival_probability(
+                            self._state_index.key(int(source_id)),
+                            self._state_index.key(int(target_id)),
+                        )
+                        for target_id in row.next_state_ids
+                    ),
+                    dtype=np.float64,
+                    count=row.next_state_ids.size,
+                )
+                weights = weights * survival
+            positive = weights > 1e-15
+            if np.any(positive):
+                target_chunks.append(row.next_state_ids[positive])
+                weight_chunks.append(weights[positive])
+        if not target_chunks:
+            empty = SparseProbabilityVector(np.asarray([], dtype=np.int64), np.asarray([], dtype=np.float64))
+            return (empty, 0.0) if condition_on_survival else empty
+        target_ids = np.concatenate(target_chunks)
+        weights = np.concatenate(weight_chunks)
+        accumulated = np.bincount(target_ids, weights=weights, minlength=len(self._state_index.id_to_key))
+        support = np.flatnonzero(accumulated > 1e-15).astype(np.int64, copy=False)
+        support_weights = accumulated[support]
+        total = float(np.sum(support_weights))
+        normalized = support_weights / total if total > 0.0 else support_weights
+        result = SparseProbabilityVector(support, normalized)
+        return (result, total) if condition_on_survival else result
 
     def transition_probability(
         self,
@@ -526,10 +732,7 @@ class ExactRDDLKernel:
             )
         observation_state_prob: dict[ObservationKey, dict[StateKey, float]] = {}
         for state_key, state_prob in prior_belief.items():
-            state = self.state_from_key(state_key)
-            context = self._context(state, action)
-            context.update({f"{name}'": state.get(name, False) for name in self.state_names})
-            obs_dist = self._observation_distribution(context)
+            obs_dist = self._observation_distribution_for_state(state_key, action)
             for obs_key, obs_prob in obs_dist.items():
                 weighted = state_prob * obs_prob
                 if weighted <= 0.0:
@@ -567,9 +770,56 @@ class ExactRDDLKernel:
         if observation and observation[0][0] == "__state__":
             observed_state = observation[0][1]
             return 1.0 if observed_state == state else 0.0
-        context = self._context(self.state_from_key(state), action)
-        context.update({f"{name}'": context.get(name, False) for name in self.state_names})
-        return float(self._observation_distribution(context).get(observation, 0.0))
+        return float(self._observation_distribution_for_state(state, action).get(observation, 0.0))
+
+    def backward_message(
+        self,
+        current_belief: Mapping[StateKey, float],
+        next_message: Mapping[StateKey, float],
+        action: Mapping[str, Any],
+        observation: ObservationKey,
+    ) -> Mapping[StateKey, float]:
+        r"""Apply one sparse Algorithm 2 backward operator.
+
+        $$f_i(s)=\sum_{s'}T(s,a,s')O(o\mid s',a)f_{i+1}(s').$$
+
+        Transition rows are cached; NumPy evaluates each row dot product. /
+        转移行由缓存复用，并用 NumPy 点积计算每个当前状态的 backward message。
+        """
+        action_id = self._action_id(action)
+        result: dict[StateKey, float] = {}
+        for state in current_belief:
+            source_id = self._state_index.register(state)
+            row = self._transition_row(source_id, action_id, action)
+            future = np.fromiter(
+                (next_message.get(self._state_index.key(int(target_id)), 0.0) for target_id in row.next_state_ids),
+                dtype=np.float64,
+                count=row.next_state_ids.size,
+            )
+            likelihood = np.fromiter(
+                (
+                    self.observation_probability(
+                        observation,
+                        self._state_index.key(int(target_id)),
+                        action,
+                    )
+                    for target_id in row.next_state_ids
+                ),
+                dtype=np.float64,
+                count=row.next_state_ids.size,
+            )
+            result[state] = float(row.probabilities @ (likelihood * future))
+        return result
+
+    def expected_state_action_reward(
+        self,
+        state: StateKey,
+        action: Mapping[str, Any],
+    ) -> float:
+        """Return cached $$U(s,a)$$ for one indexed state/action. / 返回一个编号状态动作的缓存 $$U(s,a)$$。"""
+        state_id = self._state_index.register(state)
+        action_id = self._action_id(action)
+        return self._reward_for_ids(state_id, action_id, action)
 
     def expected_reward(self, context: Mapping[str, Any]) -> float:
         """Return expected reward expression value under finite random support. / 返回有限随机支持下的期望 reward。"""
@@ -652,6 +902,68 @@ class ExactRDDLKernel:
         context.update({name: False for name in self.action_names})
         context.update(action)
         return context
+
+    def _action_id(self, action: Mapping[str, Any]) -> int:
+        """Return a compact id for a concrete grounded action. / 返回具体 grounded action 的紧凑编号。"""
+        key: ActionKey = tuple(
+            (name, _plain_value(action.get(name, False)))
+            for name in self.action_names
+        )
+        action_id = self._action_ids.get(key)
+        if action_id is None:
+            action_id = len(self._action_ids)
+            self._action_ids[key] = action_id
+        return action_id
+
+    def _reward_for_ids(self, state_id: int, action_id: int, action: Mapping[str, Any]) -> float:
+        """Evaluate and cache one reward matrix entry. / 求值并缓存 reward 矩阵中的一个元素。"""
+        cache_key = (state_id, action_id)
+        cached = self._reward_cache.get(cache_key)
+        if cached is not None:
+            self._cache_hits["reward"] += 1
+            return cached
+        state = self.state_from_key(self._state_index.key(state_id))
+        reward = self.expected_reward(self._context(state, action))
+        self._reward_cache[cache_key] = reward
+        return reward
+
+    def _state_cost_for_id(self, state_id: int) -> float:
+        """Return a cached current-state cost vector entry. / 返回缓存的当前状态 cost 向量元素。"""
+        if state_id not in self._state_cost_cache:
+            state = self.state_from_key(self._state_index.key(state_id))
+            self._state_cost_cache[state_id] = self._state_cost(state, self.risk.state_fluent_costs)
+        return self._state_cost_cache[state_id]
+
+    def _next_state_cost_for_id(self, state_id: int) -> float:
+        """Return a cached next-state cost vector entry. / 返回缓存的后继状态 cost 向量元素。"""
+        if state_id not in self._next_state_cost_cache:
+            state = self.state_from_key(self._state_index.key(state_id))
+            self._next_state_cost_cache[state_id] = self._state_cost(state, self.risk.next_state_fluent_costs)
+        return self._next_state_cost_cache[state_id]
+
+    def _state_failure_for_id(self, state_id: int) -> float:
+        """Return a clamped current-state failure probability. / 返回截断后的当前状态失败概率。"""
+        return _clamped_probability(self._state_cost_for_id(state_id))
+
+    def _observation_distribution_for_state(
+        self,
+        state: StateKey,
+        action: Mapping[str, Any],
+    ) -> Mapping[ObservationKey, float]:
+        r"""Return cached $$O(o\mid s',a)$$ support. / 返回缓存的观测似然支持集。"""
+        state_id = self._state_index.register(state)
+        action_id = self._action_id(action)
+        cache_key = (state_id, action_id)
+        cached = self._observation_cache.get(cache_key)
+        if cached is not None:
+            self._cache_hits["observation"] += 1
+            return cached
+        state_mapping = self.state_from_key(state)
+        context = self._context(state_mapping, action)
+        context.update({f"{name}'": state_mapping.get(name, False) for name in self.state_names})
+        distribution = self._observation_distribution(context)
+        self._observation_cache[cache_key] = distribution
+        return distribution
 
     def _state_cpf_expression(self, state_name: str) -> Any:
         """Return the CPF expression for one next-state fluent. / 返回一个 next-state fluent 的 CPF 表达式。"""

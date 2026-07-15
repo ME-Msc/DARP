@@ -1,2 +1,3 @@
 # Runtime dependencies for the core DARP prototype.
+numpy>=1.24
 pyRDDLGym>=2.0

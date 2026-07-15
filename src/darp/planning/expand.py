@@ -175,7 +175,7 @@ def expand_frontier_item(
             filtered_beliefs=filtered_beliefs_qao,
         )
         qao_node = interface.observation_node(item.node, outcome.label)
-        _add_child_once(item.node, qao_node)
+        item.node.add_child(qao_node)
 
         # Lines 10-20 after the backward messages: compute duration from
         # smoothed action-start beliefs.  For action a_i, D(S_i,a_i) uses
@@ -196,7 +196,6 @@ def expand_frontier_item(
         )
         child_actions = _child_frontier(
             item=item,
-            runtime=item.parent_runtime,
             observation_node=qao_node,
             interface=interface,
             rho=rho_star_qao,
@@ -311,25 +310,36 @@ def _algorithm2_backward_and_smoothed_beliefs(
         action_i = action_assignments[index]
         observation_next = observations[index]
         next_message = messages[index + 1]
-        message_i: dict[StateKey, float] = {}
-        for state_i in filtered_beliefs[index]:
-            probability_of_future = 0.0
-            for state_next, transition_prob in exact_kernel.transition_distribution(
-                exact_kernel.state_from_key(state_i),
-                action_i,
-            ).items():
-                observation_prob = exact_kernel.observation_probability(
-                    observation_next,
-                    state_next,
+        if hasattr(exact_kernel, "backward_message"):
+            messages[index] = dict(
+                exact_kernel.backward_message(
+                    filtered_beliefs[index],
+                    next_message,
                     action_i,
+                    observation_next,
                 )
-                probability_of_future += (
-                    next_message.get(state_next, 0.0)
-                    * observation_prob
-                    * transition_prob
-                )
-            message_i[state_i] = probability_of_future
-        messages[index] = message_i
+            )
+        else:
+            # Compatibility path for small test kernels. / 小型测试 kernel 的兼容路径。
+            message_i: dict[StateKey, float] = {}
+            for state_i in filtered_beliefs[index]:
+                probability_of_future = 0.0
+                for state_next, transition_prob in exact_kernel.transition_distribution(
+                    exact_kernel.state_from_key(state_i),
+                    action_i,
+                ).items():
+                    observation_prob = exact_kernel.observation_probability(
+                        observation_next,
+                        state_next,
+                        action_i,
+                    )
+                    probability_of_future += (
+                        next_message.get(state_next, 0.0)
+                        * observation_prob
+                        * transition_prob
+                    )
+                message_i[state_i] = probability_of_future
+            messages[index] = message_i
 
     smoothed: list[Mapping[StateKey, float]] = []
     for index, filtered_belief_i in enumerate(filtered_beliefs):
@@ -395,7 +405,6 @@ def _algorithm2_duration_from_smoothed_beliefs(
 def _child_frontier(
     *,
     item: FrontierItem,
-    runtime: Any,
     observation_node: ANDORNode,
     interface: ANDORSearchInterface,
     rho: float,
@@ -411,11 +420,10 @@ def _child_frontier(
         return ()
     action_nodes = interface.action_nodes(observation_node)
     for child in action_nodes:
-        _add_child_once(observation_node, child)
+        observation_node.add_child(child)
     return tuple(
         FrontierItem(
             node=child,
-            parent_runtime=runtime.clone(),
             rho=rho,
             root_action_label=item.root_label,
             belief=belief,
@@ -463,9 +471,3 @@ def _normalize_state_distribution(
     if total <= 0.0:
         return {}
     return {state: probability / total for state, probability in cleaned.items()}
-
-
-def _add_child_once(parent: ANDORNode, child: ANDORNode) -> None:
-    """Attach a child only when its node id is not already present. / 仅在 node id 尚不存在时挂接子节点。"""
-    if all(existing.node_id != child.node_id for existing in parent.children):
-        parent.add_child(child)

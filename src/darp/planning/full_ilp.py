@@ -92,7 +92,7 @@ class FullILPPlanner:
 
         build_started_at = perf_counter()
         ilp_tree = build_full_tree_ilp(
-            runtime.clone(),
+            runtime,
             interface,
             duration_evaluator,
             risk_budget=self.risk_budget,
@@ -116,6 +116,11 @@ class FullILPPlanner:
         elapsed_ms = (perf_counter() - started_at) * 1000.0
         gurobi_ms = float(self.last_ilp_result.runtime_ms)
         decision_ms = tree_ilp_build_ms + gurobi_ms + postprocess_ms
+        cache_info = (
+            interface.exact_kernel.cache_info()
+            if interface.exact_kernel is not None and hasattr(interface.exact_kernel, "cache_info")
+            else {}
+        )
         return ActionDecision(
             action=dict(selected_item.node.metadata["assignment"]),
             label=selected_item.action_label,
@@ -134,6 +139,7 @@ class FullILPPlanner:
                 "ilp_variables": float(len(ilp_tree.spec.variables)),
                 "ilp_constraints": float(len(ilp_tree.spec.constraints)),
                 "expanded_nodes": float(len(ilp_tree.variable_items)),
+                **{f"exact_{name}": float(value) for name, value in cache_info.items()},
             },
         )
 

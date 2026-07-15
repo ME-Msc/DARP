@@ -142,13 +142,21 @@ darp CLI
   -> adapter.RDDLLoader
   -> pyRDDLGym env/model/native AST
   -> adapter.GroundedRDDLView
-  -> adapter.ExactRDDLKernel
-  -> model.ANDORNode / History / DurationModel
+  -> adapter.ExactRDDLKernel (lazy state ids, sparse NumPy beliefs, CPF result caches)
+  -> model.ANDORNode (integer node arena) / History / DurationModel
   -> planning.preprocess / planning.expand
   -> planning.FullILPPlanner or planning.HILPPlanner
   -> ilp.GurobiSolver
   -> planning.OnlineSession
 ```
+
+Numeric and tree performance design:
+
+- pyRDDLGym still grounds parameterized fluents and CPFs up front; DARP does not enumerate every state assignment and generates non-zero successors only when Algorithm 2/HILP first reaches a `(state, action)` pair.
+- The public exact-belief API remains the paper-readable `StateKey -> probability` mapping, while numeric operations use integer `state_id` values and sparse NumPy probability vectors internally.
+- Transition, reward, and observation results are cached persistently by `(state_id, action_id)` and reused across HILP rounds and later decisions in the same online session.
+- The AND-OR history tree uses a DARP-specific integer node arena and O(1) child deduplication; NetworkX is kept out of the solver hot path and is suitable only for future debug/visualization exports.
+- `ActionDecision.timing` exposes `exact_discovered_states`, `exact_transition_rows`, and `exact_*_hits` for checking lazy state discovery and cache reuse.
 
 Repository layout:
 
@@ -169,8 +177,10 @@ DARP/
 - [x] Support fixed duration, Gaussian percentile duration, and sidecar risk budgets.
 - [x] Move RAO* out of the DARP planner API into an external baseline wrapper.
 - [x] Unify experiment inputs, baselines, scripts, outputs, and reports.
+- [x] Add lazy reachable-state indexing, sparse NumPy exact beliefs, and transition/reward/observation caches.
+- [x] Remove pyRDDLGym environment deep copies from exact planners and use an integer AND-OR node arena.
 - [ ] Reproduce the RAO* paper Science Agent / PSR benchmark adapters.
-- [ ] Improve HILP benchmark-scale pruning and large action-space handling.
+- [ ] Add incremental Gurobi models, warm starts, online subtree numeric reuse, and benchmark-scale HILP pruning.
 - [ ] Support concurrent action combinations and non-boolean actions.
 - [ ] If needed, extend native durative-action RDDL syntax through the pyRDDLGym parser.
 
@@ -185,6 +195,7 @@ Basic tests do not require a local Gurobi license; real full-ILP/HILP experiment
 ## Current Limitations
 
 - The exact kernel currently targets finite, grounded, boolean fluent/action RDDL problems.
+- pyRDDLGym fluent/CPF grounding still happens before planning; lazy discovery currently optimizes reachable states, transitions, and belief numerics rather than lifted symbolic grounding.
 - `experiments/baselines/rao_star/` is currently a small exact deterministic-policy comparator wrapper; formal experiments should move to the RAO* paper's Science Agent / PSR scenarios.
 - full-ILP expands the full remaining horizon, so its size grows exponentially with action/observation histories.
 - HILP is partial-tree refinement and is not a global optimality certificate unless it expands to the full tree or gets strict bounds/certificates.

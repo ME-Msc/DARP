@@ -15,10 +15,9 @@ from darp.adapter.exact import ObservationKey, StateKey
 
 @dataclass(frozen=True, eq=False)
 class FrontierItem:
-    """Track one expandable action node and its parent runtime. / 跟踪一个可展开 action 节点及其父 runtime。"""
+    """Track one expandable action history and its numeric beliefs. / 跟踪一个可展开动作历史及其数值 belief。"""
 
     node: ANDORNode
-    parent_runtime: PyRDDLGymRuntime
     rho: float = 1.0
     root_action_label: str | None = None
     belief: Mapping[StateKey, float] | None = None
@@ -97,11 +96,10 @@ def initialize_root_frontier(
     # 论文第 3-6 行：从 N 取出 root observation history，并为每个 action 创建 qa。
     action_nodes = interface.action_nodes(root)
     for node in action_nodes:
-        _add_child_once(root, node)
+        root.add_child(node)
     frontier = tuple(
         FrontierItem(
             node=node,
-            parent_runtime=runtime.clone(),
             rho=1.0,
             root_action_label=str(node.metadata.get("action", "noop")),
             belief=root_belief,
@@ -117,14 +115,6 @@ def initialize_root_frontier(
         frontier=frontier,
         open_histories=open_histories,
     )
-
-
-def _add_child_once(parent: ANDORNode, child: ANDORNode) -> None:
-    """Attach a child only once by node id. / 按 node id 仅挂接一次子节点。"""
-    if all(existing.node_id != child.node_id for existing in parent.children):
-        parent.add_child(child)
-
-
 def _root_belief_from_runtime_or_override(
     runtime: PyRDDLGymRuntime,
     interface: ANDORSearchInterface,

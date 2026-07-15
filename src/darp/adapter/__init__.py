@@ -22,6 +22,8 @@ __all__ = [
     "RDDLLoader",
     "RiskConstraintSpec",
     "SafeActionExpansion",
+    "SparseProbabilityVector",
+    "SparseTransitionRow",
     "UnsupportedRDDLFeature",
     "UnsupportedRDDLFeatureError",
 ]
@@ -60,6 +62,8 @@ def __getattr__(name: str) -> Any:
         "ExactTransitionOutcome",
         "RiskConstraintSpec",
         "SafeActionExpansion",
+        "SparseProbabilityVector",
+        "SparseTransitionRow",
     }:
         from darp.adapter.exact import (
             ExactActionExpansion,
@@ -70,6 +74,8 @@ def __getattr__(name: str) -> Any:
             ExactTransitionOutcome,
             RiskConstraintSpec,
             SafeActionExpansion,
+            SparseProbabilityVector,
+            SparseTransitionRow,
         )
 
         return {
@@ -81,6 +87,8 @@ def __getattr__(name: str) -> Any:
             "ExactTransitionOutcome": ExactTransitionOutcome,
             "RiskConstraintSpec": RiskConstraintSpec,
             "SafeActionExpansion": SafeActionExpansion,
+            "SparseProbabilityVector": SparseProbabilityVector,
+            "SparseTransitionRow": SparseTransitionRow,
         }[name]
     if name in {"PyRDDLGymProblem", "RDDLLoadError"}:
         from darp.adapter.problem import PyRDDLGymProblem, RDDLLoadError

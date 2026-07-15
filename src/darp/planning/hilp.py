@@ -215,6 +215,11 @@ class HILPPlanner:
             + timing_totals["gurobi_solve_ms"]
             + postprocess_ms
         )
+        cache_info = (
+            interface.exact_kernel.cache_info()
+            if interface.exact_kernel is not None and hasattr(interface.exact_kernel, "cache_info")
+            else {}
+        )
         return ActionDecision(
             action=dict(selected_item.node.metadata["assignment"]),
             label=selected_item.action_label,
@@ -241,6 +246,7 @@ class HILPPlanner:
                 "heuristic_lookahead_depth": float(self.heuristic_lookahead_depth),
                 "hilp_heuristic_one_step_greedy": 1.0 if self.heuristic_mode == "one-step-greedy" else 0.0,
                 "hilp_heuristic_reachable_bellman": 1.0 if self.heuristic_mode == "reachable-bellman" else 0.0,
+                **{f"exact_{name}": float(value) for name, value in cache_info.items()},
             },
         )
 
@@ -603,7 +609,9 @@ def _state_action_reward(
     cache_key = ("reward", state, action_label)
     if cache_key in heuristic_cache:
         return float(heuristic_cache[cache_key])
-    if hasattr(exact_kernel, "expected_reward") and hasattr(exact_kernel, "_context"):
+    if hasattr(exact_kernel, "expected_state_action_reward"):
+        reward = float(exact_kernel.expected_state_action_reward(state, action))  # type: ignore[attr-defined]
+    elif hasattr(exact_kernel, "expected_reward") and hasattr(exact_kernel, "_context"):
         context = exact_kernel._context(exact_kernel.state_from_key(state), action)  # type: ignore[attr-defined]
         reward = float(exact_kernel.expected_reward(context))  # type: ignore[attr-defined]
     else:

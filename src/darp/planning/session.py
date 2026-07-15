@@ -208,7 +208,10 @@ def run_online_session(
             if interface.exact_kernel is None:
                 raise ValueError("Paper-path planners require an exact kernel.")
             assert isinstance(belief, ExactBeliefState)
-            planning_runtime = runtime.clone()
+            # Exact planners never step this runtime; Algorithm 1/2 use grounded
+            # CPFs and beliefs directly. / exact planner 不执行仿真 step，
+            # Algorithm 1/2 直接使用 grounded CPF 与 belief。
+            planning_runtime = runtime
             root_belief = belief.belief
             assert isinstance(planner, FullILPPlanner | HILPPlanner)
             decision = planner.choose_action(

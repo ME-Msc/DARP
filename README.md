@@ -142,13 +142,21 @@ darp CLI
   -> adapter.RDDLLoader
   -> pyRDDLGym env/model/native AST
   -> adapter.GroundedRDDLView
-  -> adapter.ExactRDDLKernel
-  -> model.ANDORNode / History / DurationModel
+  -> adapter.ExactRDDLKernel（按需状态索引、稀疏 NumPy belief、CPF 结果缓存）
+  -> model.ANDORNode（整数节点池）/ History / DurationModel
   -> planning.preprocess / planning.expand
   -> planning.FullILPPlanner or planning.HILPPlanner
   -> ilp.GurobiSolver
   -> planning.OnlineSession
 ```
+
+数值与树结构的性能设计：
+
+- pyRDDLGym 仍然预先 grounding 参数化 fluent 和 CPF；DARP 不预先枚举所有状态赋值，而是在 Algorithm 2/HILP 首次触达 `(state, action)` 时生成其非零后继。
+- exact belief 在公开接口中保持论文易读的 `StateKey -> probability`，在计算内部转换为整数 `state_id` 和稀疏 NumPy 概率向量。
+- transition、reward 和 observation 按 `(state_id, action_id)` 持久缓存，并在同一 online session 的后续 HILP 轮次和决策中复用。
+- AND-OR history tree 使用 DARP 专用整数节点池和 O(1) child 去重；NetworkX 不进入求解热路径，仅适合作为后续调试/可视化导出格式。
+- `ActionDecision.timing` 中的 `exact_discovered_states`、`exact_transition_rows` 和 `exact_*_hits` 可用于检查按需状态发现与缓存效果。
 
 项目结构：
 
@@ -169,8 +177,10 @@ DARP/
 - [x] 支持 fixed duration、Gaussian percentile duration 和 sidecar risk budget。
 - [x] 将 RAO* 从 DARP planner API 移到外部 baseline wrapper。
 - [x] 统一实验输入、baseline、脚本、输出和报告目录。
+- [x] 实现按需可达状态索引、稀疏 NumPy exact belief 和 transition/reward/observation 缓存。
+- [x] 去除 exact planner 的 pyRDDLGym 环境深拷贝，并使用整数 AND-OR 节点池。
 - [ ] 复现 RAO* 原文 Science Agent / PSR benchmark adapter。
-- [ ] 改进 HILP 的 benchmark-scale pruning 与 large action-space handling。
+- [ ] 为 HILP 实现增量 Gurobi model、warm start、online subtree 数值复用和 benchmark-scale pruning。
 - [ ] 支持 concurrent action combinations 和非 bool action。
 - [ ] 如确有必要，基于 pyRDDLGym parser 扩展原生 durative-action RDDL 语法。
 
@@ -185,6 +195,7 @@ python -m pytest
 ## 当前限制
 
 - 当前 exact kernel 主要面向有限、grounded、bool fluent/action 的 RDDL 问题。
+- pyRDDLGym 的 fluent/CPF grounding 仍在规划开始前完成；当前按需机制优化的是可达状态、转移和 belief 数值层，而不是 lifted symbolic grounding。
 - 当前 `experiments/baselines/rao_star/` 仍是小规模 exact deterministic-policy 对照 wrapper；正式实验应迁移到 RAO* 原文 Science Agent / PSR 场景。
 - full-ILP 会展开完整剩余 horizon，规模随 action/observation history 指数增长。
 - HILP 是 partial-tree refinement，不等价于全局最优证明，除非展开到与 full tree 等价或加入严格 bound/certificate。
