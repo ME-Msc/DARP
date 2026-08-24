@@ -1,201 +1,105 @@
 # DARP
 
-DARP (Durative Action RDDL Planner) is a Python research planner for RDDL. It uses pyRDDLGym for standard RDDL parsing, grounding, and simulation; DARP owns the AND-OR history tree, duration sidecars, chance-constrained risk modeling, full-ILP/HILP encodings, and Gurobi solving path.
+DARP is a research implementation of dual-space search for chance-constrained POMDPs with durative actions. pyRDDLGym parses and grounds RDDL; DARP provides the exact sparse kernel, AND/OR history tree, duration model, full-ILP/HILP encodings, and Gurobi solve path.
 
-The comparison baseline in this repository is RAO*. RAO* is not part of the DARP planner API; it lives under `experiments/baselines/rao_star/` and is invoked by experiment scripts.
+The current code is organized around Algorithms 1–3 of the paper and generates reachable numerical state/transition rows only when tree expansion needs them.
 
-## Installation
+## Reproduce locally
+
+From the repository root:
 
 ```bash
 bash tools/install_linux_deps.sh
-source .venv/bin/activate
+tools/run_repro.sh
 ```
 
-On a fresh Ubuntu/Debian machine:
+The installer requires Python >=3.12 (the lock was generated and tested with 3.13) and creates `.venv` from `requirements-lock.txt`. The reproduction script captures the environment, runs the full test suite, runs the horizon-3 HILP/RAO*-style representative matrix, and performs a horizon-2 exact-prefix cross-check against full-ILP. Outputs are written to `outputs/darp-review/`.
+
+HILP and full-ILP require a valid local Gurobi license. To install Ubuntu/Debian system packages as well:
 
 ```bash
 INSTALL_SYSTEM_DEPS=1 bash tools/install_linux_deps.sh
 ```
 
-Gurobi note: the script installs `gurobipy`, but real full-ILP/HILP runs still require a valid local Gurobi license.
+## Representative comparison
+
+```bash
+.venv/bin/python -m experiments.scripts.run_paper_grid \
+  --horizons 3 \
+  --risk-budgets 0.1 0.2 0.3 \
+  --repetitions 3 \
+  --algorithms hilp rao-star-style \
+  --expansion-rounds 100 \
+  --output outputs/darp-review/paper_grid_results.csv \
+  --summary-output outputs/darp-review/paper_grid_summary.csv
+```
+
+`experiments/baselines/rao_star.py` is an independent exhaustive finite belief-hypergraph/Pareto implementation of RAO* semantics for this small benchmark. It is not the official RAO* heuristic forward-search implementation. Reported speedups are therefore relative to this explicit comparator, not official RAO*.
+
+The default matrix uses an admissible Manhattan terminal tail and is marked `heuristic/admissible-tail`. `objective_cost=-objective` includes that tail and is not an independently simulated expected arrival cost.
+
+full-ILP remains available as a small exact-prefix oracle. Disable the terminal tail so all three planners optimize the same objective:
+
+```bash
+.venv/bin/python -m experiments.scripts.run_paper_grid \
+  --horizons 2 \
+  --risk-budgets 0.1 \
+  --algorithms hilp rao-star-style \
+  --include-full-ilp \
+  --full-ilp-max-horizon 2 \
+  --disable-terminal-tail \
+  --output outputs/darp-review/paper_grid_oracle_h2.csv
+```
+
+See `experiments/README.md` for field definitions and benchmark assumptions.
 
 ## DARP CLI
 
-Show help:
-
 ```bash
-darp -h
+.venv/bin/darp -h
 ```
 
-Run the default online trace:
+A supported unit-duration online HILP smoke run:
 
 ```bash
-darp \
-  --domain experiments/inputs/rddl/tiny_grid_domain.rddl \
-  --instance experiments/inputs/rddl/tiny_grid_instance.rddl
-```
-
-Run HILP:
-
-```bash
-darp \
+.venv/bin/darp \
   --domain experiments/inputs/rddl/tiny_grid_domain.rddl \
   --instance experiments/inputs/rddl/tiny_grid_instance.rddl \
-  --duration experiments/inputs/durations/tiny_grid.yaml \
+  --duration experiments/inputs/durations/fixed_1.yaml \
   --planner hilp \
   --hilp-heuristic reachable-bellman \
-  --heuristic-lookahead-depth 4 \
-  --expansion-rounds 4 \
+  --heuristic-lookahead-depth 2 \
+  --expansion-rounds 1 \
   --frontier-width 1 \
   --output /tmp/darp_tiny_grid_hilp.json
 ```
 
-Run full-ILP:
-
-```bash
-darp \
-  --domain experiments/inputs/rddl/tiny_grid_domain.rddl \
-  --instance experiments/inputs/rddl/tiny_grid_instance.rddl \
-  --duration experiments/inputs/durations/tiny_grid.yaml \
-  --planner full-ilp
-```
-
-HILP frontier heuristics:
-
-- `reachable-bellman`: finite-horizon fully observable Bellman backup over states reachable from the current frontier action.
-- `one-step-greedy`: one-step expected reward for the current action; faster but greedier.
-
-## RAO* Comparison Experiments
-
-Experiment entrypoints live under `experiments/scripts/`. Once Science Agent / PSR adapters are implemented, `--domain`, `--instance`, and `--duration` should point to files under `experiments/inputs/rao_star/`.
-
-```bash
-python experiments/scripts/run_rao_star_suite.py \
-  --name science_agent_small_fixed \
-  --domain experiments/inputs/rao_star/science_agent/science_agent_domain.rddl \
-  --instance experiments/inputs/rao_star/science_agent/science_agent_small.rddl \
-  --duration experiments/inputs/durations/fixed_1.yaml \
-  --seeds 0 \
-  --planners rao-star,hilp \
-  --hilp-heuristic reachable-bellman \
-  --heuristic-lookahead-depth 2 \
-  --frontier-width 1
-```
-
-Outputs are written under:
+## Paper-to-code map
 
 ```text
-experiments/outputs/<experiment-name>/
+RDDL + duration sidecar
+  -> adapter.GroundedRDDLView / ExactRDDLKernel
+  -> planning.preprocess       # Algorithm 1 root histories
+  -> planning.expand           # Algorithm 2 ordinary utility + safe risk flows
+  -> planning.ilp_tree         # policy variables and flow/risk coefficients
+  -> planning.hilp             # Algorithm 3 incumbent-guided refinement
+  -> ilp.GurobiSolver          # deterministic single-thread solve + MIP starts
 ```
 
-Generate a replay page:
+Key implementation properties:
 
-```bash
-python experiments/scripts/visualize_replay.py \
-  experiments/outputs/<experiment-name>/runs.csv \
-  --output experiments/outputs/<experiment-name>/replay.html
-```
+- pyRDDLGym still grounds parameterized fluent/CPF syntax up front; that result is cached once.
+- DARP does not pre-enumerate the state-assignment Cartesian product. Reachable states and non-zero transition/reward/observation rows are created lazily and cached.
+- Ordinary belief/probability drives unconditional expected utility; safe-conditioned belief/probability drives first-entry execution risk.
+- Fixed duration uses an O(1) progress statistic; stochastic duration retains Algorithm 2 backward smoothing.
+- HILP refines only frontier variables selected by the current p-ILP incumbent.
+- Full-tree construction has explicit node and solve-time limits.
 
-LaTeX table templates live under:
+## Current boundaries
 
-```text
-experiments/reports/latex/
-```
+- The exact path targets finite grounded Boolean fluent/action models with one active action. Unsupported concurrency, non-Boolean actions, action preconditions, invariants, terminations, and non-unit discount fail closed.
+- Lazy work currently applies to reachable numerical state rows, not lifted symbolic grounding. True incremental lifted grounding needs CPF dependency slicing below pyRDDLGym's whole-model grounder.
+- Multi-step exact online replanning rejects global chance budgets and non-unit durations because resetting budget/progress each step is unsound. Offline conditional-policy planning remains supported.
+- full-ILP is retained for very small exact-prefix checks, not the default performance matrix.
 
-## Experiment Workspace
-
-```text
-experiments/
-├── inputs/
-│   ├── rddl/            # tiny_grid, factored_door, and other small RDDL sanity checks.
-│   ├── durations/       # fixed / Gaussian duration sidecar examples.
-│   ├── rao_star/        # RAO* paper Science Agent / PSR reproduction inputs.
-│   └── benchmarks/      # RDDL/IPPC benchmark corpus for later extensions.
-├── baselines/
-│   └── rao_star/        # External RAO* comparison baseline.
-├── scripts/             # Experiment runners, baseline wrappers, and replay visualization.
-├── outputs/             # Generated JSON/CSV/log/replay artifacts, ignored by default.
-└── reports/
-    └── latex/           # Versioned LaTeX table templates and preview entrypoints.
-```
-
-## Duration Sidecars
-
-A duration sidecar describes action durations and optional risk; it does not duplicate the RDDL instance `horizon`.
-
-```yaml
-kind: fixed
-default: 1
-actions:
-  move-east: 1
-  move-south: 1
-risk:
-  budget: 0.25
-  next_state_fluents:
-    at___c22: 1
-```
-
-## Architecture
-
-```text
-darp CLI
-  -> adapter.RDDLLoader
-  -> pyRDDLGym env/model/native AST
-  -> adapter.GroundedRDDLView
-  -> adapter.ExactRDDLKernel (lazy state ids, sparse NumPy beliefs, CPF result caches)
-  -> model.ANDORNode (integer node arena) / History / DurationModel
-  -> planning.preprocess / planning.expand
-  -> planning.FullILPPlanner or planning.HILPPlanner
-  -> ilp.GurobiSolver
-  -> planning.OnlineSession
-```
-
-Numeric and tree performance design:
-
-- pyRDDLGym still grounds parameterized fluents and CPFs up front; DARP does not enumerate every state assignment and generates non-zero successors only when Algorithm 2/HILP first reaches a `(state, action)` pair.
-- The public exact-belief API remains the paper-readable `StateKey -> probability` mapping, while numeric operations use integer `state_id` values and sparse NumPy probability vectors internally.
-- Transition, reward, and observation results are cached persistently by `(state_id, action_id)` and reused across HILP rounds and later decisions in the same online session.
-- The AND-OR history tree uses a DARP-specific integer node arena and O(1) child deduplication; NetworkX is kept out of the solver hot path and is suitable only for future debug/visualization exports.
-- `ActionDecision.timing` exposes `exact_discovered_states`, `exact_transition_rows`, and `exact_*_hits` for checking lazy state discovery and cache reuse.
-
-Repository layout:
-
-```text
-DARP/
-├── src/darp/            # DARP core planner, adapter, model, ILP, and visualization code.
-├── experiments/         # Experiment inputs, external baselines, scripts, outputs, and reports.
-├── docs/                # Paper symbols, benchmark strategy, and development notes.
-├── tools/               # Installation and maintenance scripts.
-└── tests/               # Unit and lightweight integration tests.
-```
-
-## Roadmap
-
-- [x] Use pyRDDLGym as the standard RDDL parser/grounder/simulator.
-- [x] Build DARP AND-OR history tree, duration sidecars, and exact finite kernels.
-- [x] Implement Gurobi-backed full-tree ILP and HILP partial-tree solving paths.
-- [x] Support fixed duration, Gaussian percentile duration, and sidecar risk budgets.
-- [x] Move RAO* out of the DARP planner API into an external baseline wrapper.
-- [x] Unify experiment inputs, baselines, scripts, outputs, and reports.
-- [x] Add lazy reachable-state indexing, sparse NumPy exact beliefs, and transition/reward/observation caches.
-- [x] Remove pyRDDLGym environment deep copies from exact planners and use an integer AND-OR node arena.
-- [ ] Reproduce the RAO* paper Science Agent / PSR benchmark adapters.
-- [ ] Add incremental Gurobi models, warm starts, online subtree numeric reuse, and benchmark-scale HILP pruning.
-- [ ] Support concurrent action combinations and non-boolean actions.
-- [ ] If needed, extend native durative-action RDDL syntax through the pyRDDLGym parser.
-
-## Tests
-
-```bash
-python -m pytest
-```
-
-Basic tests do not require a local Gurobi license; real full-ILP/HILP experiments do.
-
-## Current Limitations
-
-- The exact kernel currently targets finite, grounded, boolean fluent/action RDDL problems.
-- pyRDDLGym fluent/CPF grounding still happens before planning; lazy discovery currently optimizes reachable states, transitions, and belief numerics rather than lifted symbolic grounding.
-- `experiments/baselines/rao_star/` is currently a small exact deterministic-policy comparator wrapper; formal experiments should move to the RAO* paper's Science Agent / PSR scenarios.
-- full-ILP expands the full remaining horizon, so its size grows exponentially with action/observation histories.
-- HILP is partial-tree refinement and is not a global optimality certificate unless it expands to the full tree or gets strict bounds/certificates.
+The full Git-history review, paper mapping, and experiment interpretation are in `docs/IMPLEMENTATION_REVIEW.md`.

@@ -75,6 +75,17 @@ def test_pyrddlgym_problem_builds_enum_safe_grounded_model():
     assert "move-east" in grounded.action_fluents
 
 
+def test_pyrddlgym_problem_caches_syntax_grounding():
+    """Check repeated planner/view construction reuses one grounded model."""
+    pytest.importorskip("pyRDDLGym")
+    problem = RDDLLoader().load(DOMAIN, INSTANCE)
+
+    first = problem.build_grounded_model()
+    second = problem.build_grounded_model()
+
+    assert second is first
+
+
 def test_pyrddlgym_problem_grounded_view_exposes_solver_boundary():
     """Check DARP wraps pyRDDLGym grounding behind a stable view. / 检查 DARP 用稳定 view 封装 pyRDDLGym grounding。"""
     pytest.importorskip("pyRDDLGym")
@@ -133,6 +144,24 @@ def test_grounded_view_reports_unsupported_concurrent_actions():
     view = GroundedRDDLView(_fake_grounded_model(max_allowed_actions=2))
 
     with pytest.raises(UnsupportedRDDLFeatureError, match="concurrent action combinations"):
+        view.validate_supported()
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    (
+        ({"preconditions": [object()]}, "action preconditions"),
+        ({"invariants": [object()]}, "state invariants"),
+        ({"terminations": [object()]}, "termination conditions"),
+        ({"discount": 0.9}, "discounted objective"),
+        ({"discount": 0.0}, "discounted objective"),
+    ),
+)
+def test_grounded_view_rejects_silently_ignored_semantics(overrides, message):
+    """Check exact search fails closed for model semantics it does not evaluate."""
+    view = GroundedRDDLView(_fake_grounded_model(**overrides))
+
+    with pytest.raises(UnsupportedRDDLFeatureError, match=message):
         view.validate_supported()
 
 

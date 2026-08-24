@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from itertools import product
-from math import prod
+from math import isfinite, prod
 from typing import Any, Hashable, Mapping, Sequence
 
 import numpy as np
@@ -135,7 +135,11 @@ class ExactBeliefState:
         source: str = "exact-initial-state",
     ) -> "ExactBeliefState":
         """Build an exact belief from the current runtime state. / 从当前 runtime state 构建 exact belief。"""
-        belief = exact_kernel.initial_belief_from_state(runtime.state)
+        if is_pomdp and hasattr(exact_kernel, "initial_belief_from_model"):
+            belief = exact_kernel.initial_belief_from_model()
+            source = "exact-model-b0"
+        else:
+            belief = exact_kernel.initial_belief_from_state(runtime.state)
         return cls.from_belief(
             exact_kernel,
             belief,
@@ -236,6 +240,9 @@ class ExactRDDLKernel:
     _observation_cache: dict[tuple[int, int], Mapping[ObservationKey, float]] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
+    _fluent_truth_cache: dict[int, np.ndarray] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
     _cache_hits: dict[str, int] = field(
         default_factory=lambda: {"transition": 0, "reward": 0, "observation": 0},
         init=False,
@@ -307,6 +314,22 @@ class ExactRDDLKernel:
         state_key = self.state_key(state)
         self._state_index.register(state_key)
         return {state_key: 1.0}
+
+    def initial_belief_from_model(self) -> Mapping[StateKey, float]:
+        """Return the declared deterministic RDDL initial belief.
+
+        This reads the grounded model declaration instead of the simulator's
+        current hidden state. Standard RDDL initial assignments are
+        deterministic; a non-degenerate ``b0`` needs an explicit belief
+        adapter rather than access to simulator state.
+
+        / 从模型声明构造确定性初始 belief，不读取模拟器隐藏真状态；非退化
+        ``b0`` 应由显式 belief adapter 提供。
+        """
+        declared = getattr(self.grounded_model, "state_fluents", None)
+        if not isinstance(declared, Mapping):
+            raise ExactKernelError("Grounded model does not expose a declared initial state.")
+        return self.initial_belief_from_state(declared)
 
     def cache_info(self) -> Mapping[str, int]:
         """Return lazy-kernel sizes and hit counters. / 返回按需内核规模和缓存命中计数。"""
@@ -393,8 +416,8 @@ class ExactRDDLKernel:
         beliefs.  This helper forms the corresponding root safe belief:
 
         $$
-           b^*_0(s)=\frac{b_0(s)(1-P_R(s))}
-                         {1-r(b_0)}.
+           b^{\mathrm{safe}}_0(s)=\frac{b_0(s)(1-P_R(s))}
+                                      {1-r(b_0)}.
         $$
 
         / 将 root belief 条件化到初始安全事件；初始风险由 ILP risk budget
@@ -411,8 +434,8 @@ class ExactRDDLKernel:
         total = float(np.sum(weights[positive]))
         if total <= 0.0:
             return {}
-        b_star_0 = SparseProbabilityVector(b_0.state_ids[positive], weights[positive] / total)
-        return self.belief_mapping(b_star_0)
+        safe_b_0 = SparseProbabilityVector(b_0.state_ids[positive], weights[positive] / total)
+        return self.belief_mapping(safe_b_0)
 
     def fluent_belief(self, belief: Mapping[StateKey, float]) -> Mapping[str, float]:
         r"""Return fluent marginals by matrix multiplication.
@@ -423,15 +446,23 @@ class ExactRDDLKernel:
         sparse = self.sparse_belief(belief)
         if sparse.state_ids.size == 0:
             return {name: 0.0 for name in self.state_names}
-        truth = np.asarray(
-            [
-                [bool(dict(self._state_index.key(int(state_id))).get(name, False)) for name in self.state_names]
-                for state_id in sparse.state_ids
-            ],
-            dtype=np.float64,
-        )
+        truth = np.vstack([self._fluent_truth_vector(int(state_id)) for state_id in sparse.state_ids])
         marginals = sparse.probabilities @ truth
         return {name: float(marginals[index]) for index, name in enumerate(self.state_names)}
+
+    def _fluent_truth_vector(self, state_id: int) -> np.ndarray:
+        """Return a cached state/fluent indicator row. / 返回缓存的状态-fluent 指示行。"""
+        cached = self._fluent_truth_cache.get(state_id)
+        if cached is not None:
+            return cached
+        state = dict(self._state_index.key(state_id))
+        row = np.fromiter(
+            (1.0 if bool(state.get(name, False)) else 0.0 for name in self.state_names),
+            dtype=np.float64,
+            count=len(self.state_names),
+        )
+        self._fluent_truth_cache[state_id] = row
+        return row
 
     def state_key(self, state: Mapping[str, Any]) -> StateKey:
         """Convert a state mapping to a stable key. / 将 state mapping 转成稳定 key。"""
@@ -503,27 +534,29 @@ class ExactRDDLKernel:
     ) -> SafeActionExpansion:
         r"""Compute the CC-POMDP safe-belief action update.
 
-        For chance constraints, $$\rho^*(q)$$ is the probability of
-        reaching history $$q$$ without failure, and
-        $$b^*_q$$ is the belief conditioned on that safe prefix.  For one
-        action:
+        For chance constraints, $$\tilde\rho(q)$$ is the probability of
+        reaching history $$q$$ without failure, and ``safe_belief`` is the
+        implementation belief $$b^{\mathrm{safe}}_q$$ conditioned on that
+        safe prefix.  The ``safe`` superscript here is descriptive rather than
+        paper notation; it is deliberately distinct from the paper's ``*``,
+        which denotes values under an optimal policy.  For one action:
 
         $$
            p_{\mathrm{safe}}(q,a)=
-           \sum_{s,s'}b^*_q(s)T(s,a,s')\Pr(\mathrm{safe}\mid s,a,s')
+           \sum_{s,s'}b^{\mathrm{safe}}_q(s)T(s,a,s')\Pr(\mathrm{safe}\mid s,a,s')
         $$
 
         $$
-           b^*_{qa}(s')=
-           \frac{\sum_s b^*_q(s)T(s,a,s')\Pr(\mathrm{safe}\mid s,a,s')}
+           b^{\mathrm{safe}}_{qa}(s')=
+           \frac{\sum_s b^{\mathrm{safe}}_q(s)T(s,a,s')\Pr(\mathrm{safe}\mid s,a,s')}
                 {p_{\mathrm{safe}}(q,a)}.
         $$
 
         / 计算 chance-constrained safe belief 递推；risk 是本 action 下发生
         failure 的条件概率，prior_belief 是已条件化 survival 的 safe prior。
         """
-        b_star_q = self.sparse_belief(safe_belief)
-        if b_star_q.state_ids.size == 0:
+        safe_b_q = self.sparse_belief(safe_belief)
+        if safe_b_q.state_ids.size == 0:
             return SafeActionExpansion(
                 utility=0.0,
                 risk=0.0,
@@ -533,13 +566,13 @@ class ExactRDDLKernel:
             )
         action_id = self._action_id(action)
         rewards = np.fromiter(
-            (self._reward_for_ids(int(state_id), action_id, action) for state_id in b_star_q.state_ids),
+            (self._reward_for_ids(int(state_id), action_id, action) for state_id in safe_b_q.state_ids),
             dtype=np.float64,
-            count=b_star_q.state_ids.size,
+            count=safe_b_q.state_ids.size,
         )
-        utility = float(b_star_q.probabilities @ rewards)
+        utility = float(safe_b_q.probabilities @ rewards)
         safe_qa, survival_probability = self._propagate_sparse_belief(
-            b_star_q,
+            safe_b_q,
             action_id,
             action,
             condition_on_survival=True,
@@ -1129,7 +1162,16 @@ def _plain_value(value: Any) -> Hashable:
 
 def _normalize_distribution(distribution: Mapping[Hashable, float]) -> dict[Hashable, float]:
     """Normalize a finite probability distribution. / 归一化有限概率分布。"""
-    cleaned = {key: float(value) for key, value in distribution.items() if abs(float(value)) > 1e-15}
+    numeric = {key: float(value) for key, value in distribution.items()}
+    non_finite = {key: value for key, value in numeric.items() if not isfinite(value)}
+    if non_finite:
+        raise ExactKernelError(
+            f"Probability distribution contains non-finite mass: {non_finite!r}"
+        )
+    invalid = {key: value for key, value in numeric.items() if value < -1e-12}
+    if invalid:
+        raise ExactKernelError(f"Probability distribution contains negative mass: {invalid!r}")
+    cleaned = {key: value for key, value in numeric.items() if value > 1e-15}
     total = sum(cleaned.values())
     if total <= 0.0:
         return {}
@@ -1138,7 +1180,10 @@ def _normalize_distribution(distribution: Mapping[Hashable, float]) -> dict[Hash
 
 def _clamped_probability(value: float) -> float:
     """Clamp a numeric selector to a probability. / 将数值 selector 截断为概率。"""
-    return max(0.0, min(1.0, float(value)))
+    numeric = float(value)
+    if not isfinite(numeric):
+        raise ExactKernelError(f"Probability selector must be finite, got {numeric!r}.")
+    return max(0.0, min(1.0, numeric))
 
 
 def _expectation(distribution: Mapping[Hashable, float]) -> float:

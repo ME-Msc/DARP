@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from collections.abc import Hashable
-from math import erf, sqrt
+from math import erf, isfinite, sqrt
 from typing import Iterable, Mapping
 
 from darp.model.and_or_tree import History
@@ -76,6 +76,15 @@ class HistoryDurationEvaluator:
     zeta: float = 0.0
     default_belief: Belief = field(default_factory=lambda: {"__default__": 1.0})
 
+    def __post_init__(self) -> None:
+        """Reject stopping rules that cannot define a finite search tree."""
+        if not isfinite(self.horizon) or self.horizon <= 0.0:
+            raise ValueError("duration horizon must be a finite positive number")
+        if not isfinite(self.zeta) or self.zeta < 0.0:
+            raise ValueError("duration zeta must be a finite non-negative number")
+        if isinstance(self.model, GaussianDurationModel) and self.zeta > 1.0:
+            raise ValueError("Gaussian duration zeta must be in [0, 1]")
+
     def records_for_actions(
         self,
         actions: Iterable[ActionName],
@@ -137,6 +146,10 @@ class FixedDurationModel(DurationModel):
     default: float = 1.0
     kind: str = "fixed"
 
+    def __post_init__(self) -> None:
+        """Require positive finite durations so tree expansion terminates."""
+        _validate_positive_durations(self.durations.values(), default=self.default, kind=self.kind)
+
     def estimate(self, belief: Belief, action: ActionName) -> DurationEstimate:
         """Return the configured fixed duration. / 返回配置中的固定动作时长。"""
         return DurationEstimate(mean=float(self.durations.get(action, self.default)))
@@ -153,6 +166,10 @@ class StateDependentDurationModel(DurationModel):
     durations: Mapping[tuple[StateKey, ActionName], float]
     default: float = 1.0
     kind: str = "expected"
+
+    def __post_init__(self) -> None:
+        """Require positive finite expected-duration entries."""
+        _validate_positive_durations(self.durations.values(), default=self.default, kind=self.kind)
 
     def estimate(self, belief: Belief, action: ActionName) -> DurationEstimate:
         """Return belief-weighted expected duration. / 返回 belief 加权的期望时长。"""
@@ -177,6 +194,13 @@ class GaussianDurationModel(DurationModel):
     default_variance: float = 0.0
     kind: str = "gaussian"
 
+    def __post_init__(self) -> None:
+        """Validate Gaussian moments before they control tree expansion."""
+        _validate_positive_durations(self.means.values(), default=self.default_mean, kind=self.kind)
+        variances = (*self.variances.values(), self.default_variance)
+        if any(not isfinite(float(value)) or float(value) < 0.0 for value in variances):
+            raise ValueError("gaussian duration variances must be finite and non-negative")
+
     def estimate(self, belief: Belief, action: ActionName) -> DurationEstimate:
         """Return belief-weighted Gaussian mean and variance. / 返回 belief 加权的 Gaussian 均值与方差。"""
         mean = 0.0
@@ -192,3 +216,10 @@ class GaussianDurationModel(DurationModel):
             return 1.0 if progress.mean < horizon else 0.0
         z = (horizon - progress.mean) / sqrt(2.0 * progress.variance)
         return 0.5 * (1.0 + erf(z))
+
+
+def _validate_positive_durations(values: Iterable[float], *, default: float, kind: str) -> None:
+    """Require every possible duration to advance time by a finite amount."""
+    durations = (*values, default)
+    if any(not isfinite(float(value)) or float(value) <= 0.0 for value in durations):
+        raise ValueError(f"{kind} durations must be finite and strictly positive")

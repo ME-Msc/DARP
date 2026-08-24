@@ -66,3 +66,36 @@ def test_search_interface_reuses_integer_indexed_history_nodes():
     assert first.parent_index == 0
     assert observation.parent_index == first.node_index
     assert interface.node_count == 3
+
+
+def test_history_node_ids_do_not_collapse_punctuation_variants():
+    """Check path encoding remains injective for arbitrary model labels."""
+    interface = ANDORSearchInterface.from_actions_and_observations(
+        actions=(
+            ActionChoice(label="move/a", assignment={"first": True}),
+            ActionChoice(label="move_a", assignment={"second": True}),
+        ),
+        observation_scope=ObservationScope(mode="pomdp-observation", variables=("seen",)),
+    )
+
+    first, second = interface.action_nodes()
+
+    assert first is not second
+    assert first.node_id != second.node_id
+    assert first.node_index != second.node_index
+
+
+def test_history_node_ids_distinguish_empty_and_literal_empty_labels():
+    """Check the path token remains injective for an actual empty label."""
+    interface = ANDORSearchInterface.from_actions_and_observations(
+        actions=(
+            ActionChoice(label="", assignment={"first": True}),
+            ActionChoice(label="empty", assignment={"second": True}),
+        ),
+        observation_scope=ObservationScope(mode="mdp-state", variables=("at",)),
+    )
+
+    first, second = interface.action_nodes()
+
+    assert first.node_id != second.node_id
+    assert first.node_index != second.node_index

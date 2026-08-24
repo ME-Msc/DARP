@@ -6,25 +6,38 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import isfinite
 from typing import Mapping
 
 from darp.adapter.runtime import PyRDDLGymRuntime
 from darp.model.and_or_tree import ANDORNode, ANDORSearchInterface
+from darp.model.duration import DurationProgress
 from darp.adapter.exact import ObservationKey, StateKey
 
 
 @dataclass(frozen=True, eq=False)
 class FrontierItem:
-    """Track one expandable action history and its numeric beliefs. / 跟踪一个可展开动作历史及其数值 belief。"""
+    r"""Track one action history using the paper's two probability flows.
+
+    ``rho`` is the ordinary history probability :math:`\rho(q)` used by
+    the utility coefficient. ``safe_rho`` is the safe-prefix probability
+    :math:`\tilde\rho(q)` used by the chance-risk coefficient.  They are
+    equal only in risk-free models.
+
+    / ``rho`` 是效用使用的普通历史概率，``safe_rho`` 是机会约束使用的
+    安全前缀概率；有风险时二者不能混用。
+    """
 
     node: ANDORNode
     rho: float = 1.0
+    safe_rho: float = 1.0
     root_action_label: str | None = None
     belief: Mapping[StateKey, float] | None = None
     safe_belief: Mapping[StateKey, float] | None = None
     duration_beliefs: tuple[Mapping[StateKey, float], ...] = ()
     belief_trace: tuple[Mapping[StateKey, float], ...] = ()
     observation_keys: tuple[ObservationKey, ...] = ()
+    duration_progress: DurationProgress = field(default_factory=DurationProgress)
 
     @property
     def action_label(self) -> str:
@@ -82,11 +95,11 @@ def initialize_root_frontier(
     # 论文第 1 行：初始化树、open observation history 集合 $$N$$、已展开集合 $$F$$，以及 $$\rho(0)$$。
     root = interface.root
     open_histories = (root,)
-    root_belief = _root_belief_from_runtime_or_override(runtime, interface, root_belief)
+    root_belief = resolve_root_belief(runtime, interface, root_belief)
     if interface.exact_kernel is not None and root_belief is not None:
-        # Lemma 3.3 root safe belief b0*: real ExactRDDLKernel conditions on
+        # Lemma 3.3 root safe-conditioned belief: real ExactRDDLKernel conditions on
         # the initial safe event; no-risk test kernels may omit the method.
-        # Lemma 3.3 的 b0*：真实 kernel 会扣除初始 unsafe；无风险测试替身可直接复用 b0。
+        # Lemma 3.3 的 safe belief：真实 kernel 会扣除初始 unsafe；无风险测试替身可复用 b0。
         safe_root = getattr(interface.exact_kernel, "safe_belief_from_belief", None)
         root_safe_belief = safe_root(root_belief) if safe_root is not None else root_belief
     else:
@@ -101,12 +114,14 @@ def initialize_root_frontier(
         FrontierItem(
             node=node,
             rho=1.0,
+            safe_rho=1.0,
             root_action_label=str(node.metadata.get("action", "noop")),
             belief=root_belief,
             safe_belief=root_safe_belief,
             duration_beliefs=(),
             belief_trace=(root_belief,) if root_belief is not None else (),
             observation_keys=(),
+            duration_progress=DurationProgress(),
         )
         for node in action_nodes
     )
@@ -115,25 +130,50 @@ def initialize_root_frontier(
         frontier=frontier,
         open_histories=open_histories,
     )
-def _root_belief_from_runtime_or_override(
+def resolve_root_belief(
     runtime: PyRDDLGymRuntime,
     interface: ANDORSearchInterface,
     root_belief: Mapping[StateKey, float] | None,
 ) -> Mapping[StateKey, float] | None:
-    """Return explicit online belief or singleton runtime-state belief. / 返回显式在线 belief 或 runtime state 单点 belief。"""
+    """Resolve one root belief consistently for tree and risk encoding.
+
+    An explicit online belief always wins. A POMDP without one uses the
+    model-declared b0 so no simulator hidden state leaks into planning. An MDP
+    uses the runtime's current state, which matters when the public planner API
+    is called after the environment has already advanced.
+    """
     if interface.exact_kernel is None:
         return None
     if root_belief is not None:
         return _normalize_root_belief(root_belief)
+    if interface.observation_scope.mode == "pomdp-observation":
+        initial_from_model = getattr(interface.exact_kernel, "initial_belief_from_model", None)
+        if initial_from_model is not None:
+            return _normalize_root_belief(initial_from_model())
     return interface.exact_kernel.initial_belief_from_state(runtime.state)
 
 
 def _normalize_root_belief(belief: Mapping[StateKey, float]) -> Mapping[StateKey, float]:
     """Normalize root belief probabilities. / 归一化 root belief 概率。"""
+    numeric = {state: float(probability) for state, probability in belief.items()}
+    non_finite = {
+        state: probability
+        for state, probability in numeric.items()
+        if not isfinite(probability)
+    }
+    if non_finite:
+        raise ValueError(f"Root belief contains non-finite probability mass: {non_finite!r}")
+    negative = {
+        state: probability
+        for state, probability in numeric.items()
+        if probability < -1e-12
+    }
+    if negative:
+        raise ValueError(f"Root belief contains negative probability mass: {negative!r}")
     cleaned = {
         state: float(probability)
-        for state, probability in belief.items()
-        if abs(float(probability)) > 1e-15
+        for state, probability in numeric.items()
+        if probability > 1e-15
     }
     total = sum(cleaned.values())
     if total <= 0.0:

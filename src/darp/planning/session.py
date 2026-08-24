@@ -14,6 +14,7 @@ from typing import Any, Literal, Mapping
 from darp.adapter.exact import ExactBeliefState
 from darp.adapter.problem import PyRDDLGymProblem
 from darp.adapter.runtime import ParticleBelief, PyRDDLGymRuntime, _json_ready
+from darp.model.duration import FixedDurationModel
 from darp.model.duration_sidecar import DurationSidecar, build_duration_sidecar
 from darp.planning.full_ilp import FullILPPlanner
 from darp.planning.hilp import HILPHeuristicMode, HILPPlanner
@@ -152,6 +153,12 @@ def run_online_session(
         interface = view.build_and_or_interface(runtime, risk=sidecar_risk)
         session_timing["and_or_interface_ms"] = (perf_counter() - interface_started_at) * 1000.0
         duration.validate_actions([choice.label for choice in interface.actions])
+        _validate_exact_online_replanning(
+            duration,
+            action_labels=tuple(choice.label for choice in interface.actions),
+            risk_budget=planner_risk_budget,
+            horizon=runtime.horizon,
+        )
     if planner_name == "rollout":
         belief: BeliefRecord = runtime.initial_belief(
             observation,
@@ -375,6 +382,43 @@ def _build_planner(
             risk_budget=risk_budget,
         )
     raise ValueError(f"Unsupported planner: {planner_name}")
+
+
+def _validate_exact_online_replanning(
+    duration: DurationSidecar,
+    *,
+    action_labels: tuple[str, ...],
+    risk_budget: float | None,
+    horizon: int,
+) -> None:
+    """Fail closed where stepwise replanning would reset global resources.
+
+    The paper constrains an entire conditional policy. Reusing the original
+    chance budget or a fresh duration accumulator at every environment step
+    does not preserve those episode-level semantics. Root/offline planning
+    remains fully supported by the planners and experiment runner.
+    """
+
+    if horizon <= 1:
+        return
+    if risk_budget is not None:
+        raise ValueError(
+            "Risk-constrained exact online replanning is disabled because resetting the full "
+            "chance budget each step does not preserve the episode-level constraint. "
+            "Solve once and execute the conditional policy, or use the offline experiment runner."
+        )
+    model = duration.model
+    unit_fixed = isinstance(model, FixedDurationModel) and abs(duration.zeta) <= 1e-12
+    if unit_fixed:
+        unit_fixed = all(
+            abs(model.estimate({}, action).mean - 1.0) <= 1e-12
+            for action in action_labels
+        )
+    if not unit_fixed:
+        raise ValueError(
+            "Durative exact online replanning is disabled because a fresh duration accumulator "
+            "would reset elapsed time each step. Use root/offline policy planning instead."
+        )
 
 
 def _default_duration_sidecar() -> DurationSidecar:

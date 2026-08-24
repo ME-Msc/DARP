@@ -162,7 +162,7 @@ CC-POMDP 也可以被等价地写成 ILP。它的关键是把原来复杂的“�
 | ---: | --- | --- | --- |
 | 1 | $R\triangleq \Delta-r(b_0)$ |  | ILP 中真正还能使用的，剩余风险预算 $R$，就是总风险预算 $\Delta$ (允许进入 risky states 的最大概率) 减去，<br> 初始 belief $b_0$ 本身可能已经有一部分概率在 risky states 里，这部分风险就是 $r(b_0)$ |
 | 2 | $r_q\triangleq \tilde{\rho}(q)\cdot r(\bar{b}_q),\quad q\in\tilde{A}$ | | 动作历史节点 q 对总执行风险的贡献，等于，安全到达历史 q 的概率$\tilde{\rho}(q)$（在之前没有进入 risky states 的条件下走到 q 的概率），乘以，在节点 q 的 safe prior belief 下进入 risky states 的概率 $r(\bar{b}_q)$，就是“安全走到 q，然后在 q 这里发生风险”的概率贡献 |
-| 3 | $u_q\triangleq \rho^\star(q)\cdot \sum\limits_{s\in S}\tilde{b}_{q-1}^*(s)U(s,a_q),\quad q\in\tilde{A}$ |  | 动作历史节点 q 对总期望效用的贡献，等于，安全前缀到达 q 的概率 $\rho^*(q)$，乘以，执行 q 的最后动作之前的 safe posterior belief $\tilde{b}_{q-1}^*$ 与效用 $U(s,a_q)$ 的加权和 |
+| 3 | $u_q\triangleq \rho^\star(q)\cdot \sum\limits_{s\in S}\tilde{b}_{q-1}^*(s)U(s,a_q),\quad q\in\tilde{A}$ |  | 动作历史节点 q 对总期望效用的贡献。这里上标 $\star$ 表示所求策略下的量；论文明确说明 $\rho^\star$ 与 $\tilde b^\star$ 分别由普通 belief 的 Eq. (9)、(10) 给出，并不表示 safe-conditioned flow。安全前缀概率是另一个符号 $\tilde\rho(q)$，仅进入风险系数 $r_q$。 |
 
 ### Stochastic Duration Model
 
@@ -182,16 +182,16 @@ DARP 当前支持两个 frontier utility heuristic 模式。`one-step-greedy` �
 
 对于 frontier action history $q$，DARP 使用：
 
-$$h_q^u := u_q = \rho^*(q)\sum_s b_q^*(s)U(s,a_q).$$
+$$h_q^u := u_q = \rho(q)\sum_s b_q(s)U(s,a_q).$$
 
-`reachable-bellman` 使用当前 frontier action 的后继状态 support 作为种子，只在可达状态集合上做 fully observable Bellman backup：
+`reachable-bellman` 使用当前 frontier action 的后继状态 support 作为种子，只在可达状态集合上做 fully observable Bellman backup。无 domain tail 时允许以 0 提前停止，保持对负 reward 问题的乐观上界；有 admissible tail 时以该 tail 初始化 $V_0$：
 
-$$V_0(s)=0,\qquad V_t(s)=\max_a\left[U(s,a)+\sum_{s'}T(s,a,s')V_{t-1}(s')\right].$$
+$$V_0(s)=H_{tail}(s)\;\text{or}\;0,\qquad V_t(s)=\max_a\left[U(s,a)+\sum_{s'}T(s,a,s')V_{t-1}(s')\right].$$
 
 对应 frontier action history $q$：
 
-$$h_q^u=\rho^*(q)\sum_s b_q^*(s)\left[U(s,a_q)+\sum_{s'}T(s,a_q,s')V_{d-1}(s')\right].$$
+$$h_q^u=\rho(q)\sum_s b_q(s)\left[U(s,a_q)+\sum_{s'}T(s,a_q,s')V_{d-1}(s')\right].$$
 
-两种模式都不是未来采样，也不递归展开 observation tree；区别在于 `one-step-greedy` 更快，`reachable-bellman` 会在有限可达状态集合上向后传播未来 reward。
+两种模式都不是未来采样，也不递归展开 observation tree；区别在于 `one-step-greedy` 更快，`reachable-bellman` 会在有限可达状态集合上向后传播未来 reward。需要特别区分论文对 $h_q^u$ 的 admissible 要求与具体实现：`one-step-greedy` 只是排序分数，一般不是未来 utility 的 admissible bound，所以只要仍有未展开备选 subtree，结果必须标记 `complete=False`。`reachable-bellman` 只有覆盖所有未展开备选的全部剩余 depth，且没有额外 terminal tail 时，才可以参与 exact certificate。
 
 风险启发式 $h_q^r$ 当前保持为一步 safe-belief 风险 $r_q$，作为未来风险的可采纳下界；更强的风险启发式留给后续 benchmark 优化。

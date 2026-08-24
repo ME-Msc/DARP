@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
@@ -11,7 +12,11 @@ from darp.ilp.model import ILPLinearConstraint, ILPModelSpec, ILPVariable
 from darp.model.and_or_tree import ANDORSearchInterface
 from darp.model.duration import HistoryDurationEvaluator
 from darp.planning.expand import ExpandedAction, ExpansionMetrics, expand_frontier_item
-from darp.planning.preprocess import FrontierItem, initialize_root_frontier
+from darp.planning.preprocess import (
+    FrontierItem,
+    initialize_root_frontier,
+    resolve_root_belief,
+)
 
 
 @dataclass(frozen=True)
@@ -35,6 +40,10 @@ class Algorithm1ExpansionRecord:
     continues: bool
 
 
+class PolicyTreeExpansionLimitError(RuntimeError):
+    """Raised before full-tree preprocessing exceeds its explicit node cap."""
+
+
 def build_full_tree_ilp(
     runtime: PyRDDLGymRuntime,
     interface: ANDORSearchInterface,
@@ -42,6 +51,8 @@ def build_full_tree_ilp(
     *,
     risk_budget: float | None = None,
     root_belief: Mapping[StateKey, float] | None = None,
+    max_nodes: int | None = 100_000,
+    max_action_depth: int | None = None,
 ) -> PolicyTreeILP:
     r"""Encode the AND-OR policy tree as a binary full-ILP model.
 
@@ -80,6 +91,8 @@ def build_full_tree_ilp(
         interface=interface,
         duration_evaluator=duration_evaluator,
         root_belief=root_belief,
+        max_nodes=max_nodes,
+        max_action_depth=max_action_depth,
     )
     return _encode_algorithm1_records_as_full_ilp(
         records,
@@ -123,6 +136,8 @@ def paper_preprocess(
     interface: ANDORSearchInterface,
     duration_evaluator: HistoryDurationEvaluator,
     root_belief: Mapping[StateKey, float] | None,
+    max_nodes: int | None = 100_000,
+    max_action_depth: int | None = None,
 ) -> tuple[Algorithm1ExpansionRecord, ...]:
     r"""Run paper Algorithm 1 `Preprocess` and return expanded action records.
 
@@ -140,17 +155,27 @@ def paper_preprocess(
     $$
 
     / 运行论文 Algorithm 1：不断调用 `expand_frontier_item`，当
-    $$\tau(qao)>\varsigma$$ 时继续加入下一层；固定 horizon 已经包含在
-    `duration_evaluator.horizon` 的 $$\tau(qao)$$ 计算中。
+    $$\tau(qao)>\varsigma$$ 时继续加入下一层。`duration_evaluator`
+    实现论文的 durative stopping condition；可选 `max_action_depth`
+    另外保证不超过 RDDL/online API 尚余的决策步数。
     """
 
+    if max_nodes is not None and max_nodes < 1:
+        raise ValueError("max_nodes must be positive when provided")
+    if max_action_depth is not None and max_action_depth < 1:
+        raise ValueError("max_action_depth must be positive when provided")
     root_frontier = initialize_root_frontier(runtime, interface, root_belief=root_belief)
-    queue: list[FrontierItem] = list(root_frontier.frontier)
+    queue = deque(root_frontier.frontier)
     records: list[Algorithm1ExpansionRecord] = []
     seen: set[str] = set()
 
     while queue:
-        item = queue.pop(0)
+        if max_nodes is not None and len(records) >= max_nodes:
+            raise PolicyTreeExpansionLimitError(
+                "Full policy-tree preprocessing reached max_nodes="
+                f"{max_nodes}; use HILP for normal experiments or explicitly raise the oracle cap."
+            )
+        item = queue.popleft()
         var_id = _action_var_id(item)
         if var_id in seen:
             continue
@@ -159,8 +184,10 @@ def paper_preprocess(
         # Algorithm 1 lines 7-9: Algorithm 2 Expand creates child frontier entries
         # only for $$qao$$ branches satisfying $$tau(qao) > varsigma$$.
         # 论文第 7-9 行：Algorithm 2 Expand 只为 $$tau(qao)>varsigma$$ 的 $$qao$$ 分支
-        # 创建后继 frontier；不再额外引入 lookahead/depth 截断。
-        continues = bool(expanded.child_frontier)
+        # 创建后继 frontier。API 的剩余 action depth 是额外的 RDDL 决策步上限。
+        continues = bool(expanded.child_frontier) and (
+            max_action_depth is None or item.node.history.depth < max_action_depth
+        )
         records.append(
             Algorithm1ExpansionRecord(
                 var_id=var_id,
@@ -193,8 +220,9 @@ def _effective_safe_risk_budget(
     """
     if risk_budget is None or interface.exact_kernel is None:
         return risk_budget
+    root_belief = resolve_root_belief(runtime, interface, root_belief)
     if root_belief is None:
-        root_belief = interface.exact_kernel.initial_belief_from_state(runtime.state)
+        return risk_budget
     root_risk = getattr(interface.exact_kernel, "belief_state_risk_probability", None)
     initial_risk = root_risk(root_belief) if root_risk is not None else 0.0
     return float(risk_budget) - initial_risk
@@ -225,7 +253,8 @@ def _encode_algorithm1_records_as_full_ilp(
        \sum_q r_qx_q\le R.
     $$
 
-    where $$R=\Delta-r(b_0)$$, $$r_q=\rho^*(q)r(b_q)$$.
+    where $$R=\Delta-r(b_0)$$ and $$r_q$$ uses the safe-conditioned
+    occurrence probability and belief.
 
     / 将 Algorithm 1/2 得到的 action histories 编码成论文 full-ILP；
     风险行使用 Lemma 3.3 的 safe-belief 线性化形式。
@@ -367,10 +396,15 @@ def _definition31_flow_constraints(
 
 
 def _action_var_id(item: FrontierItem) -> str:
-    """Return a stable ILP variable id for an action-history item. / 返回 action-history 的稳定 ILP 变量 id。"""
-    return f"x_{_node_token(item.node.node_id)}"
+    """Return a collision-free arena-based policy variable id.
 
+    Full history labels remain variable metadata; solver identifiers use the
+    unique integer node arena so punctuation in action/observation labels can
+    never collapse two histories to the same sanitized name.
 
-def _node_token(value: str) -> str:
-    """Return a Gurobi-friendly token. / 返回适合 Gurobi 的 token。"""
-    return "".join(char if char.isalnum() else "_" for char in value) or "empty"
+    / 完整 history 保留在 metadata，solver id 使用唯一整数节点编号，避免
+    字符清洗造成不同 history 冲突。
+    """
+    if item.node.node_index < 0:
+        raise ValueError("Action history must be interned before ILP encoding.")
+    return f"x_n{item.node.node_index}"

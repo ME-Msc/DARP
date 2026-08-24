@@ -7,7 +7,12 @@ from typing import Any, Mapping, Sequence
 
 from darp.adapter.exact import ExactRDDLKernel, ObservationKey, StateKey
 from darp.model.and_or_tree import ANDORNode, ANDORSearchInterface
-from darp.model.duration import Belief, DurationProgress, HistoryDurationEvaluator
+from darp.model.duration import (
+    Belief,
+    DurationProgress,
+    FixedDurationModel,
+    HistoryDurationEvaluator,
+)
 from darp.planning.preprocess import FrontierItem
 
 
@@ -19,6 +24,7 @@ class ExpansionMetrics:
     utility: float
     risk: float
     rho: float
+    safe_rho: float
     observation_probability: float
     tau: float
     zeta: float
@@ -58,6 +64,7 @@ class ObservationFrontier:
     child_frontier: tuple[FrontierItem, ...]
     probability: float
     rho: float
+    safe_rho: float
     tau: float
     duration: DurationProgress
     should_expand: bool
@@ -90,15 +97,16 @@ def expand_frontier_item(
     interface: ANDORSearchInterface,
     duration_evaluator: HistoryDurationEvaluator,
 ) -> ExpandedAction:
-    r"""Implement paper Algorithm 2 `Expand[qa, bq, ..., rho*(q), M']`.
+    r"""Implement paper Algorithm 2 with ordinary and safe-prefix flows.
 
     Line correspondence:
 
-    - Lines 1-4 compute ordinary observation support and CC-POMDP constants:
+    - Lines 1-4 compute ordinary observation support and CC-POMDP constants,
+      keeping the ordinary and safe-conditioned probability flows distinct:
         $$
-            b_{qa}(s)=\sum_{s'}T(s',a,s)\tilde b_q(s'),\quad
-            u_{qa}=\rho^*(q)\sum_s b^*_q(s)U(s,a),\quad
-            r_{qa}=\rho^*(q)r(b_{qa}).
+            b_{qa}(s')=\sum_sT(s,a,s')b_q(s),\quad
+            u_{qa}=\rho(q)\,\mathbb E_{b_q}[U(s,a)],\quad
+            r_{qa}=\tilde\rho(q)\,r(b^{\mathrm{safe}}_q,a).
         $$
       DARP evaluates these values from pyRDDLGym grounded CPFs through
       `ExactRDDLKernel`; ordinary beliefs support smoothing, while safe
@@ -106,7 +114,14 @@ def expand_frontier_item(
 
     - Lines 5-9 compute observation branches and their occurrence probability:
 
-      $$\rho^*(qao)=\rho^*(q)(1-r(b_{qa}))Pr(o\mid q,a,\mathrm{safe})$$
+      $$\rho(qao)=\rho(q)Pr(o\mid q,a)$$
+
+      for utility, and
+
+      $$\tilde\rho(qao)=\tilde\rho(q)(1-r(b^{\mathrm{safe}}_q,a))
+        Pr(o\mid q,a,\mathrm{safe})$$
+
+      for chance risk.
 
       DARP enumerates all finite observation outcomes and posterior beliefs.
 
@@ -116,20 +131,20 @@ def expand_frontier_item(
     - Line 21 returns the ILP constants and child histories.
 
     / 显式实现论文 Algorithm 2：从 grounded CPF 精确枚举 transition 与
-    observation；函数会计算 full-ILP 所需的 $$u_q$$、$$r_q$$、$$\rho^*(qao)$$、$$\tau(qao)$$
+    observation；函数会计算 full-ILP 所需的 $$u_q$$、$$r_q$$、$$\rho(qao)$$、$$\tilde\rho(qao)$$ 与 $$\tau(qao)$$
     """
     exact_kernel = interface.exact_kernel
     if exact_kernel is None or item.belief is None:
         raise ValueError("Paper Expand requires interface.exact_kernel and item.belief.")
 
-    # Input symbols of $$Expand[qa, b_q, ..., rho^*(q), M']$$.
-    # Expand 输入符号：observation history $$q$$ 的普通 belief、safe occurrence $$\rho^*(q)$$，以及 action history $$qa$$ 的动作 $$a_q$$。
+    # Inputs include both ordinary and safe-conditioned belief/probability flows.
     b_q = item.belief  # 以状态为键的普通 belief dict，表示历史 $$q$$ 中每个状态的概率；论文 C-POMDP 符号是 $$b_q$$。
-    b_star_q = item.safe_belief or b_q  # safe belief，论文 CC-POMDP 符号是 $$b^*_q$$。
-    rho_star_q = item.rho  # $$\rho^*(q)$$：安全前缀到达 action history q 的概率。
+    safe_belief_q = (
+        item.safe_belief if item.safe_belief is not None else b_q
+    )  # 空 safe belief 表示该前缀已无安全概率，不能回退为普通 belief。
+    rho_q = item.rho  # 普通 history q 的到达概率，只用于 utility。
+    safe_rho_q = item.safe_rho  # $$\tilde\rho(q)$$：安全前缀概率，只用于 chance risk。
     a_q = _action_assignment(item.node.metadata)
-    actions_qa = item.node.history.actions
-    action_assignments_qa = _action_assignments_for_history(interface, actions_qa)
     filtered_beliefs_q = item.belief_trace or (b_q,)
 
     # Lines 1-4 for ordinary belief: enumerate T/O support for later smoothing.
@@ -139,41 +154,36 @@ def expand_frontier_item(
     outcomes_qa = qa.observations  # 包含：所有可能 observation $$o$$，以及 $$Pr(o|qa)$$ 和 posterior $$b_{qao}$$。
 
     # Lemma 3.3 CC-POMDP constants:
-    # $$u_q = \rho^*(q) \sum_s b^*_{q-1}(s) U(s,a_q)$$
-    # $$r_q = \rho^*(q) r(b_q)$$, where $$b_q$$ is the safe prior after $$a_q$$.
-    # CC-POMDP 常量：目标和风险都基于 safe occurrence $$\rho^*(q)$$ 与 safe belief $$b^*$$。
-    safe_qa = exact_kernel.expand_safe_action(b_star_q, a_q)
+    # $$u_q = \rho(q) \sum_s b_q(s) U(s,a_q)$$ uses
+    # the ordinary history probability/belief from Eqns. (9)-(10), while
+    # $$r_q = \tilde\rho(q) r(b^{safe}_q,a_q)$$ uses the safe-prefix recursion.
+    # CC-POMDP 常量：效用走普通概率流，风险走安全概率流。
+    safe_qa = exact_kernel.expand_safe_action(safe_belief_q, a_q)
     safe_outcomes_by_observation = {
         outcome.observation: outcome
         for outcome in safe_qa.observations
     }
-    u_qa = rho_star_q * safe_qa.utility
-    r_qa = rho_star_q * safe_qa.risk
+    u_qa = rho_q * qa.utility
+    r_qa = safe_rho_q * safe_qa.risk
 
     # Lines 5-20: enumerate every qao branch and attach the next action frontier.
-    # 第 5-20 行：枚举每个 $$qao$$ 分支，计算 $$\rho^*(qao)$$、smoothed belief、$$\tau(qao)$$，并挂接下一层 action。
+    # 第 5-20 行：枚举每个 $$qao$$ 分支，分别传播普通/安全概率、计算 smoothed belief 和 $$\tau(qao)$$。
     branches: list[ObservationFrontier] = []
     next_frontier: list[FrontierItem] = []
     for outcome in outcomes_qa:
         p_o = outcome.probability  # $$Pr(o|qa)$$，在 $$b_{qa}$$ 下观测到 $$o$$ 的概率。
+        rho_qao = rho_q * p_o  # Eqn. (9) ordinary occurrence probability.
         safe_outcome = safe_outcomes_by_observation.get(outcome.observation)
-        p_star_o = safe_outcome.probability if safe_outcome is not None else 0.0  # $$Pr(o|qa,safe)$$。
-        b_star_qao = safe_outcome.belief if safe_outcome is not None else {}  # $$b^*_{qao}$$，safe posterior belief。
-        rho_star_qao = (
-            rho_star_q
+        p_safe_o = safe_outcome.probability if safe_outcome is not None else 0.0  # $$Pr(o|qa,safe)$$。
+        safe_belief_qao = safe_outcome.belief if safe_outcome is not None else {}  # safe-conditioned posterior belief。
+        safe_rho_qao = (
+            safe_rho_q
             * safe_qa.survival_probability
-            * p_star_o
-        )  # $$\rho^*(qao)=rho^*(q)(1-r(b_{qa}))Pr(o|qa,safe)$$。
+            * p_safe_o
+        )  # $$\tilde\rho(qao)=\tilde\rho(q)(1-r(b_{qa}))Pr(o|qa,safe)$$。
         b_qao = outcome.belief  # $$b_{qao}$$，观测 $$o$$ 后的 posterior belief。
         observation_keys_qao = item.observation_keys + (outcome.observation,)  # 完整观测序列 o_1..o_k。
         filtered_beliefs_qao = filtered_beliefs_q + (b_qao,)  # forward beliefs \tilde b^0..\tilde b^k。
-        smoothing_qao = _algorithm2_backward_and_smoothed_beliefs(
-            exact_kernel=exact_kernel,
-            actions=actions_qa,
-            action_assignments=action_assignments_qa,
-            observations=observation_keys_qao,
-            filtered_beliefs=filtered_beliefs_qao,
-        )
         qao_node = interface.observation_node(item.node, outcome.label)
         item.node.add_child(qao_node)
 
@@ -182,12 +192,39 @@ def expand_frontier_item(
         # $$Pr(S_i | qao)$$, not just the forward belief before observing $$q_{>i}$$.
         # 第 10-20 行后半段：用 smoothed action-start belief 计算 duration；
         # 对动作 $$a_i$$，应使用 $$Pr(S_i | qao)$$，即已吸收未来观测信息后的 belief。
-        duration_qao, duration_beliefs_qao = _algorithm2_duration_from_smoothed_beliefs(
-            exact_kernel=exact_kernel,
-            actions=actions_qa,
-            smoothed_beliefs=smoothing_qao.smoothed_beliefs,
-            duration_evaluator=duration_evaluator,
-        )
+        if isinstance(duration_evaluator.model, FixedDurationModel):
+            # Fixed duration is history-independent, so Algorithm 2's
+            # backward smoothing cannot change tau. Carry one sufficient
+            # statistic instead of recomputing the whole history per outcome.
+            # 固定时长只需 O(1) 累加，无需为每个 observation 重跑整段 backward smoothing。
+            smoothing_qao = Algorithm2Smoothing(
+                filtered_beliefs=tuple(dict(belief) for belief in filtered_beliefs_qao),
+                backward_messages=(),
+                smoothed_beliefs=(),
+            )
+            duration_qao = item.duration_progress.add(
+                duration_evaluator.model.estimate(
+                    duration_evaluator.default_belief,
+                    item.action_label,
+                )
+            )
+            duration_beliefs_qao = item.duration_beliefs
+        else:
+            actions_qa = item.node.history.actions
+            action_assignments_qa = _action_assignments_for_history(interface, actions_qa)
+            smoothing_qao = _algorithm2_backward_and_smoothed_beliefs(
+                exact_kernel=exact_kernel,
+                actions=actions_qa,
+                action_assignments=action_assignments_qa,
+                observations=observation_keys_qao,
+                filtered_beliefs=filtered_beliefs_qao,
+            )
+            duration_qao, duration_beliefs_qao = _algorithm2_duration_from_smoothed_beliefs(
+                exact_kernel=exact_kernel,
+                actions=actions_qa,
+                smoothed_beliefs=smoothing_qao.smoothed_beliefs,
+                duration_evaluator=duration_evaluator,
+            )
         tau_qao = duration_evaluator.model.tau(duration_qao, duration_evaluator.horizon)
         expand_qao = duration_evaluator.model.should_continue(
             duration_qao,
@@ -198,23 +235,26 @@ def expand_frontier_item(
             item=item,
             observation_node=qao_node,
             interface=interface,
-            rho=rho_star_qao,
-            should_expand=expand_qao and rho_star_qao > 0.0 and bool(b_star_qao),
+            rho=rho_qao,
+            safe_rho=safe_rho_qao,
+            should_expand=expand_qao and rho_qao > 0.0 and bool(b_qao),
             belief=b_qao,
-            safe_belief=b_star_qao,
+            safe_belief=safe_belief_qao,
             duration_beliefs=duration_beliefs_qao,
             belief_trace=filtered_beliefs_qao,
             observation_keys=observation_keys_qao,
+            duration_progress=duration_qao,
         )
         branches.append(
             ObservationFrontier(
                 observation_node=qao_node,
                 child_frontier=child_actions,
                 probability=p_o,
-                rho=rho_star_qao,
+                rho=rho_qao,
+                safe_rho=safe_rho_qao,
                 tau=tau_qao,
                 duration=duration_qao,
-                should_expand=expand_qao and rho_star_qao > 0.0 and bool(b_star_qao),
+                should_expand=expand_qao and rho_qao > 0.0 and bool(b_qao),
                 smoothing=smoothing_qao,
             )
         )
@@ -240,7 +280,8 @@ def expand_frontier_item(
         reward=qa.utility,
         utility=u_qa,
         risk=r_qa,
-        rho=rho_star_q,
+        rho=rho_q,
+        safe_rho=safe_rho_q,
         observation_probability=sum(outcome.probability for outcome in outcomes_qa),
         tau=summary_tau,
         zeta=duration_evaluator.zeta,
@@ -408,12 +449,14 @@ def _child_frontier(
     observation_node: ANDORNode,
     interface: ANDORSearchInterface,
     rho: float,
+    safe_rho: float,
     should_expand: bool,
     belief: Mapping[Any, float] | None,
     safe_belief: Mapping[Any, float] | None,
     duration_beliefs: tuple[Mapping[Any, float], ...],
     belief_trace: tuple[Mapping[StateKey, float], ...],
     observation_keys: tuple[ObservationKey, ...],
+    duration_progress: DurationProgress,
 ) -> tuple[FrontierItem, ...]:
     """Create action children under one observation node. / 在 observation 节点下创建 action 子节点。"""
     if not should_expand:
@@ -425,12 +468,14 @@ def _child_frontier(
         FrontierItem(
             node=child,
             rho=rho,
+            safe_rho=safe_rho,
             root_action_label=item.root_label,
             belief=belief,
             safe_belief=safe_belief,
             duration_beliefs=duration_beliefs,
             belief_trace=belief_trace,
             observation_keys=observation_keys,
+            duration_progress=duration_progress,
         )
         for child in action_nodes
     )

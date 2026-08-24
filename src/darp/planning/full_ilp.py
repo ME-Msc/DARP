@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import isfinite
 from time import perf_counter
 from typing import Mapping
 
@@ -24,6 +25,8 @@ class FullILPPlanner:
     """Solve the full policy-tree ILP with Gurobi. / 使用 Gurobi 求解完整 policy-tree ILP。"""
 
     risk_budget: float | None = None
+    max_tree_nodes: int | None = 100_000
+    solver_time_limit_ms: float | None = 60_000.0
     name: str = "full-ilp-gurobi"
     last_ilp_result: ILPSolveResult | None = field(default=None, init=False)
     last_policy_tree: PolicyTreeILP | None = field(default=None, init=False)
@@ -50,8 +53,8 @@ class FullILPPlanner:
 
         - Algorithm 2 computes the constants for each action history $$q \in \tilde{A}$$:
 
-          $$u_q = \rho^*(q)\sum_s b^*_{q-1}(s)U(s,a_q),\qquad
-            r_q = \rho^*(q)r(b_q),\qquad
+          $$u_q = \rho(q)\sum_s b_q(s)U(s,a_q),\qquad
+            r_q = \tilde\rho(q)r(\tilde b_q,a_q),\qquad
             \tau(q).$$
 
         - The full-ILP then solves the paper's policy-tree program:
@@ -74,7 +77,7 @@ class FullILPPlanner:
         Reference-code correspondence:
 
         - Author ``solver.preprocess(...)`` builds a NetworkX AND-OR tree and
-          stores $$u_q$$, $$r_q$$, $$\rho^*(q)$$, and beliefs on tree
+          stores $$u_q$$, $$r_q$$, occurrence probabilities, and beliefs on tree
           nodes. DARP's equivalent is
           ``build_full_tree_ilp -> paper_preprocess -> expand_frontier_item``.
         - Author ``solver.ILP(...)`` creates binary variables ``x[q]`` for
@@ -89,6 +92,16 @@ class FullILPPlanner:
         started_at = perf_counter()
         if remaining_depth < 1:
             raise ValueError("remaining_depth must be at least 1.")
+        if self.risk_budget is not None and (
+            not isfinite(float(self.risk_budget))
+            or not 0.0 <= float(self.risk_budget) <= 1.0
+        ):
+            raise ValueError("risk_budget must be a finite probability in [0, 1].")
+        if self.solver_time_limit_ms is not None and (
+            not isfinite(float(self.solver_time_limit_ms))
+            or float(self.solver_time_limit_ms) <= 0.0
+        ):
+            raise ValueError("solver_time_limit_ms must be finite and positive when provided.")
 
         build_started_at = perf_counter()
         ilp_tree = build_full_tree_ilp(
@@ -97,15 +110,22 @@ class FullILPPlanner:
             duration_evaluator,
             risk_budget=self.risk_budget,
             root_belief=root_belief,
+            max_nodes=self.max_tree_nodes,
+            max_action_depth=remaining_depth,
         )
         tree_ilp_build_ms = (perf_counter() - build_started_at) * 1000.0
         self.last_policy_tree = ilp_tree
         solve_started_at = perf_counter()
-        self.last_ilp_result = GurobiILPSolver().solve(ilp_tree.spec)
+        self.last_ilp_result = GurobiILPSolver().solve(
+            ilp_tree.spec,
+            time_limit_ms=self.solver_time_limit_ms,
+        )
         solver_call_ms = (perf_counter() - solve_started_at) * 1000.0
         postprocess_started_at = perf_counter()
         selected_root = _selected_root_variable(self.last_ilp_result, ilp_tree)
         if selected_root is None:
+            if self.last_ilp_result.status == "time_limit":
+                raise TimeoutError("Gurobi reached the full-ILP solve budget before finding an incumbent.")
             raise RuntimeError(
                 "Gurobi full-tree ILP did not select a root action. "
                 f"status={self.last_ilp_result.status}"
@@ -139,6 +159,9 @@ class FullILPPlanner:
                 "ilp_variables": float(len(ilp_tree.spec.variables)),
                 "ilp_constraints": float(len(ilp_tree.spec.constraints)),
                 "expanded_nodes": float(len(ilp_tree.variable_items)),
+                "solver_time_limit_hit": (
+                    1.0 if self.last_ilp_result.status == "time_limit" else 0.0
+                ),
                 **{f"exact_{name}": float(value) for name, value in cache_info.items()},
             },
         )

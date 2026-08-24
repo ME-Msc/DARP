@@ -178,3 +178,27 @@ def test_duration_sidecar_evaluator_requires_rddl_horizon():
 
     with pytest.raises(DurationSpecError, match="RDDL instance"):
         sidecar.evaluator(horizon=None)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "config",
+    (
+        {"kind": "fixed", "default": 0},
+        {"kind": "expected", "default": -1},
+        {"kind": "gaussian", "default_mean": 1, "default_variance": -0.1},
+    ),
+)
+def test_duration_sidecar_rejects_non_progressing_or_invalid_models(config):
+    """Check invalid moments cannot produce unbounded tree expansion."""
+    with pytest.raises(DurationSpecError):
+        build_duration_sidecar(config)
+
+
+def test_duration_evaluator_rejects_invalid_stopping_thresholds():
+    """Check duration stopping parameters are finite and meaningful."""
+    sidecar = build_duration_sidecar({"kind": "fixed", "default": 1})
+
+    with pytest.raises(ValueError, match="positive"):
+        sidecar.evaluator(horizon=0)
+    with pytest.raises(ValueError, match="non-negative"):
+        sidecar.evaluator(horizon=2, zeta=-1)

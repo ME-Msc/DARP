@@ -7,13 +7,15 @@ import sys
 from types import SimpleNamespace
 from typing import Any, Mapping
 
+import pytest
+
 from darp.ilp.gurobi import GurobiILPSolver
 from darp.ilp.model import ILPLinearConstraint, ILPModelSpec, ILPVariable
 from darp.model.and_or_tree import ANDORSearchInterface, ActionChoice, ObservationScope
 from darp.model.duration_sidecar import build_duration_sidecar
 from darp.planning.full_ilp import FullILPPlanner
 from darp.planning.hilp import HILPPlanner
-from darp.planning.ilp_tree import build_full_tree_ilp
+from darp.planning.ilp_tree import PolicyTreeExpansionLimitError, build_full_tree_ilp
 from darp.planning.rollout import action_label
 
 
@@ -64,6 +66,26 @@ def test_gurobi_solver_reports_infeasible_status(monkeypatch):
     assert result.selected_variables == ()
 
 
+def test_gurobi_time_limit_deducts_python_model_encoding(monkeypatch):
+    """Check optimize receives only the budget left after adapter construction."""
+    _install_fake_gurobi(monkeypatch)
+    models = []
+    fake_module = sys.modules["gurobipy"]
+    fake_module.Model = lambda name: models.append(_FakeModel(name)) or models[-1]
+    clock = iter((10.0, 10.25, 10.30))
+    monkeypatch.setattr("darp.ilp.gurobi.perf_counter", lambda: next(clock))
+    spec = ILPModelSpec(
+        name="timed_binary",
+        variables=(ILPVariable("x", "x"),),
+        objective={"x": 1.0},
+        constraints=(),
+    )
+
+    GurobiILPSolver().solve(spec, time_limit_ms=1_000.0)
+
+    assert models[0].Params.TimeLimit == pytest.approx(0.75)
+
+
 def test_policy_tree_ilp_contains_root_flow_and_risk_rows():
     """Check policy-tree ILP rows before solving. / 检查 policy-tree ILP 的 root/flow/risk 行。"""
     runtime, interface, duration = _policy_tree_inputs()
@@ -95,6 +117,23 @@ def test_policy_tree_ilp_declares_every_flow_variable():
         tree_ilp.spec.validate()
 
 
+def test_full_tree_preprocessing_honors_node_cap():
+    """Check the exponential full-tree oracle fails early at its explicit cap."""
+    runtime, interface, duration = _policy_tree_inputs()
+
+    with pytest.raises(PolicyTreeExpansionLimitError, match="max_nodes=1"):
+        build_full_tree_ilp(runtime, interface, duration, max_nodes=1)
+
+
+@pytest.mark.parametrize("planner", (FullILPPlanner(risk_budget=-0.1), HILPPlanner(risk_budget=1.1)))
+def test_exact_planners_reject_invalid_probability_budgets(planner):
+    """Check malformed chance budgets fail before tree construction/solving."""
+    runtime, interface, duration = _two_action_inputs()
+
+    with pytest.raises(ValueError, match="risk_budget"):
+        planner.choose_action(runtime, interface, duration, remaining_depth=runtime.horizon)
+
+
 def test_full_ilp_planner_uses_gurobi_when_available(monkeypatch):
     """Check full-tree planning uses Gurobi-selected root variables. / 检查 full-tree planner 使用 Gurobi 选择根变量。"""
     _install_fake_gurobi(monkeypatch)
@@ -109,6 +148,29 @@ def test_full_ilp_planner_uses_gurobi_when_available(monkeypatch):
     assert planner.last_ilp_result.is_optimal
 
 
+def test_full_ilp_exposes_time_limit_with_feasible_incumbent(monkeypatch):
+    """Check a time-limited feasible solve is never reported as complete."""
+    _install_fake_gurobi(monkeypatch)
+    original_optimize = _FakeModel.optimize
+
+    def optimize_then_report_time_limit(model):
+        original_optimize(model)
+        model.Status = _FakeGRB.TIME_LIMIT
+
+    monkeypatch.setattr(_FakeModel, "optimize", optimize_then_report_time_limit)
+    runtime, interface, duration = _two_action_inputs()
+
+    decision = FullILPPlanner().choose_action(
+        runtime,
+        interface,
+        duration,
+        remaining_depth=runtime.horizon,
+    )
+
+    assert decision.complete is False
+    assert decision.timing["solver_time_limit_hit"] == 1.0
+
+
 def test_full_ilp_planner_expands_to_remaining_depth(monkeypatch):
     """Check full-ILP expands to the remaining horizon. / 检查 full-ILP 展开到当前剩余 horizon。"""
     _install_fake_gurobi(monkeypatch)
@@ -120,6 +182,30 @@ def test_full_ilp_planner_expands_to_remaining_depth(monkeypatch):
     assert decision.remaining_depth == runtime.horizon
     assert planner.last_policy_tree is not None
     assert max(item.node.history.depth for item in planner.last_policy_tree.variable_items.values()) == runtime.horizon
+
+
+def test_full_ilp_caps_fractional_duration_tree_at_remaining_action_depth(monkeypatch):
+    """Check sub-unit durations cannot expand beyond the RDDL decision steps."""
+    _install_fake_gurobi(monkeypatch)
+    runtime = _TwoActionRuntime(horizon=4)
+    interface, _ = _interface_and_duration(runtime)
+    duration = build_duration_sidecar({"kind": "fixed", "default": 0.5}).evaluator(
+        horizon=runtime.horizon
+    )
+    planner = FullILPPlanner()
+
+    decision = planner.choose_action(
+        runtime,
+        interface,
+        duration,
+        remaining_depth=2,
+    )
+
+    assert decision.remaining_depth == 2
+    assert planner.last_policy_tree is not None
+    assert max(
+        item.node.history.depth for item in planner.last_policy_tree.variable_items.values()
+    ) == 2
 
 
 def test_full_ilp_uses_explicit_root_belief_over_runtime_state():
@@ -190,9 +276,73 @@ def test_hilp_reachable_bellman_heuristic_runs(monkeypatch):
 
     decision = planner.choose_action(runtime, interface, duration, remaining_depth=runtime.horizon)
 
-    assert decision.label == "go"
     assert planner.last_partial_tree is not None
+    assert planner.last_ilp_result is not None
+    selected_roots = set(planner.last_ilp_result.selected_variables) & set(
+        planner.last_partial_tree.root_variable_ids
+    )
+    assert selected_roots
+    assert any(
+        planner.last_partial_tree.variable_items[var_id].action_label == decision.label
+        for var_id in selected_roots
+    )
+    assert decision.complete is False
     assert decision.timing["hilp_heuristic_reachable_bellman"] == 1.0
+
+
+def test_hilp_one_step_does_not_claim_false_complete_certificate(monkeypatch):
+    """Check an unexpanded delayed-reward alternative keeps one-step HILP partial."""
+    _install_fake_gurobi(monkeypatch)
+    runtime = _TwoActionRuntime(horizon=2)
+    interface, duration = _interface_and_duration_for_kernel(runtime, _DelayedRewardKernel())
+    planner = HILPPlanner(
+        heuristic_lookahead_depth=1,
+        expansion_rounds=None,
+        frontier_width=1,
+        heuristic_mode="one-step-greedy",
+    )
+
+    decision = planner.choose_action(runtime, interface, duration, remaining_depth=2)
+
+    assert decision.label == "noop"
+    assert decision.complete is False
+    assert decision.timing["global_expandable_frontier"] > 0.0
+    assert decision.timing["certifying_utility_bound"] == 0.0
+
+
+def test_hilp_full_depth_reachable_bound_finds_delayed_reward(monkeypatch):
+    """Check a full remaining-depth Bellman upper bound can certify the better root."""
+    _install_fake_gurobi(monkeypatch)
+    runtime = _TwoActionRuntime(horizon=2)
+    interface, duration = _interface_and_duration_for_kernel(runtime, _DelayedRewardKernel())
+    planner = HILPPlanner(
+        heuristic_lookahead_depth=2,
+        expansion_rounds=None,
+        frontier_width=1,
+        heuristic_mode="reachable-bellman",
+    )
+
+    decision = planner.choose_action(runtime, interface, duration, remaining_depth=2)
+
+    assert decision.label == "go"
+    assert decision.complete is True
+    assert decision.timing["certifying_utility_bound"] == 1.0
+
+
+def test_mdp_root_risk_budget_uses_current_runtime_state():
+    """Check an advanced MDP state, not model b0, determines residual risk."""
+    runtime = _TwoActionRuntime(at_goal=True, horizon=1)
+    interface, duration = _interface_and_duration_for_kernel(runtime, _RootRiskKernel())
+
+    tree_ilp = build_full_tree_ilp(
+        runtime,
+        interface,
+        duration,
+        risk_budget=0.5,
+    )
+
+    risk_row = next(row for row in tree_ilp.spec.constraints if row.name == "risk_budget")
+    assert risk_row.rhs == pytest.approx(-0.5)
 
 
 def _two_action_inputs():
@@ -211,13 +361,18 @@ def _policy_tree_inputs():
 
 def _interface_and_duration(runtime):
     """Build common planner inputs for tiny runtime tests. / 为小型 runtime 测试构建通用 planner 输入。"""
+    return _interface_and_duration_for_kernel(runtime, _TinyExactKernel())
+
+
+def _interface_and_duration_for_kernel(runtime, kernel):
+    """Build common planner inputs with a caller-supplied exact kernel."""
     interface = ANDORSearchInterface.from_actions_and_observations(
         actions=tuple(
             ActionChoice(label=action_label(action), assignment=action)
             for action in runtime.action_candidates()
         ),
         observation_scope=ObservationScope(mode="mdp-state", variables=("at_goal",)),
-        exact_kernel=_TinyExactKernel(),
+        exact_kernel=kernel,
     )
     duration = build_duration_sidecar({"kind": "fixed", "default": 1}).evaluator(horizon=runtime.horizon)
     return interface, duration
@@ -319,6 +474,51 @@ class _TinyExactKernel:
     def _state_key(self, at_goal: bool):
         """Return a stable exact-state key. / 返回稳定 exact state key。"""
         return (("at_goal", at_goal),)
+
+
+class _DelayedRewardKernel(_TinyExactKernel):
+    """Kernel where investing now unlocks a much larger second-step reward."""
+
+    def expand_action(self, belief: Mapping[Any, float], action: Mapping[str, Any]):
+        prior: dict[Any, float] = {}
+        utility = 0.0
+        go = bool(action.get("go"))
+        for state, probability in belief.items():
+            invested = bool(dict(state).get("at_goal"))
+            utility += probability * (
+                100.0 if invested and not go else 1.0 if not invested and not go else 0.0
+            )
+            next_key = self._state_key(invested or go)
+            prior[next_key] = prior.get(next_key, 0.0) + probability
+        observations = tuple(
+            SimpleNamespace(
+                observation=(("__state__", state),),
+                label=self.state_label(state),
+                probability=probability,
+                belief={state: 1.0},
+            )
+            for state, probability in prior.items()
+        )
+        return SimpleNamespace(
+            utility=utility,
+            risk=0.0,
+            prior_belief=prior,
+            observations=observations,
+        )
+
+
+class _RootRiskKernel(_TinyExactKernel):
+    """Kernel exposing a safe model b0 and a risky advanced MDP state."""
+
+    def initial_belief_from_model(self):
+        return {self._state_key(False): 1.0}
+
+    def belief_state_risk_probability(self, belief):
+        return sum(
+            probability
+            for state, probability in belief.items()
+            if bool(dict(state).get("at_goal"))
+        )
 
 
 class _FakeGRB:

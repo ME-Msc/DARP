@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from darp.adapter.exact import ExactBeliefState
+from darp.adapter.exact import ExactBeliefState, ExactKernelError
 from darp.adapter.loader import RDDLLoader
 from darp.adapter.runtime import PyRDDLGymRuntime
 from darp.model.and_or_tree import ANDORSearchInterface, ActionChoice, ObservationScope
@@ -175,7 +175,7 @@ def test_expand_computes_backward_message_and_smoothed_belief():
         observation_scope=ObservationScope(mode="pomdp-observation", variables=("see-a",)),
         exact_kernel=kernel,
     )
-    duration = build_duration_sidecar({"kind": "fixed", "default": 1}).evaluator(horizon=2)
+    duration = build_duration_sidecar({"kind": "expected", "default": 1}).evaluator(horizon=2)
     root_frontier = initialize_root_frontier(runtime, interface)
 
     expanded = expand_frontier_item(root_frontier.frontier[0], interface, duration)
@@ -191,6 +191,45 @@ def test_expand_computes_backward_message_and_smoothed_belief():
     assert branch.smoothing.backward_messages[0][state_b] == pytest.approx(0.18)
     assert branch.smoothing.smoothed_beliefs[0][state_a] == pytest.approx(0.8043478261)
     assert branch.smoothing.smoothed_beliefs[0][state_b] == pytest.approx(0.1956521739)
+
+
+def test_fixed_duration_skips_backward_smoothing():
+    """Check fixed duration carries one scalar statistic instead of smoothing history."""
+    kernel = _TwoStatePOMDPKernel()
+    runtime = _TinyRuntime()
+    interface = ANDORSearchInterface.from_actions_and_observations(
+        actions=(ActionChoice(label="sense", assignment={"sense": True}),),
+        observation_scope=ObservationScope(mode="pomdp-observation", variables=("see-a",)),
+        exact_kernel=kernel,
+    )
+    duration = build_duration_sidecar({"kind": "fixed", "default": 1}).evaluator(horizon=2)
+
+    expanded = expand_frontier_item(initialize_root_frontier(runtime, interface).frontier[0], interface, duration)
+
+    assert all(not branch.smoothing.backward_messages for branch in expanded.observation_frontiers)
+    assert all(branch.duration.mean == pytest.approx(1.0) for branch in expanded.observation_frontiers)
+
+
+def test_expand_keeps_ordinary_and_safe_probability_flows_separate():
+    """Check unsafe ordinary histories retain utility/children but carry zero safe mass."""
+    kernel = _RiskSplitKernel()
+    runtime = _TinyRuntime()
+    interface = ANDORSearchInterface.from_actions_and_observations(
+        actions=(ActionChoice(label="act", assignment={"act": True}),),
+        observation_scope=ObservationScope(mode="mdp-state", variables=("safe",)),
+        exact_kernel=kernel,
+    )
+    duration = build_duration_sidecar({"kind": "fixed", "default": 1}).evaluator(horizon=2)
+
+    expanded = expand_frontier_item(initialize_root_frontier(runtime, interface).frontier[0], interface, duration)
+    branch = expanded.observation_frontiers[0]
+
+    assert expanded.metrics.utility == pytest.approx(7.0)
+    assert expanded.metrics.risk == pytest.approx(1.0)
+    assert branch.rho == pytest.approx(1.0)
+    assert branch.safe_rho == pytest.approx(0.0)
+    assert branch.child_frontier
+    assert branch.child_frontier[0].safe_belief == {}
 
 
 def test_exact_belief_state_advances_with_bayes_update():
@@ -212,6 +251,39 @@ def test_exact_belief_state_advances_with_bayes_update():
     assert next_belief.belief[state_a] == pytest.approx(0.8804347826)
     assert next_belief.belief[state_b] == pytest.approx(0.1195652174)
     assert next_belief.support == {"a": pytest.approx(0.8804347826), "b": pytest.approx(0.1195652174)}
+
+
+@pytest.mark.parametrize("invalid_mass", (float("nan"), float("inf"), float("-inf")))
+def test_exact_belief_rejects_non_finite_probability_mass(invalid_mass):
+    """Check NaN/Inf cannot silently contaminate exact belief arithmetic."""
+    kernel = _TwoStatePOMDPKernel()
+
+    with pytest.raises(ExactKernelError, match="non-finite mass"):
+        ExactBeliefState.from_belief(
+            kernel,
+            {kernel.state_key(True): invalid_mass},
+            {},
+            is_pomdp=True,
+            source="invalid-test",
+        )
+
+
+@pytest.mark.parametrize("invalid_mass", (float("nan"), float("inf"), float("-inf")))
+def test_root_frontier_rejects_non_finite_probability_mass(invalid_mass):
+    """Check explicit root beliefs validate finite mass before tree expansion."""
+    kernel = _TwoStatePOMDPKernel()
+    interface = ANDORSearchInterface.from_actions_and_observations(
+        actions=(ActionChoice(label="sense", assignment={"sense": True}),),
+        observation_scope=ObservationScope(mode="pomdp-observation", variables=("see-a",)),
+        exact_kernel=kernel,
+    )
+
+    with pytest.raises(ValueError, match="non-finite probability mass"):
+        initialize_root_frontier(
+            _TinyRuntime(),
+            interface,
+            root_belief={kernel.state_key(True): invalid_mass},
+        )
 
 
 class _TinyRuntime:
@@ -326,6 +398,50 @@ class _Outcome:
         self.label = label
         self.probability = probability
         self.belief = belief
+
+
+class _RiskSplitKernel:
+    """Kernel where an action surely fails safety but ordinary dynamics continue."""
+
+    def state_key(self, safe):
+        return (("safe", bool(safe)),)
+
+    def initial_belief_from_state(self, state):
+        del state
+        return {self.state_key(True): 1.0}
+
+    def state_label(self, state):
+        return "safe" if dict(state)["safe"] else "unsafe"
+
+    def fluent_belief(self, belief):
+        return {"safe": sum(prob for state, prob in belief.items() if dict(state)["safe"])}
+
+    def expand_action(self, belief, action):
+        del belief, action
+        state = self.state_key(False)
+        return _Expansion(
+            utility=7.0,
+            risk=1.0,
+            prior_belief={state: 1.0},
+            observations=(
+                _Outcome(
+                    observation=(("__state__", state),),
+                    label="unsafe",
+                    probability=1.0,
+                    belief={state: 1.0},
+                ),
+            ),
+        )
+
+    def expand_safe_action(self, safe_belief, action):
+        del safe_belief, action
+        return _Expansion(
+            utility=-999.0,
+            risk=1.0,
+            prior_belief={},
+            observations=(),
+            survival_probability=0.0,
+        )
 
 
 class _Expansion:

@@ -74,7 +74,8 @@ class GroundedRDDLView:
     @property
     def discount(self) -> float:
         """Return the reward discount factor. / 返回 reward discount factor。"""
-        return float(getattr(self.grounded_model, "discount", 1.0) or 1.0)
+        value = getattr(self.grounded_model, "discount", 1.0)
+        return 1.0 if value is None else float(value)
 
     def state_fluents(self) -> tuple[str, ...]:
         """Return grounded state fluent names. / 返回 grounded state fluent 名称。"""
@@ -189,6 +190,29 @@ class GroundedRDDLView:
                 UnsupportedRDDLFeature(
                     feature="concurrent action combinations",
                     detail=f"max_allowed_actions={max_actions}; current interface enumerates noop and one-active bool actions",
+                )
+            )
+        for attribute, label in (
+            ("preconditions", "action preconditions"),
+            ("invariants", "state invariants"),
+            ("terminations", "termination conditions"),
+        ):
+            expressions = getattr(self.grounded_model, attribute, ()) or ()
+            if expressions:
+                unsupported.append(
+                    UnsupportedRDDLFeature(
+                        feature=label,
+                        detail=(
+                            f"{len(expressions)} expression(s); current exact search does not "
+                            "evaluate them while generating actions/histories"
+                        ),
+                    )
+                )
+        if abs(self.discount - 1.0) > 1e-12:
+            unsupported.append(
+                UnsupportedRDDLFeature(
+                    feature="discounted objective",
+                    detail=f"discount={self.discount}; policy-tree coefficients currently assume discount=1",
                 )
             )
         if self.reward_expression() is None:

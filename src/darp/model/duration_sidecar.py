@@ -77,7 +77,10 @@ def build_duration_sidecar(raw: Mapping[str, Any], path: str | Path | None = Non
     """Build a DurationSidecar from a parsed mapping. / 从解析后的 mapping 构建 DurationSidecar。"""
     config = _duration_config(raw)
     _validate_sidecar_schema(raw, config)
-    model = build_duration_model(config)
+    try:
+        model = build_duration_model(config)
+    except ValueError as exc:
+        raise DurationSpecError(str(exc)) from exc
     return DurationSidecar(
         model=model,
         raw=dict(raw),

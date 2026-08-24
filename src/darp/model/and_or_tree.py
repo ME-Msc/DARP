@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Mapping
+from urllib.parse import quote
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,5 +168,5 @@ class ANDORSearchInterface:
 
 
 def _node_token(value: str) -> str:
-    """Return a path-safe node token. / 返回适合 node_id 路径使用的 token。"""
-    return value.replace("/", "_").replace(" ", "_") or "empty"
+    """Return an injective path-safe token for an action/observation label."""
+    return f"{len(value)}:{quote(value, safe='')}"

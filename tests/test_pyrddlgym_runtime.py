@@ -7,6 +7,7 @@ import pytest
 from darp.adapter.loader import RDDLLoader
 from darp.adapter.runtime import PyRDDLGymRuntime
 from darp.model.and_or_tree import ANDORSearchInterface, ActionChoice, ObservationScope
+from darp.model.duration_sidecar import build_duration_sidecar
 from darp.planning.rollout import action_label
 from darp.planning.session import run_online_session
 
@@ -128,6 +129,25 @@ def test_online_session_can_use_hilp_planner_path(monkeypatch):
     assert payload["steps"][0]["next_belief"]["source"] == "exact-bayes"
     assert payload["steps"][0]["action"] == "go"
     assert payload["steps"][0]["next_state"]["at_goal"] is True
+
+
+def test_exact_online_replanning_rejects_resetting_global_risk_budget():
+    """Check multi-step chance constraints are not silently reset each step."""
+    problem = _FakePlannerProblem()
+    problem.env.horizon = 2
+
+    with pytest.raises(ValueError, match="episode-level constraint"):
+        run_online_session(problem, planner_name="hilp", risk_budget=0.1)
+
+
+def test_exact_online_replanning_rejects_resetting_duration_progress():
+    """Check multi-step non-unit duration cannot silently restart at every decision."""
+    problem = _FakePlannerProblem()
+    problem.env.horizon = 2
+    duration = build_duration_sidecar({"kind": "fixed", "default": 2.0})
+
+    with pytest.raises(ValueError, match="duration accumulator"):
+        run_online_session(problem, planner_name="hilp", duration_sidecar=duration)
 
 
 class _FakePOMDPEnv:

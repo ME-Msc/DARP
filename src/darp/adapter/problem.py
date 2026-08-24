@@ -29,6 +29,7 @@ class PyRDDLGymProblem:
     model: Any | None = None
     env: Any | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    _grounded_model_cache: Any | None = field(default=None, init=False, repr=False, compare=False)
 
     def component_summary(self) -> dict[str, str | None]:
         """Summarize pyRDDLGym problem components by type. / 按类型汇总 pyRDDLGym problem 组件。"""
@@ -39,13 +40,25 @@ class PyRDDLGymProblem:
         }
 
     def build_grounded_model(self) -> "RDDLGroundedModel":
-        """Return an enum-safe pyRDDLGym grounded model. / 返回 enum 安全的 pyRDDLGym grounded model。"""
+        """Return and cache one enum-safe pyRDDLGym grounded model.
+
+        pyRDDLGym's environment keeps a lifted model, so the initial syntax
+        grounding is still required. Repeated planner/view construction must
+        not pay that full cost again.
+
+        / pyRDDLGym env 保存 lifted model；首次仍需 grounding，但同一问题后续
+        构建 view/planner 会复用缓存，不再重复完整 grounding。
+        """
+        if self._grounded_model_cache is not None:
+            return self._grounded_model_cache
         if self.native_ast is None:
             raise RDDLLoadError("PyRDDLGymProblem has no native AST to ground.")
         try:
-            return _build_enum_aware_grounded_model(self.native_ast)
+            grounded = _build_enum_aware_grounded_model(self.native_ast)
         except ImportError as exc:
             raise RDDLLoadError("pyRDDLGym grounder is required to ground RDDL.") from exc
+        object.__setattr__(self, "_grounded_model_cache", grounded)
+        return grounded
 
     def build_grounded_view(self) -> GroundedRDDLView:
         """Return DARP's stable view over the pyRDDLGym grounded model. / 返回 pyRDDLGym grounded model 的 DARP 稳定视图。"""

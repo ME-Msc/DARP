@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib
+from math import isfinite
 from time import perf_counter
 from typing import Any, Mapping
 
@@ -19,6 +20,7 @@ class GurobiILPSolver:
     """Solve DARP binary ILP models with Gurobi. / 使用 Gurobi 求解 DARP 二元 ILP 模型。"""
 
     output: bool = False
+    threads: int | None = 1
 
     def solve(
         self,
@@ -26,16 +28,26 @@ class GurobiILPSolver:
         *,
         time_limit_ms: float | None = None,
         mip_gap: float | None = None,
+        warm_start: Mapping[str, float] | None = None,
     ) -> ILPSolveResult:
         """Build and solve a Gurobi model from an ILPModelSpec. / 从 ILPModelSpec 构建并求解 Gurobi 模型。"""
         spec.validate()
+        if time_limit_ms is not None and (
+            not isfinite(float(time_limit_ms)) or float(time_limit_ms) < 0.0
+        ):
+            raise ValueError("time_limit_ms must be finite and non-negative when provided.")
         gp = _gurobipy()
         grb = gp.GRB
         started_at = perf_counter()
+        solve_deadline = (
+            started_at + float(time_limit_ms) / 1000.0
+            if time_limit_ms is not None
+            else None
+        )
         model = gp.Model(spec.name)
         _set_param(model, "OutputFlag", 1 if self.output else 0)
-        if time_limit_ms is not None:
-            _set_param(model, "TimeLimit", max(0.0, float(time_limit_ms) / 1000.0))
+        if self.threads is not None:
+            _set_param(model, "Threads", max(1, int(self.threads)))
         if mip_gap is not None:
             _set_param(model, "MIPGap", float(mip_gap))
 
@@ -43,6 +55,10 @@ class GurobiILPSolver:
             variable.var_id: model.addVar(vtype=grb.BINARY, name=_safe_name(variable.var_id))
             for variable in spec.variables
         }
+        if warm_start:
+            for var_id, variable in variables.items():
+                if var_id in warm_start:
+                    _set_start(variable, float(warm_start[var_id]))
         if hasattr(model, "update"):
             model.update()
         for constraint in spec.constraints:
@@ -54,16 +70,28 @@ class GurobiILPSolver:
         for var_id, coeff in spec.objective.items():
             objective.addTerms(float(coeff), variables[var_id])
         model.setObjective(objective, grb.MAXIMIZE if spec.maximize else grb.MINIMIZE)
+        # Gurobi starts its TimeLimit clock at optimize(), so deduct the
+        # Python-side variable/row encoding from the caller's solver budget.
+        if solve_deadline is not None:
+            _set_param(model, "TimeLimit", max(0.0, solve_deadline - perf_counter()))
         model.optimize()
 
-        values = {var_id: _variable_value(variable) for var_id, variable in variables.items()}
+        solution_count = _optional_float(_optional_attr(model, "SolCount"))
+        has_incumbent = solution_count is None or solution_count > 0.0
+        values = (
+            {var_id: _variable_value(variable) for var_id, variable in variables.items()}
+            if has_incumbent
+            else {var_id: 0.0 for var_id in variables}
+        )
         selected = tuple(var_id for var_id, value in values.items() if value > 0.5)
         elapsed_ms = (perf_counter() - started_at) * 1000.0
         status = _status_name(grb, _optional_attr(model, "Status"))
         return ILPSolveResult(
             solver="gurobi",
             status=status,
-            objective_value=_optional_float(_optional_attr(model, "ObjVal")),
+            objective_value=(
+                _optional_float(_optional_attr(model, "ObjVal")) if has_incumbent else None
+            ),
             variable_values=values,
             selected_variables=selected,
             runtime_ms=elapsed_ms,
@@ -112,6 +140,15 @@ def _set_param(model: Any, name: str, value: float | int) -> None:
         model.setParam(name, value)
 
 
+def _set_start(variable: Any, value: float) -> None:
+    """Set a binary MIP start across real/fake APIs. / 为真实或 fake 变量设置二元 MIP start。"""
+    try:
+        setattr(variable, "Start", 1.0 if value > 0.5 else 0.0)
+    except Exception:
+        # A start is an optimization hint; unsupported adapters may ignore it.
+        pass
+
+
 def _status_name(grb: Any, status: object) -> str:
     """Map Gurobi status code to a stable string. / 将 Gurobi status code 映射为稳定字符串。"""
     names = {
@@ -131,13 +168,14 @@ def _safe_name(value: str) -> str:
 
 
 def _optional_float(value: object) -> float | None:
-    """Return float(value) or None. / 返回 float(value) 或 None。"""
+    """Return a finite float(value) or None. / 返回有限 float(value) 或 None。"""
     if value is None:
         return None
     try:
-        return float(value)
+        numeric = float(value)
     except (TypeError, ValueError):
         return None
+    return numeric if isfinite(numeric) else None
 
 
 def _optional_attr(obj: object, name: str) -> object | None:
