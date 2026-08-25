@@ -1,39 +1,26 @@
 """Exact finite-kernel view over pyRDDLGym grounded expressions."""
 
-# TODO(phase-9.1): Extend finite expression support beyond Bernoulli/Discrete
-# random variables when benchmark domains require additional finite laws.
-# TODO(phase-9.2): Add dependency-aware factored CPF evaluation so one
-# stochastic CPF does not require materializing unrelated state factors.
-
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from fractions import Fraction
 from itertools import product
-from math import isfinite, prod
-from typing import Any, Hashable, Mapping, Sequence
-
-import numpy as np
+from math import isfinite, nextafter, prod
+from typing import Any, Hashable, Iterable, Literal, Mapping, Sequence
 
 StateKey = tuple[tuple[str, Hashable], ...]
 ObservationKey = tuple[tuple[str, Hashable], ...]
-Distribution = dict[Hashable, float]
+Distribution = dict[Hashable, float | Fraction]
 ActionKey = tuple[tuple[str, Hashable], ...]
-
-
-@dataclass(frozen=True, slots=True)
-class SparseProbabilityVector:
-    """Store an exact sparse distribution with integer state ids. / 用整数状态编号保存精确稀疏分布。"""
-
-    state_ids: np.ndarray  # Non-zero support ids. / 非零概率状态编号。
-    probabilities: np.ndarray  # Probabilities aligned with state_ids. / 与状态编号对齐的概率。
+RiskConstraintType = Literal["chance", "expected"]
 
 
 @dataclass(frozen=True, slots=True)
 class SparseTransitionRow:
-    """Store one cached sparse row of $$T_a$$. / 保存 $$T_a$$ 的一条缓存稀疏行。"""
+    """Store one exact cached sparse row of $$T_a$$."""
 
-    next_state_ids: np.ndarray  # Reachable successor ids. / 可达后继状态编号。
-    probabilities: np.ndarray  # $$T(s,a,s')$$ for each successor. / 每个后继的转移概率。
+    next_state_ids: tuple[int, ...]
+    probabilities: tuple[Fraction, ...]
 
 
 @dataclass(slots=True)
@@ -64,158 +51,91 @@ class ExactKernelError(ValueError):
 
 @dataclass(frozen=True)
 class RiskConstraintSpec:
-    """Describe optional C-POMDP risk/cost rows from sidecar config. / 描述 sidecar 中的 C-POMDP risk/cost 配置。"""
+    r"""Describe one paper constraint without conflating its semantics.
+
+    ``constraint_type="expected"`` implements Lemma 3.2: the configured
+    fluent values are one-stage penalties and ``budget`` is the cumulative
+    expected-cost bound :math:`C\in\mathbb R`.
+
+    ``constraint_type="chance"`` implements Lemma 3.3: configured values are
+    failure probabilities and ``budget`` is :math:`\Delta\in[0,1]`.
+
+    / 显式区分 Lemma 3.2 的累计期望 penalty 与 Lemma 3.3 的
+    first-entry execution risk。
+    """
 
     budget: float | None = None
     state_fluent_costs: Mapping[str, float] = field(default_factory=dict)
     next_state_fluent_costs: Mapping[str, float] = field(default_factory=dict)
+    state_action_costs: Mapping[tuple[Hashable, str], float] = field(default_factory=dict)
+    next_state_action_costs: Mapping[tuple[Hashable, str], float] = field(default_factory=dict)
+    constraint_type: RiskConstraintType = "chance"
 
-    def has_costs(self) -> bool:
-        """Return whether any risk/cost selector is configured. / 返回是否配置了任何 risk/cost selector。"""
-        return bool(self.state_fluent_costs or self.next_state_fluent_costs)
+    def __post_init__(self) -> None:
+        """Reject ambiguous direct API values. / 拒绝含糊的直接 API 参数。"""
+        if self.constraint_type not in ("chance", "expected"):
+            raise ValueError(
+                "constraint_type must be 'chance' (CC-POMDP) or 'expected' (C-POMDP)."
+            )
+        entries = {
+            **{str(name): float(value) for name, value in self.state_fluent_costs.items()},
+            **{
+                f"next:{name}": float(value)
+                for name, value in self.next_state_fluent_costs.items()
+            },
+            **{
+                f"state-action:{state!r}:{action}": float(value)
+                for (state, action), value in self.state_action_costs.items()
+            },
+            **{
+                f"next-state-action:{state!r}:{action}": float(value)
+                for (state, action), value in self.next_state_action_costs.items()
+            },
+        }
+        invalid = {
+            name: value
+            for name, value in entries.items()
+            if not isfinite(value)
+            or value < 0.0
+            or (self.constraint_type == "chance" and value > 1.0)
+        }
+        if invalid:
+            expected = (
+                "finite probabilities in [0, 1]"
+                if self.constraint_type == "chance"
+                else "finite non-negative costs"
+            )
+            raise ValueError(f"Constraint fluent values must be {expected}: {invalid!r}")
+
+
+def risk_constraint_type_for_kernel(exact_kernel: object) -> RiskConstraintType:
+    """Return the kernel's explicitly declared paper constraint semantics."""
+    risk_spec = getattr(exact_kernel, "risk", None)
+    constraint_type = getattr(risk_spec, "constraint_type", None)
+    if constraint_type not in ("chance", "expected"):
+        raise ExactKernelError(
+            "Exact kernel must expose risk.constraint_type as 'chance' or 'expected'."
+        )
+    return constraint_type
 
 
 @dataclass(frozen=True)
-class ExactTransitionOutcome:
-    """Store one exact transition branch. / 保存一个 exact transition 分支。"""
-
-    state: StateKey
-    probability: float
-
-
-@dataclass(frozen=True)
-class ExactObservationOutcome:
-    """Store one exact observation branch and posterior belief. / 保存一个 exact observation 分支和 posterior belief。"""
+class ExactConstraintMassOutcome:
+    """One observation branch of an unnormalized exact constraint flow."""
 
     observation: ObservationKey
     label: str
-    probability: float
-    belief: Mapping[StateKey, float]
+    state_mass: Mapping[StateKey, Fraction]
 
 
 @dataclass(frozen=True)
-class ExactActionExpansion:
-    """Store exact Algorithm 2 constants for an action history. / 保存 action history 的 exact Algorithm 2 常量。"""
+class ExactConstraintMassExpansion:
+    """Exact represented-float mass propagation for one constraint action."""
 
-    utility: float
-    risk: float
-    prior_belief: Mapping[StateKey, float]
-    observations: tuple[ExactObservationOutcome, ...]
-
-
-@dataclass(frozen=True)
-class SafeActionExpansion:
-    """Store chance-constrained safe-belief action constants. / 保存 chance-constrained safe-belief action 常量。"""
-
-    utility: float
-    risk: float
-    prior_belief: Mapping[StateKey, float]
-    survival_probability: float
-    observations: tuple[ExactObservationOutcome, ...]
-
-
-@dataclass(frozen=True)
-class ExactBeliefState:
-    """Store an exact online belief for paper-path planners. / 保存论文 planner 使用的 exact online belief。"""
-
-    belief: Mapping[StateKey, float]
-    observation: Mapping[str, Any]
-    is_pomdp: bool
-    source: str
-    support: Mapping[str, float]
-
-    @classmethod
-    def from_runtime(
-        cls,
-        exact_kernel: Any,
-        runtime: Any,
-        observation: Mapping[str, Any],
-        *,
-        is_pomdp: bool,
-        source: str = "exact-initial-state",
-    ) -> "ExactBeliefState":
-        """Build an exact belief from the current runtime state. / 从当前 runtime state 构建 exact belief。"""
-        if is_pomdp and hasattr(exact_kernel, "initial_belief_from_model"):
-            belief = exact_kernel.initial_belief_from_model()
-            source = "exact-model-b0"
-        else:
-            belief = exact_kernel.initial_belief_from_state(runtime.state)
-        return cls.from_belief(
-            exact_kernel,
-            belief,
-            observation,
-            is_pomdp=is_pomdp,
-            source=source,
-        )
-
-    @classmethod
-    def from_belief(
-        cls,
-        exact_kernel: Any,
-        belief: Mapping[StateKey, float],
-        observation: Mapping[str, Any],
-        *,
-        is_pomdp: bool,
-        source: str,
-    ) -> "ExactBeliefState":
-        """Build an exact belief record from a normalized state distribution. / 从状态分布构建 exact belief 记录。"""
-        normalized = _normalize_distribution(dict(belief))
-        if not normalized:
-            raise ExactKernelError("Exact belief must contain positive probability mass.")
-        return cls(
-            belief=normalized,
-            observation=dict(observation),
-            is_pomdp=is_pomdp,
-            source=source,
-            support=_belief_support(exact_kernel, normalized),
-        )
-
-    def advance(
-        self,
-        exact_kernel: Any,
-        action: Mapping[str, Any],
-        observation: Mapping[str, Any],
-        *,
-        observed_state: Mapping[str, Any] | None = None,
-    ) -> "ExactBeliefState":
-        r"""Return the exact Bayes update after one action and observation.
-
-        The paper-path online loop should update the root belief with:
-
-        $$
-          b'(s')=\eta\,O(o\mid s',a)\sum_s T(s,a,s')b(s).
-        $$
-
-        / 根据 action 和 observation 精确执行 Bayes belief update，供下一轮
-        full-ILP/HILP 作为 root belief。
-        """
-        next_belief = _advance_exact_belief(
-            exact_kernel,
-            self.belief,
-            action,
-            observation,
-            observed_state=observed_state,
-        )
-        return ExactBeliefState.from_belief(
-            exact_kernel,
-            next_belief,
-            observation,
-            is_pomdp=self.is_pomdp,
-            source="exact-bayes",
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-friendly exact belief summary. / 返回 JSON 友好的 exact belief 摘要。"""
-        return {
-            "is_pomdp": self.is_pomdp,
-            "is_exact": True,
-            "source": self.source,
-            "particle_count": None,
-            "requested_particles": None,
-            "attempts": None,
-            "observation": _json_ready(self.observation),
-            "support": dict(self.support),
-        }
+    coefficient: float
+    post_action_mass: Mapping[StateKey, Fraction]
+    observations: tuple[ExactConstraintMassOutcome, ...]
+    coefficient_exact: Fraction | None = None
 
 
 @dataclass(frozen=True)
@@ -234,22 +154,12 @@ class ExactRDDLKernel:
     _transition_rows: dict[tuple[int, int], SparseTransitionRow] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
-    _reward_cache: dict[tuple[int, int], float] = field(default_factory=dict, init=False, repr=False, compare=False)
-    _state_cost_cache: dict[int, float] = field(default_factory=dict, init=False, repr=False, compare=False)
-    _next_state_cost_cache: dict[int, float] = field(default_factory=dict, init=False, repr=False, compare=False)
-    _observation_cache: dict[tuple[int, int], Mapping[ObservationKey, float]] = field(
+    _reward_fraction_cache: dict[tuple[int, int], Fraction] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
-    _fluent_truth_cache: dict[int, np.ndarray] = field(
+    _observation_cache: dict[tuple[int, int], Mapping[ObservationKey, Fraction]] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
-    _cache_hits: dict[str, int] = field(
-        default_factory=lambda: {"transition": 0, "reward": 0, "observation": 0},
-        init=False,
-        repr=False,
-        compare=False,
-    )
-
     def __post_init__(self) -> None:
         """Freeze grounded metadata reused by every numeric evaluation. / 固定每次数值求值都会复用的 grounded 元数据。"""
         object.__setattr__(
@@ -315,6 +225,37 @@ class ExactRDDLKernel:
         self._state_index.register(state_key)
         return {state_key: 1.0}
 
+    def initial_constraint_mass(
+        self,
+        belief: Mapping[StateKey, float],
+    ) -> Mapping[StateKey, Fraction]:
+        """Return an exact normalized mass view of represented belief floats."""
+        mass = _normalized_fraction_mass(belief)
+        for state in mass:
+            self._state_index.register(state)
+        return mass
+
+    def initial_safe_mass(
+        self,
+        belief: Mapping[StateKey, float],
+    ) -> Mapping[StateKey, Fraction]:
+        """Return unnormalized root mass that has survived initial failure."""
+        ordinary = self.initial_constraint_mass(belief)
+        safe: dict[StateKey, Fraction] = {}
+        for state, probability in ordinary.items():
+            failure = self.state_failure_fraction(state)
+            surviving = probability * (Fraction(1) - failure)
+            if surviving > 0:
+                safe[state] = surviving
+        return safe
+
+    @staticmethod
+    def constraint_mass_belief(
+        mass: Mapping[StateKey, Fraction],
+    ) -> Mapping[StateKey, float]:
+        """Return a float conditional belief for diagnostics/dynamics only."""
+        return _fraction_mass_belief(mass)
+
     def initial_belief_from_model(self) -> Mapping[StateKey, float]:
         """Return the declared deterministic RDDL initial belief.
 
@@ -330,139 +271,6 @@ class ExactRDDLKernel:
         if not isinstance(declared, Mapping):
             raise ExactKernelError("Grounded model does not expose a declared initial state.")
         return self.initial_belief_from_state(declared)
-
-    def cache_info(self) -> Mapping[str, int]:
-        """Return lazy-kernel sizes and hit counters. / 返回按需内核规模和缓存命中计数。"""
-        return {
-            "discovered_states": len(self._state_index.id_to_key),
-            "discovered_actions": len(self._action_ids),
-            "transition_rows": len(self._transition_rows),
-            "reward_entries": len(self._reward_cache),
-            "risk_entries": len(self._state_cost_cache) + len(self._next_state_cost_cache),
-            "observation_entries": len(self._observation_cache),
-            "transition_hits": self._cache_hits["transition"],
-            "reward_hits": self._cache_hits["reward"],
-            "observation_hits": self._cache_hits["observation"],
-        }
-
-    def sparse_belief(self, belief: Mapping[StateKey, float]) -> SparseProbabilityVector:
-        r"""Index and normalize an exact belief without enumerating absent states.
-
-        Only states in the non-zero support of $$b_q$$ receive ids. / 只为
-        $$b_q$$ 非零支持集中的状态分配编号并构造 NumPy 稀疏向量。
-        """
-        clean = _normalize_distribution(dict(belief))
-        ids = np.fromiter(
-            (self._state_index.register(state) for state in clean),
-            dtype=np.int64,
-            count=len(clean),
-        )
-        probabilities = np.fromiter(clean.values(), dtype=np.float64, count=len(clean))
-        return SparseProbabilityVector(ids, probabilities)
-
-    def belief_mapping(self, belief: SparseProbabilityVector) -> Mapping[StateKey, float]:
-        """Convert an indexed sparse belief back to the public mapping API. / 将编号稀疏 belief 转回公开 mapping 接口。"""
-        return {
-            self._state_index.key(int(state_id)): float(probability)
-            for state_id, probability in zip(belief.state_ids, belief.probabilities)
-            if abs(float(probability)) > 1e-15
-        }
-
-    def update_belief(
-        self,
-        belief: Mapping[StateKey, float],
-        action: Mapping[str, Any],
-        observation: Mapping[str, Any],
-        *,
-        observed_state: Mapping[str, Any] | None = None,
-    ) -> Mapping[StateKey, float]:
-        r"""Return the exact one-step posterior belief.
-
-        $$
-          b'(s')=\eta\,O(o\mid s',a)\sum_s T(s,a,s')b(s).
-        $$
-
-        / 用 grounded transition 和 observation CPF 精确计算一阶 posterior belief。
-        """
-        expansion = self.expand_action(belief, action)
-        observation_key = self.observation_key(observation, observed_state=observed_state)
-        for outcome in expansion.observations:
-            if outcome.observation == observation_key:
-                return outcome.belief
-        raise ExactKernelError(
-            "Observed outcome is outside exact observation support: "
-            f"{observation_key!r}"
-        )
-
-    def observation_key(
-        self,
-        observation: Mapping[str, Any],
-        *,
-        observed_state: Mapping[str, Any] | None = None,
-    ) -> ObservationKey:
-        """Convert a runtime observation into an exact observation key. / 将 runtime observation 转成 exact observation key。"""
-        if not self.observation_names:
-            state = observed_state if observed_state is not None else observation
-            return (("__state__", self.state_key(state)),)
-        return tuple(
-            (name, _plain_value(observation.get(name, False)))
-            for name in self.observation_names
-        )
-
-    def safe_belief_from_belief(self, belief: Mapping[StateKey, float]) -> Mapping[StateKey, float]:
-        r"""Condition a belief on the initial safe event.
-
-        Lemma 3.3 uses $$R=\Delta-r(b_0)$$ and then propagates safe
-        beliefs.  This helper forms the corresponding root safe belief:
-
-        $$
-           b^{\mathrm{safe}}_0(s)=\frac{b_0(s)(1-P_R(s))}
-                                      {1-r(b_0)}.
-        $$
-
-        / 将 root belief 条件化到初始安全事件；初始风险由 ILP risk budget
-        单独扣除，后续 tree 中传播的是 safe belief。
-        """
-        b_0 = self.sparse_belief(belief)
-        survival = np.fromiter(
-            (1.0 - self._state_failure_for_id(int(state_id)) for state_id in b_0.state_ids),
-            dtype=np.float64,
-            count=b_0.state_ids.size,
-        )
-        weights = b_0.probabilities * survival
-        positive = weights > 1e-15
-        total = float(np.sum(weights[positive]))
-        if total <= 0.0:
-            return {}
-        safe_b_0 = SparseProbabilityVector(b_0.state_ids[positive], weights[positive] / total)
-        return self.belief_mapping(safe_b_0)
-
-    def fluent_belief(self, belief: Mapping[StateKey, float]) -> Mapping[str, float]:
-        r"""Return fluent marginals by matrix multiplication.
-
-        $$m=bF$$ where $$F_{s,f}=1$$ iff fluent $$f$$ is true in state $$s$$.
-        / 通过状态-fluent 指示矩阵计算边缘概率。
-        """
-        sparse = self.sparse_belief(belief)
-        if sparse.state_ids.size == 0:
-            return {name: 0.0 for name in self.state_names}
-        truth = np.vstack([self._fluent_truth_vector(int(state_id)) for state_id in sparse.state_ids])
-        marginals = sparse.probabilities @ truth
-        return {name: float(marginals[index]) for index, name in enumerate(self.state_names)}
-
-    def _fluent_truth_vector(self, state_id: int) -> np.ndarray:
-        """Return a cached state/fluent indicator row. / 返回缓存的状态-fluent 指示行。"""
-        cached = self._fluent_truth_cache.get(state_id)
-        if cached is not None:
-            return cached
-        state = dict(self._state_index.key(state_id))
-        row = np.fromiter(
-            (1.0 if bool(state.get(name, False)) else 0.0 for name in self.state_names),
-            dtype=np.float64,
-            count=len(self.state_names),
-        )
-        self._fluent_truth_cache[state_id] = row
-        return row
 
     def state_key(self, state: Mapping[str, Any]) -> StateKey:
         """Convert a state mapping to a stable key. / 将 state mapping 转成稳定 key。"""
@@ -482,166 +290,249 @@ class ExactRDDLKernel:
             return "(empty)"
         return repr(state)
 
-    def expand_action(
+    def expand_expected_constraint_mass(
         self,
-        belief: Mapping[StateKey, float],
+        state_mass: Mapping[StateKey, Fraction],
         action: Mapping[str, Any],
-    ) -> ExactActionExpansion:
-        r"""Compute exact Algorithm 2 constants for one action.
-
-        $$
-           b_{qa}(s')=\sum_s T(s,a,s')b_q(s),\quad
-           u_{qa}=\sum_s b_q(s)U(s,a),\quad
-           r_{qa}=\sum_s b_q(s)P(s,a).
-        $$
-
-        / 精确计算 action 后的 prior belief、utility 与 risk/cost 常量。
-        """
-        b_q = self.sparse_belief(belief)  # Indexed non-zero support of $$b_q$$. / $$b_q$$ 的编号非零支持集。
+    ) -> ExactConstraintMassExpansion:
+        """Propagate Lemma 3.2's unnormalized ordinary cost mass exactly."""
         action_id = self._action_id(action)
-        rewards = np.fromiter(
-            (self._reward_for_ids(int(state_id), action_id, action) for state_id in b_q.state_ids),
-            dtype=np.float64,
-            count=b_q.state_ids.size,
-        )
-        current_costs = np.fromiter(
-            (self._state_cost_for_id(int(state_id)) for state_id in b_q.state_ids),
-            dtype=np.float64,
-            count=b_q.state_ids.size,
-        )
-        utility = float(b_q.probabilities @ rewards)  # $$u_{qa}=b_q^T R_a$$. / belief 与 reward 向量点积。
-        current_risk = float(b_q.probabilities @ current_costs)  # $$b_q^T C_a$$. / 当前状态风险点积。
-        b_qa = self._propagate_sparse_belief(b_q, action_id, action)
-        next_costs = np.fromiter(
-            (self._next_state_cost_for_id(int(state_id)) for state_id in b_qa.state_ids),
-            dtype=np.float64,
-            count=b_qa.state_ids.size,
-        )
-        next_risk = float(b_qa.probabilities @ next_costs) if b_qa.state_ids.size else 0.0
-        prior = self.belief_mapping(b_qa)  # Public Algorithm 2 mapping. / Algorithm 2 对外使用的 belief mapping。
-        observations = self.observation_outcomes(prior, action)
-        return ExactActionExpansion(
-            utility=utility,
-            risk=current_risk + next_risk,
-            prior_belief=prior,
-            observations=observations,
-        )
-
-    def expand_safe_action(
-        self,
-        safe_belief: Mapping[StateKey, float],
-        action: Mapping[str, Any],
-    ) -> SafeActionExpansion:
-        r"""Compute the CC-POMDP safe-belief action update.
-
-        For chance constraints, $$\tilde\rho(q)$$ is the probability of
-        reaching history $$q$$ without failure, and ``safe_belief`` is the
-        implementation belief $$b^{\mathrm{safe}}_q$$ conditioned on that
-        safe prefix.  The ``safe`` superscript here is descriptive rather than
-        paper notation; it is deliberately distinct from the paper's ``*``,
-        which denotes values under an optimal policy.  For one action:
-
-        $$
-           p_{\mathrm{safe}}(q,a)=
-           \sum_{s,s'}b^{\mathrm{safe}}_q(s)T(s,a,s')\Pr(\mathrm{safe}\mid s,a,s')
-        $$
-
-        $$
-           b^{\mathrm{safe}}_{qa}(s')=
-           \frac{\sum_s b^{\mathrm{safe}}_q(s)T(s,a,s')\Pr(\mathrm{safe}\mid s,a,s')}
-                {p_{\mathrm{safe}}(q,a)}.
-        $$
-
-        / 计算 chance-constrained safe belief 递推；risk 是本 action 下发生
-        failure 的条件概率，prior_belief 是已条件化 survival 的 safe prior。
-        """
-        safe_b_q = self.sparse_belief(safe_belief)
-        if safe_b_q.state_ids.size == 0:
-            return SafeActionExpansion(
-                utility=0.0,
-                risk=0.0,
-                prior_belief={},
-                survival_probability=0.0,
-                observations=(),
+        current_cost = Fraction(0)
+        for state, mass in state_mass.items():
+            cost = (
+                self._state_cost_fraction(
+                    self.state_from_key(state),
+                    self.risk.state_fluent_costs,
+                )
+                + self._state_action_cost_fraction(
+                    state,
+                    action,
+                    self.risk.state_action_costs,
+                )
             )
-        action_id = self._action_id(action)
-        rewards = np.fromiter(
-            (self._reward_for_ids(int(state_id), action_id, action) for state_id in safe_b_q.state_ids),
-            dtype=np.float64,
-            count=safe_b_q.state_ids.size,
-        )
-        utility = float(safe_b_q.probabilities @ rewards)
-        safe_qa, survival_probability = self._propagate_sparse_belief(
-            safe_b_q,
-            action_id,
-            action,
-            condition_on_survival=True,
-        )
-        safe_prior = self.belief_mapping(safe_qa)
-        return SafeActionExpansion(
-            utility=utility,
-            risk=max(0.0, min(1.0, 1.0 - survival_probability)),
-            prior_belief=safe_prior,
-            survival_probability=max(0.0, min(1.0, survival_probability)),
-            observations=self.observation_outcomes(safe_prior, action) if safe_prior else (),
+            current_cost += mass * cost
+
+        post_action_mass = self._transition_fraction_mass(state_mass, action_id, action)
+        next_cost = Fraction(0)
+        for state, mass in post_action_mass.items():
+            cost = (
+                self._state_cost_fraction(
+                    self.state_from_key(state),
+                    self.risk.next_state_fluent_costs,
+                )
+                + self._state_action_cost_fraction(
+                    state,
+                    action,
+                    self.risk.next_state_action_costs,
+                )
+            )
+            next_cost += mass * cost
+        coefficient_exact = current_cost + next_cost
+        coefficient = _upper_non_negative_fraction(coefficient_exact)
+        return ExactConstraintMassExpansion(
+            coefficient=coefficient,
+            post_action_mass=post_action_mass,
+            observations=self._constraint_mass_observations(post_action_mass, action),
+            coefficient_exact=coefficient_exact,
         )
 
-    def transition_survival_probability(
+    def expand_ordinary_mass(
+        self,
+        state_mass: Mapping[StateKey, Fraction],
+        action: Mapping[str, Any],
+    ) -> ExactConstraintMassExpansion:
+        """Propagate ordinary history mass without a floating-point product.
+
+        The returned ``coefficient`` is intentionally zero.  This flow exists
+        to preserve mathematical support and observation histories even when
+        a product such as ``1e-200 * 1e-200`` is below binary64's range.
+        Utility coefficients remain the represented binary64 objective used by
+        the MILP; feasibility and tree completeness must not depend on that
+        diagnostic/objective scalar.
+        """
+        action_id = self._action_id(action)
+        post_action_mass = self._transition_fraction_mass(state_mass, action_id, action)
+        return ExactConstraintMassExpansion(
+            coefficient=0.0,
+            post_action_mass=post_action_mass,
+            observations=self._constraint_mass_observations(post_action_mass, action),
+        )
+
+    def expand_safe_constraint_mass(
+        self,
+        safe_mass: Mapping[StateKey, Fraction],
+        action: Mapping[str, Any],
+    ) -> ExactConstraintMassExpansion:
+        """Propagate Lemma 3.3 unnormalized safe mass without float posteriors."""
+        action_id = self._action_id(action)
+        post_action_mass: dict[StateKey, Fraction] = {}
+        failure_mass = Fraction(0)
+        for source, target, transition_mass in self._transition_fraction_branches(
+            safe_mass, action_id, action
+        ):
+            failure = self.transition_failure_fraction(source, target, action)
+            failure_mass += transition_mass * failure
+            surviving = transition_mass * (Fraction(1) - failure)
+            if surviving > 0:
+                post_action_mass[target] = (
+                    post_action_mass.get(target, Fraction(0)) + surviving
+                )
+        return ExactConstraintMassExpansion(
+            coefficient=_upper_probability_fraction(failure_mass),
+            post_action_mass=post_action_mass,
+            observations=self._constraint_mass_observations(post_action_mass, action),
+            coefficient_exact=failure_mass,
+        )
+
+    def _transition_fraction_mass(
+        self,
+        state_mass: Mapping[StateKey, Fraction],
+        action_id: int,
+        action: Mapping[str, Any],
+    ) -> Mapping[StateKey, Fraction]:
+        """Apply normalized represented transition rows to exact state mass."""
+        result: dict[StateKey, Fraction] = {}
+        for _, target, transition_mass in self._transition_fraction_branches(
+            state_mass, action_id, action
+        ):
+            result[target] = result.get(target, Fraction(0)) + transition_mass
+        return result
+
+    def _transition_fraction_branches(
+        self,
+        state_mass: Mapping[StateKey, Fraction],
+        action_id: int,
+        action: Mapping[str, Any],
+    ) -> Iterable[tuple[StateKey, StateKey, Fraction]]:
+        """Yield positive exact transition mass while reusing cached rows."""
+        for source, source_mass in state_mass.items():
+            row = self._transition_row(
+                self._state_index.register(source),
+                action_id,
+                action,
+            )
+            if not row.probabilities:
+                continue
+            for target_id, probability in zip(
+                row.next_state_ids,
+                row.probabilities,
+            ):
+                if probability <= 0:
+                    continue
+                target = self._state_index.key(int(target_id))
+                yield source, target, source_mass * probability
+
+    def _constraint_mass_observations(
+        self,
+        post_action_mass: Mapping[StateKey, Fraction],
+        action: Mapping[str, Any],
+    ) -> tuple[ExactConstraintMassOutcome, ...]:
+        """Split unnormalized state mass by exact represented observation rows."""
+        if not self.observation_names:
+            return tuple(
+                ExactConstraintMassOutcome(
+                    observation=(("__state__", state),),
+                    label=self.state_label(state),
+                    state_mass={state: mass},
+                )
+                for state, mass in sorted(post_action_mass.items(), key=lambda item: repr(item[0]))
+                if mass > 0
+            )
+
+        buckets: dict[ObservationKey, dict[StateKey, Fraction]] = {}
+        for state, mass in post_action_mass.items():
+            distribution = self._observation_distribution_for_state(state, action)
+            for observation, probability in distribution.items():
+                if probability <= 0:
+                    continue
+                bucket = buckets.setdefault(observation, {})
+                bucket[state] = bucket.get(state, Fraction(0)) + mass * probability
+        return tuple(
+            ExactConstraintMassOutcome(
+                observation=observation,
+                label=_observation_label(observation),
+                state_mass=state_weights,
+            )
+            for observation, state_weights in sorted(
+                buckets.items(),
+                key=lambda item: repr(item[0]),
+            )
+        )
+
+    def belief_state_risk_fraction(
+        self,
+        belief: Mapping[StateKey, float | Fraction],
+    ) -> Fraction:
+        """Return exact initial/root state risk for represented inputs."""
+        mass = _normalized_fraction_mass(belief)
+        return sum(
+            (
+                probability * self.state_failure_fraction(state)
+                for state, probability in mass.items()
+            ),
+            start=Fraction(0),
+        )
+
+    def state_failure_fraction(self, state: StateKey) -> Fraction:
+        """Return current-state failure as an exact represented probability."""
+        return min(
+            Fraction(1),
+            self._state_cost_fraction(
+                self.state_from_key(state),
+                self.risk.state_fluent_costs,
+            ),
+        )
+
+    def transition_failure_fraction(
         self,
         source: StateKey,
         target: StateKey,
-    ) -> float:
-        r"""Return $$Pr(\mathrm{safe}\mid s,a,s')$$ for configured risk fluents.
-
-        Safe beliefs are already conditioned on the safe prefix, so this
-        transition-level survival checks the target state only.  Both
-        `state_fluent_costs` and `next_state_fluent_costs` may mark target
-        risky states; values are interpreted as probabilities and clamped to
-        ``[0, 1]``.
-
-        / safe belief 已经条件化了安全前缀，所以这里不重复计算 source risk；
-        transition survival 只检查 target state 是否安全。
-        """
-        del source
-        return 1.0 - self.transition_failure_probability(target)
-
-    def belief_state_risk_probability(self, belief: Mapping[StateKey, float]) -> float:
-        """Return initial/root state risk probability r(b). / 返回初始/root state risk 概率 r(b)。"""
-        sparse = self.sparse_belief(belief)
-        failure = np.fromiter(
-            (self._state_failure_for_id(int(state_id)) for state_id in sparse.state_ids),
-            dtype=np.float64,
-            count=sparse.state_ids.size,
+        action: Mapping[str, Any],
+    ) -> Fraction:
+        """Return the exact first-entry failure probability for a transition."""
+        failures = (
+            min(
+                Fraction(1),
+                self._state_action_cost_fraction(
+                    source,
+                    action,
+                    self.risk.state_action_costs,
+                ),
+            ),
+            self.state_failure_fraction(target),
+            min(
+                Fraction(1),
+                self._state_cost_fraction(
+                    self.state_from_key(target),
+                    self.risk.next_state_fluent_costs,
+                ),
+            ),
+            min(
+                Fraction(1),
+                self._state_action_cost_fraction(
+                    target,
+                    action,
+                    self.risk.next_state_action_costs,
+                ),
+            ),
         )
-        return _clamped_probability(float(sparse.probabilities @ failure))
+        if any(probability >= 1 for probability in failures):
+            return Fraction(1)
+        survival = prod(Fraction(1) - probability for probability in failures)
+        return Fraction(1) - survival
 
-    def state_failure_probability(self, state: StateKey) -> float:
-        """Return configured current-state failure probability. / 返回配置的当前 state failure 概率。"""
-        return self._state_failure_for_id(self._state_index.register(state))
-
-    def next_state_failure_probability(self, state: StateKey) -> float:
-        """Return configured next-state failure probability. / 返回配置的 next-state failure 概率。"""
-        return _clamped_probability(self._next_state_cost_for_id(self._state_index.register(state)))
-
-    def transition_failure_probability(self, state: StateKey) -> float:
-        """Return target-state failure probability for safe-belief recursion. / 返回 safe-belief 递推中的 target-state failure 概率。"""
-        state_failure = self.state_failure_probability(state)
-        next_state_failure = self.next_state_failure_probability(state)
-        return 1.0 - (1.0 - state_failure) * (1.0 - next_state_failure)
-
-    def transition_distribution(
+    def transition_fraction_distribution(
         self,
         state: Mapping[str, Any],
         action: Mapping[str, Any],
-    ) -> Mapping[StateKey, float]:
-        """Return a cached sparse next-state row generated on first access. / 首次访问时生成并缓存稀疏后继行。"""
-        source = self.state_key(state)
-        source_id = self._state_index.register(source)
-        action_id = self._action_id(action)
-        row = self._transition_row(source_id, action_id, action)
+    ) -> Mapping[StateKey, Fraction]:
+        """Return an exact represented-float transition row."""
+        source_id = self._state_index.register(self.state_key(state))
+        row = self._transition_row(source_id, self._action_id(action), action)
         return {
-            self._state_index.key(int(next_id)): float(probability)
+            self._state_index.key(int(next_id)): probability
             for next_id, probability in zip(row.next_state_ids, row.probabilities)
+            if probability > 0
         }
 
     def _transition_row(
@@ -654,212 +545,113 @@ class ExactRDDLKernel:
         cache_key = (source_id, action_id)
         cached = self._transition_rows.get(cache_key)
         if cached is not None:
-            self._cache_hits["transition"] += 1
             return cached
         state = self.state_from_key(self._state_index.key(source_id))
         context = self._context(state, action)
-        partials: dict[StateKey, float] = {(): 1.0}
+        partials: dict[StateKey, Fraction] = {(): Fraction(1)}
         for state_name in self.state_names:
             expr = self._state_cpf_expression(state_name)
             # Synchronous CPFs read the same current context, so evaluate each
             # value distribution once per CPF. / 同步 CPF 共享当前上下文，每个 CPF 只求值一次。
             value_dist = self.expression_distribution(expr, context)
-            updated: dict[StateKey, float] = {}
+            value_weights = _normalize_fraction_distribution(value_dist)
+            updated: dict[StateKey, Fraction] = {}
             for partial_key, partial_prob in partials.items():
                 partial_state = dict(partial_key)
-                for value, value_prob in value_dist.items():
+                for value, value_prob in value_weights.items():
                     next_partial = tuple(sorted({**partial_state, state_name: _plain_value(value)}.items()))
-                    updated[next_partial] = updated.get(next_partial, 0.0) + partial_prob * value_prob
+                    updated[next_partial] = (
+                        updated.get(next_partial, Fraction(0))
+                        + partial_prob * value_prob
+                    )
             partials = updated
-        distribution = _normalize_distribution(partials)
+        distribution = _normalize_fraction_distribution(partials)
         row = SparseTransitionRow(
-            next_state_ids=np.fromiter(
-                (self._state_index.register(state_key) for state_key in distribution),
-                dtype=np.int64,
-                count=len(distribution),
+            next_state_ids=tuple(
+                self._state_index.register(state_key) for state_key in distribution
             ),
-            probabilities=np.fromiter(distribution.values(), dtype=np.float64, count=len(distribution)),
+            probabilities=tuple(distribution.values()),
         )
         self._transition_rows[cache_key] = row
         return row
 
-    def _propagate_sparse_belief(
+    def observation_fraction_probability(
         self,
-        belief: SparseProbabilityVector,
-        action_id: int,
+        observation: ObservationKey,
+        state: StateKey,
         action: Mapping[str, Any],
-        *,
-        condition_on_survival: bool = False,
-    ) -> SparseProbabilityVector | tuple[SparseProbabilityVector, float]:
-        r"""Compute sparse $$bT_a$$ with vectorized accumulation.
-
-        With safe conditioning, each branch is additionally multiplied by
-        $$Pr(safe\mid s,a,s')$$. / 用 NumPy 聚合同一后继状态；safe 模式额外乘生存概率。
-        """
-        target_chunks: list[np.ndarray] = []
-        weight_chunks: list[np.ndarray] = []
-        for source_id, source_probability in zip(belief.state_ids, belief.probabilities):
-            row = self._transition_row(int(source_id), action_id, action)
-            weights = float(source_probability) * row.probabilities
-            if condition_on_survival:
-                survival = np.fromiter(
-                    (
-                        self.transition_survival_probability(
-                            self._state_index.key(int(source_id)),
-                            self._state_index.key(int(target_id)),
-                        )
-                        for target_id in row.next_state_ids
-                    ),
-                    dtype=np.float64,
-                    count=row.next_state_ids.size,
-                )
-                weights = weights * survival
-            positive = weights > 1e-15
-            if np.any(positive):
-                target_chunks.append(row.next_state_ids[positive])
-                weight_chunks.append(weights[positive])
-        if not target_chunks:
-            empty = SparseProbabilityVector(np.asarray([], dtype=np.int64), np.asarray([], dtype=np.float64))
-            return (empty, 0.0) if condition_on_survival else empty
-        target_ids = np.concatenate(target_chunks)
-        weights = np.concatenate(weight_chunks)
-        accumulated = np.bincount(target_ids, weights=weights, minlength=len(self._state_index.id_to_key))
-        support = np.flatnonzero(accumulated > 1e-15).astype(np.int64, copy=False)
-        support_weights = accumulated[support]
-        total = float(np.sum(support_weights))
-        normalized = support_weights / total if total > 0.0 else support_weights
-        result = SparseProbabilityVector(support, normalized)
-        return (result, total) if condition_on_survival else result
-
-    def transition_probability(
-        self,
-        source: StateKey,
-        action: Mapping[str, Any],
-        target: StateKey,
-    ) -> float:
-        r"""Return one transition probability $$T(s,a,s')$$.
-
-        / 返回一个转移概率 $$T(s,a,s')$$，供论文 Algorithm 2 的
-        backward message 递推使用。
-        """
-        return float(
-            self.transition_distribution(self.state_from_key(source), action).get(target, 0.0)
+    ) -> Fraction:
+        """Return one observation likelihood without binary64 underflow."""
+        if observation and observation[0][0] == "__state__":
+            return Fraction(1) if observation[0][1] == state else Fraction(0)
+        return Fraction(
+            self._observation_distribution_for_state(state, action).get(
+                observation,
+                Fraction(0),
+            )
         )
 
-    def observation_outcomes(
+    def backward_fraction_message(
         self,
-        prior_belief: Mapping[StateKey, float],
-        action: Mapping[str, Any],
-    ) -> tuple[ExactObservationOutcome, ...]:
-        """Return exact observation outcomes and posterior beliefs. / 返回 exact observation outcomes 和 posterior beliefs。"""
-        if not self.observation_names:
-            return tuple(
-                ExactObservationOutcome(
-                    observation=(("__state__", state_key),),
-                    label=self.state_label(state_key),
-                    probability=probability,
-                    belief={state_key: 1.0},
-                )
-                for state_key, probability in sorted(prior_belief.items(), key=lambda item: repr(item[0]))
-                if probability > 0.0
-            )
-        observation_state_prob: dict[ObservationKey, dict[StateKey, float]] = {}
-        for state_key, state_prob in prior_belief.items():
-            obs_dist = self._observation_distribution_for_state(state_key, action)
-            for obs_key, obs_prob in obs_dist.items():
-                weighted = state_prob * obs_prob
-                if weighted <= 0.0:
-                    continue
-                bucket = observation_state_prob.setdefault(obs_key, {})
-                bucket[state_key] = bucket.get(state_key, 0.0) + weighted
-        outcomes: list[ExactObservationOutcome] = []
-        for obs_key, state_weights in sorted(observation_state_prob.items(), key=lambda item: repr(item[0])):
-            probability = sum(state_weights.values())
-            outcomes.append(
-                ExactObservationOutcome(
-                    observation=obs_key,
-                    label=_observation_label(obs_key),
-                    probability=probability,
-                    belief=_normalize_distribution(state_weights),
-                )
-            )
-        return tuple(outcomes)
-
-    def observation_probability(
-        self,
-        observation: ObservationKey,
-        state: StateKey,
-        action: Mapping[str, Any],
-    ) -> float:
-        r"""Return one observation likelihood $$O(o,s,a)$$.
-
-        The fallback MDP observation mode treats the true state as the
-        observation. Explicit POMDP observations are evaluated from grounded
-        observation CPFs.
-
-        / 返回一个观测似然 $$O(o,s,a)$$；MDP fallback 中 observation 就是
-        真实 state，POMDP 中则从 grounded observation CPF 计算。
-        """
-        if observation and observation[0][0] == "__state__":
-            observed_state = observation[0][1]
-            return 1.0 if observed_state == state else 0.0
-        return float(self._observation_distribution_for_state(state, action).get(observation, 0.0))
-
-    def backward_message(
-        self,
-        current_belief: Mapping[StateKey, float],
-        next_message: Mapping[StateKey, float],
+        current_states: Mapping[StateKey, Fraction],
+        next_message: Mapping[StateKey, Fraction],
         action: Mapping[str, Any],
         observation: ObservationKey,
-    ) -> Mapping[StateKey, float]:
-        r"""Apply one sparse Algorithm 2 backward operator.
-
-        $$f_i(s)=\sum_{s'}T(s,a,s')O(o\mid s',a)f_{i+1}(s').$$
-
-        Transition rows are cached; NumPy evaluates each row dot product. /
-        转移行由缓存复用，并用 NumPy 点积计算每个当前状态的 backward message。
-        """
+    ) -> Mapping[StateKey, Fraction]:
+        """Apply Algorithm 2's backward operator in rational arithmetic."""
         action_id = self._action_id(action)
-        result: dict[StateKey, float] = {}
-        for state in current_belief:
-            source_id = self._state_index.register(state)
-            row = self._transition_row(source_id, action_id, action)
-            future = np.fromiter(
-                (next_message.get(self._state_index.key(int(target_id)), 0.0) for target_id in row.next_state_ids),
-                dtype=np.float64,
-                count=row.next_state_ids.size,
+        result: dict[StateKey, Fraction] = {}
+        for state in current_states:
+            row = self._transition_row(
+                self._state_index.register(state),
+                action_id,
+                action,
             )
-            likelihood = np.fromiter(
-                (
-                    self.observation_probability(
+            probability_of_future = Fraction(0)
+            for target_id, transition_probability in zip(
+                row.next_state_ids,
+                row.probabilities,
+            ):
+                target = self._state_index.key(int(target_id))
+                probability_of_future += (
+                    transition_probability
+                    * self.observation_fraction_probability(
                         observation,
-                        self._state_index.key(int(target_id)),
+                        target,
                         action,
                     )
-                    for target_id in row.next_state_ids
-                ),
-                dtype=np.float64,
-                count=row.next_state_ids.size,
-            )
-            result[state] = float(row.probabilities @ (likelihood * future))
+                    * Fraction(next_message.get(target, Fraction(0)))
+                )
+            result[state] = probability_of_future
         return result
 
-    def expected_state_action_reward(
+    def utility_coefficient_for_mass(
         self,
-        state: StateKey,
+        state_mass: Mapping[StateKey, Fraction],
         action: Mapping[str, Any],
-    ) -> float:
-        """Return cached $$U(s,a)$$ for one indexed state/action. / 返回一个编号状态动作的缓存 $$U(s,a)$$。"""
-        state_id = self._state_index.register(state)
+    ) -> tuple[float, bool, Fraction]:
+        """Return ``sum_s mass(s) U(s,a)`` and a no-underflow flag."""
         action_id = self._action_id(action)
-        return self._reward_for_ids(state_id, action_id, action)
+        exact = Fraction(0)
+        for state, mass in state_mass.items():
+            state_id = self._state_index.register(state)
+            exact += Fraction(mass) * self._reward_fraction_for_ids(
+                state_id, action_id, action
+            )
+        try:
+            rounded = float(exact)
+        except OverflowError as exc:
+            raise ExactKernelError("Utility coefficient overflowed binary64.") from exc
+        if not isfinite(rounded):
+            raise ExactKernelError("Utility coefficient must be finite.")
+        return rounded, Fraction.from_float(rounded) == exact, exact
 
-    def expected_reward(self, context: Mapping[str, Any]) -> float:
-        """Return expected reward expression value under finite random support. / 返回有限随机支持下的期望 reward。"""
+    def expected_reward_fraction(self, context: Mapping[str, Any]) -> Fraction:
+        """Return the exact expectation of represented finite reward support."""
         reward = getattr(self.grounded_model, "reward", None)
         if reward is None:
             raise ExactKernelError("Grounded model does not expose a reward expression.")
-        return float(_expectation(self.expression_distribution(reward, context)))
+        return _expectation(self.expression_distribution(reward, context))
 
     def expression_distribution(self, expr: Any, context: Mapping[str, Any]) -> Distribution:
         """Evaluate a grounded expression into a finite distribution. / 将 grounded expression 求值为有限分布。"""
@@ -884,12 +676,15 @@ class ExactRDDLKernel:
             return _combine_distributions([self.expression_distribution(arg, context) for arg in _as_args(args)], _relation(op))
         if etype == "control" and op == "if":
             condition, then_expr, else_expr = args
-            result: dict[Hashable, float] = {}
+            result: dict[Hashable, Fraction] = {}
             for truth, truth_prob in self.expression_distribution(condition, context).items():
                 branch = then_expr if bool(truth) else else_expr
                 for value, value_prob in self.expression_distribution(branch, context).items():
-                    result[value] = result.get(value, 0.0) + truth_prob * value_prob
-            return _normalize_distribution(result)
+                    result[value] = (
+                        result.get(value, Fraction(0))
+                        + Fraction(truth_prob) * Fraction(value_prob)
+                    )
+            return _normalize_fraction_distribution(result)
         if etype == "randomvar":
             return self._random_distribution(op, _as_args(args), context)
         if etype == "aggregation":
@@ -908,23 +703,24 @@ class ExactRDDLKernel:
             return self.expression_distribution(args[0], context)
         if name == "Bernoulli":
             _check_arity(args, 1, name)
-            p = float(_expectation(self.expression_distribution(args[0], context)))
-            if p < -1e-12 or p > 1.0 + 1e-12:
+            p = _expectation(self.expression_distribution(args[0], context))
+            if p < 0 or p > 1:
                 raise ExactKernelError(f"Bernoulli probability out of range: {p}")
-            p = min(1.0, max(0.0, p))
-            return _normalize_distribution({True: p, False: 1.0 - p})
+            return _normalize_fraction_distribution(
+                {True: p, False: Fraction(1) - p}
+            )
         if name == "Discrete":
             if len(args) % 2 != 0:
                 raise ExactKernelError("Exact Discrete expects alternating value/probability arguments.")
-            result: dict[Hashable, float] = {}
+            result: dict[Hashable, Fraction] = {}
             for value_expr, prob_expr in zip(args[0::2], args[1::2]):
                 value_dist = self.expression_distribution(value_expr, context)
                 if len(value_dist) != 1:
                     raise ExactKernelError("Exact Discrete values must be deterministic.")
                 value = next(iter(value_dist))
-                prob_value = float(_expectation(self.expression_distribution(prob_expr, context)))
-                result[value] = result.get(value, 0.0) + prob_value
-            return _normalize_distribution(result)
+                prob_value = _expectation(self.expression_distribution(prob_expr, context))
+                result[value] = result.get(value, Fraction(0)) + prob_value
+            return _normalize_fraction_distribution(result)
         raise ExactKernelError(f"Random distribution {name} is not finite/exact in current DARP.")
 
     def _context(self, state: Mapping[str, Any], action: Mapping[str, Any]) -> dict[str, Any]:
@@ -948,48 +744,33 @@ class ExactRDDLKernel:
             self._action_ids[key] = action_id
         return action_id
 
-    def _reward_for_ids(self, state_id: int, action_id: int, action: Mapping[str, Any]) -> float:
-        """Evaluate and cache one reward matrix entry. / 求值并缓存 reward 矩阵中的一个元素。"""
+    def _reward_fraction_for_ids(
+        self,
+        state_id: int,
+        action_id: int,
+        action: Mapping[str, Any],
+    ) -> Fraction:
+        """Evaluate and cache one exact reward matrix entry."""
         cache_key = (state_id, action_id)
-        cached = self._reward_cache.get(cache_key)
+        cached = self._reward_fraction_cache.get(cache_key)
         if cached is not None:
-            self._cache_hits["reward"] += 1
             return cached
         state = self.state_from_key(self._state_index.key(state_id))
-        reward = self.expected_reward(self._context(state, action))
-        self._reward_cache[cache_key] = reward
-        return reward
-
-    def _state_cost_for_id(self, state_id: int) -> float:
-        """Return a cached current-state cost vector entry. / 返回缓存的当前状态 cost 向量元素。"""
-        if state_id not in self._state_cost_cache:
-            state = self.state_from_key(self._state_index.key(state_id))
-            self._state_cost_cache[state_id] = self._state_cost(state, self.risk.state_fluent_costs)
-        return self._state_cost_cache[state_id]
-
-    def _next_state_cost_for_id(self, state_id: int) -> float:
-        """Return a cached next-state cost vector entry. / 返回缓存的后继状态 cost 向量元素。"""
-        if state_id not in self._next_state_cost_cache:
-            state = self.state_from_key(self._state_index.key(state_id))
-            self._next_state_cost_cache[state_id] = self._state_cost(state, self.risk.next_state_fluent_costs)
-        return self._next_state_cost_cache[state_id]
-
-    def _state_failure_for_id(self, state_id: int) -> float:
-        """Return a clamped current-state failure probability. / 返回截断后的当前状态失败概率。"""
-        return _clamped_probability(self._state_cost_for_id(state_id))
+        reward_fraction = self.expected_reward_fraction(self._context(state, action))
+        self._reward_fraction_cache[cache_key] = reward_fraction
+        return reward_fraction
 
     def _observation_distribution_for_state(
         self,
         state: StateKey,
         action: Mapping[str, Any],
-    ) -> Mapping[ObservationKey, float]:
+    ) -> Mapping[ObservationKey, Fraction]:
         r"""Return cached $$O(o\mid s',a)$$ support. / 返回缓存的观测似然支持集。"""
         state_id = self._state_index.register(state)
         action_id = self._action_id(action)
         cache_key = (state_id, action_id)
         cached = self._observation_cache.get(cache_key)
         if cached is not None:
-            self._cache_hits["observation"] += 1
             return cached
         state_mapping = self.state_from_key(state)
         context = self._context(state_mapping, action)
@@ -1006,26 +787,76 @@ class ExactRDDLKernel:
             raise ExactKernelError(f"Missing next-state CPF for {state_name}.")
         return _cpf_expression(value)
 
-    def _observation_distribution(self, context: Mapping[str, Any]) -> Mapping[ObservationKey, float]:
+    def _observation_distribution(self, context: Mapping[str, Any]) -> Mapping[ObservationKey, Fraction]:
         """Return observation-value distribution from observation CPFs. / 从 observation CPF 返回 observation-value 分布。"""
-        partials: dict[ObservationKey, float] = {(): 1.0}
+        partials: dict[ObservationKey, Fraction] = {(): Fraction(1)}
         for obs_name in self.observation_names:
-            expr = self.cpfs.get(obs_name) or self.cpfs.get(f"{obs_name}'")
-            if expr is None:
+            if obs_name in self.cpfs:
+                expr = self.cpfs[obs_name]
+            elif f"{obs_name}'" in self.cpfs:
+                expr = self.cpfs[f"{obs_name}'"]
+            else:
                 raise ExactKernelError(f"Missing observation CPF for {obs_name}.")
-            updated: dict[ObservationKey, float] = {}
+            updated: dict[ObservationKey, Fraction] = {}
             for partial_key, partial_prob in partials.items():
                 partial_obs = dict(partial_key)
                 value_dist = self.expression_distribution(_cpf_expression(expr), {**context, **partial_obs})
-                for value, value_prob in value_dist.items():
+                for value, value_prob in _normalize_fraction_distribution(value_dist).items():
                     next_partial = tuple(sorted({**partial_obs, obs_name: _plain_value(value)}.items()))
-                    updated[next_partial] = updated.get(next_partial, 0.0) + partial_prob * value_prob
+                    updated[next_partial] = (
+                        updated.get(next_partial, Fraction(0))
+                        + partial_prob * value_prob
+                    )
             partials = updated
-        return _normalize_distribution(partials)
+        return _normalize_fraction_distribution(partials)
 
-    def _state_cost(self, state: Mapping[str, Any], costs: Mapping[str, float]) -> float:
-        """Return configured state cost for one state. / 返回一个 state 的配置 cost。"""
-        return sum(float(cost) for fluent, cost in costs.items() if bool(state.get(fluent, False)))
+    @staticmethod
+    def _state_cost_fraction(
+        state: Mapping[str, Any],
+        costs: Mapping[str, float],
+    ) -> Fraction:
+        """Return an additive state cost before binary64 rounding."""
+        return sum(
+            (
+                Fraction.from_float(float(cost))
+                for fluent, cost in costs.items()
+                if bool(state.get(fluent, False))
+            ),
+            start=Fraction(0),
+        )
+
+    def _state_action_cost_fraction(
+        self,
+        state: StateKey,
+        action: Mapping[str, Any],
+        costs: Mapping[tuple[Hashable, str], float],
+    ) -> Fraction:
+        """Resolve one state/action table entry as its exact dyadic value."""
+        if not costs:
+            return Fraction(0)
+        state_mapping = self.state_from_key(state)
+        action_label = _action_label_from_assignment(action, self.action_names)
+        direct = costs.get((state, action_label))
+        if direct is not None:
+            return Fraction.from_float(float(direct))
+        matches: list[tuple[int, str, float]] = []
+        for (selector, configured_action), value in costs.items():
+            if str(configured_action) != action_label or not isinstance(selector, str):
+                continue
+            specificity = _boolean_selector_specificity(selector, state_mapping)
+            if specificity is not None:
+                matches.append((specificity, selector, float(value)))
+        if not matches:
+            return Fraction(0)
+        specificity = max(item[0] for item in matches)
+        best = [(selector, value) for level, selector, value in matches if level == specificity]
+        distinct = {value for _, value in best}
+        if len(distinct) > 1:
+            raise ExactKernelError(
+                "Conflicting equal-specificity risk state-action selectors for "
+                f"action {action_label!r}: {', '.join(sorted(selector for selector, _ in best))}"
+            )
+        return Fraction.from_float(best[0][1])
 
     def _validate_supported(self) -> None:
         """Validate finite bool/enumerable assumptions. / 验证有限 bool/enumerable 假设。"""
@@ -1040,87 +871,73 @@ class ExactRDDLKernel:
                 "Current exact kernel supports bool state fluents only: "
                 + ", ".join(unsupported)
             )
+        configured_cost_fluents = set(self.risk.state_fluent_costs) | set(
+            self.risk.next_state_fluent_costs
+        )
+        unknown_cost_fluents = sorted(configured_cost_fluents - set(self.state_names))
+        if unknown_cost_fluents:
+            raise ExactKernelError(
+                "Risk constraint references unknown grounded state fluents: "
+                + ", ".join(unknown_cost_fluents)
+            )
+        # Programmatic StateKey selectors are mappings encoded as tuples.  A
+        # caller is not required to know the kernel's internal tuple order,
+        # but every grounded fluent must occur exactly once.  Canonicalizing
+        # here makes a complete reversed key match while malformed partial or
+        # duplicate keys fail before planning instead of silently costing 0.
+        state_action_costs = _canonical_state_action_cost_table(
+            self.risk.state_action_costs,
+            self.state_names,
+            table_name="state_action_costs",
+        )
+        next_state_action_costs = _canonical_state_action_cost_table(
+            self.risk.next_state_action_costs,
+            self.state_names,
+            table_name="next_state_action_costs",
+        )
+        object.__setattr__(
+            self,
+            "risk",
+            replace(
+                self.risk,
+                state_action_costs=state_action_costs,
+                next_state_action_costs=next_state_action_costs,
+            ),
+        )
+        state_action_tables = (state_action_costs, next_state_action_costs)
+        selector_names: set[str] = set()
+        configured_actions: set[str] = set()
+        for table in state_action_tables:
+            for selector, action in table:
+                configured_actions.add(str(action))
+                if isinstance(selector, str):
+                    selector_names.update(_boolean_selector_names(selector))
+                elif _looks_like_state_key(selector):
+                    selector_names.update(str(name) for name, _ in selector)
+                else:
+                    raise ExactKernelError(
+                        "Risk state-action table keys must use a Boolean state "
+                        f"selector string or complete StateKey, got {selector!r}."
+                    )
+        unknown_selector_names = sorted(selector_names - set(self.state_names))
+        if unknown_selector_names:
+            raise ExactKernelError(
+                "Risk state-action selectors reference unknown grounded state fluents: "
+                + ", ".join(unknown_selector_names)
+            )
+        known_action_labels = {"noop", *self.action_names}
+        unknown_actions = sorted(configured_actions - known_action_labels)
+        if unknown_actions:
+            raise ExactKernelError(
+                "Risk state-action table references unknown grounded actions: "
+                + ", ".join(unknown_actions)
+            )
 
 
 def _cpf_expression(value: Any) -> Any:
     """Extract the expression from pyRDDLGym CPF entries. / 从 pyRDDLGym CPF entry 中提取表达式。"""
     if isinstance(value, tuple) and len(value) == 2:
         return value[1]
-    return value
-
-
-def _advance_exact_belief(
-    exact_kernel: Any,
-    belief: Mapping[StateKey, float],
-    action: Mapping[str, Any],
-    observation: Mapping[str, Any],
-    *,
-    observed_state: Mapping[str, Any] | None,
-) -> Mapping[StateKey, float]:
-    """Advance an exact belief using kernel-native Bayes update when available. / 使用 kernel 原生 Bayes update 推进 exact belief。"""
-    if hasattr(exact_kernel, "update_belief"):
-        return exact_kernel.update_belief(
-            belief,
-            action,
-            observation,
-            observed_state=observed_state,
-        )
-    expansion = exact_kernel.expand_action(belief, action)
-    observation_key = _observation_key_for_kernel(
-        exact_kernel,
-        observation,
-        observed_state=observed_state,
-    )
-    for outcome in expansion.observations:
-        if outcome.observation == observation_key:
-            return outcome.belief
-    raise ExactKernelError(
-        "Observed outcome is outside exact observation support: "
-        f"{observation_key!r}"
-    )
-
-
-def _observation_key_for_kernel(
-    exact_kernel: Any,
-    observation: Mapping[str, Any],
-    *,
-    observed_state: Mapping[str, Any] | None,
-) -> ObservationKey:
-    """Convert a runtime observation through a generic exact-kernel interface. / 通过通用 exact-kernel 接口转换 observation。"""
-    if hasattr(exact_kernel, "observation_key"):
-        return exact_kernel.observation_key(observation, observed_state=observed_state)
-    observation_names = tuple(getattr(exact_kernel, "observation_names", ()) or ())
-    if observation_names:
-        return tuple((name, _plain_value(observation.get(name, False))) for name in observation_names)
-    state = observed_state if observed_state is not None else observation
-    initial = exact_kernel.initial_belief_from_state(state)
-    if not initial:
-        raise ExactKernelError("Cannot build MDP observation key from an empty state belief.")
-    state_key = next(iter(initial))
-    return (("__state__", state_key),)
-
-
-def _belief_support(exact_kernel: Any, belief: Mapping[StateKey, float]) -> dict[str, float]:
-    """Return compact labels for an exact belief support. / 返回 exact belief support 的紧凑标签。"""
-    support: dict[str, float] = {}
-    for state, probability in belief.items():
-        label = exact_kernel.state_label(state)
-        support[label] = support.get(label, 0.0) + float(probability)
-    return dict(sorted(support.items()))
-
-
-def _json_ready(value: Any) -> Any:
-    """Convert exact belief fields to JSON-friendly values. / 将 exact belief 字段转为 JSON 友好值。"""
-    if isinstance(value, Mapping):
-        return {str(key): _json_ready(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return tuple(_json_ready(item) for item in value)
-    if isinstance(value, list):
-        return [_json_ready(item) for item in value]
-    if hasattr(value, "tolist"):
-        return _json_ready(value.tolist())
-    if hasattr(value, "item"):
-        return value.item()
     return value
 
 
@@ -1160,49 +977,245 @@ def _plain_value(value: Any) -> Hashable:
     return value
 
 
-def _normalize_distribution(distribution: Mapping[Hashable, float]) -> dict[Hashable, float]:
-    """Normalize a finite probability distribution. / 归一化有限概率分布。"""
-    numeric = {key: float(value) for key, value in distribution.items()}
-    non_finite = {key: value for key, value in numeric.items() if not isfinite(value)}
-    if non_finite:
+def _action_label_from_assignment(
+    action: Mapping[str, Any],
+    action_names: Sequence[str],
+) -> str:
+    """Match ``GroundedRDDLView`` action labels for sidecar table lookup."""
+    active: list[str] = []
+    for name in sorted(action_names):
+        value = _plain_value(action.get(name, False))
+        if value is True:
+            active.append(str(name))
+        elif value not in (False, 0, None):
+            active.append(f"{name}={value}")
+    return "+".join(active) if active else "noop"
+
+
+def _boolean_selector_specificity(
+    selector: str,
+    state: Mapping[str, Any],
+) -> int | None:
+    """Return matched Boolean-clause count, with ``*`` matching every state."""
+    if selector.strip() == "*":
+        return 0
+    clauses = selector.split("&")
+    parsed: list[tuple[str, bool]] = []
+    for clause in clauses:
+        name, separator, raw_value = clause.partition("=")
+        name = name.strip()
+        if not name:
+            return None
+        if not separator:
+            expected = True
+        else:
+            normalized = raw_value.strip().lower()
+            if normalized not in {"true", "false"}:
+                return None
+            expected = normalized == "true"
+        parsed.append((name, expected))
+    if all(name in state and bool(state[name]) is expected for name, expected in parsed):
+        return len(parsed)
+    return None
+
+
+def _boolean_selector_names(selector: str) -> tuple[str, ...]:
+    """Validate a sidecar Boolean selector and return its fluent names."""
+    if selector.strip() == "*":
+        return ()
+    names: list[str] = []
+    for clause in selector.split("&"):
+        name, separator, raw_value = clause.partition("=")
+        name = name.strip()
+        if not name:
+            raise ExactKernelError(f"Risk state selector is invalid: {selector!r}")
+        if separator and raw_value.strip().lower() not in {"true", "false"}:
+            raise ExactKernelError(
+                "Risk state selectors support only Boolean values: "
+                f"{selector!r}"
+            )
+        names.append(name)
+    return tuple(names)
+
+
+def _looks_like_state_key(value: object) -> bool:
+    """Return whether a programmatic selector is a tuple-of-pairs StateKey."""
+    return isinstance(value, tuple) and all(
+        isinstance(entry, tuple) and len(entry) == 2
+        for entry in value
+    )
+
+
+def _canonical_state_action_cost_table(
+    costs: Mapping[tuple[Hashable, str], float],
+    state_names: Sequence[str],
+    *,
+    table_name: str,
+) -> dict[tuple[Hashable, str], float]:
+    """Canonicalize complete direct StateKeys while preserving string selectors."""
+    normalized: dict[tuple[Hashable, str], float] = {}
+    origins: dict[tuple[Hashable, str], Hashable] = {}
+    for (selector, action), value in costs.items():
+        if isinstance(selector, str):
+            normalized_selector: Hashable = selector
+        else:
+            normalized_selector = _canonical_complete_state_selector(
+                selector,
+                state_names,
+            )
+        key = (normalized_selector, str(action))
+        if key in normalized:
+            raise ExactKernelError(
+                f"Risk {table_name} contains duplicate selectors after StateKey "
+                f"canonicalization: {origins[key]!r} and {selector!r}."
+            )
+        normalized[key] = float(value)
+        origins[key] = selector
+    return normalized
+
+
+def _canonical_complete_state_selector(
+    selector: object,
+    state_names: Sequence[str],
+) -> StateKey:
+    """Validate and order one direct-API selector as a complete StateKey."""
+    if not _looks_like_state_key(selector):
         raise ExactKernelError(
-            f"Probability distribution contains non-finite mass: {non_finite!r}"
+            "Risk state-action table keys must use a Boolean state selector "
+            f"string or complete StateKey, got {selector!r}."
         )
-    invalid = {key: value for key, value in numeric.items() if value < -1e-12}
-    if invalid:
-        raise ExactKernelError(f"Probability distribution contains negative mass: {invalid!r}")
-    cleaned = {key: value for key, value in numeric.items() if value > 1e-15}
-    total = sum(cleaned.values())
-    if total <= 0.0:
+    entries = tuple(selector)
+    raw_names = [entry[0] for entry in entries]
+    non_string_names = [name for name in raw_names if not isinstance(name, str)]
+    if non_string_names:
+        raise ExactKernelError(
+            "Risk direct StateKey selector fluent names must be strings: "
+            f"{non_string_names!r}."
+        )
+    names = [str(name) for name in raw_names]
+    duplicate_names = sorted({name for name in names if names.count(name) > 1})
+    if duplicate_names:
+        raise ExactKernelError(
+            "Risk direct StateKey selector contains duplicate grounded state "
+            "fluents: " + ", ".join(duplicate_names)
+        )
+    expected = set(state_names)
+    actual = set(names)
+    missing = sorted(expected - actual)
+    unknown = sorted(actual - expected)
+    if missing or unknown:
+        details: list[str] = []
+        if missing:
+            details.append("missing " + ", ".join(missing))
+        if unknown:
+            details.append("unknown " + ", ".join(unknown))
+        raise ExactKernelError(
+            "Risk direct StateKey selector must name every grounded state "
+            "fluent exactly once (" + "; ".join(details) + ")."
+        )
+    values: dict[str, Hashable] = {}
+    for name, raw_value in entries:
+        value = _plain_value(raw_value)
+        if value is not True and value is not False:
+            raise ExactKernelError(
+                "Risk direct StateKey selectors support only Boolean values; "
+                f"{name!r} has {raw_value!r}."
+            )
+        values[str(name)] = value
+    return tuple((name, values[name]) for name in state_names)
+
+
+def _normalize_fraction_distribution(
+    distribution: Mapping[Hashable, float | Fraction],
+) -> dict[Hashable, Fraction]:
+    """Normalize finite represented support without losing tiny products."""
+    numeric: dict[Hashable, Fraction] = {}
+    for key, raw_value in distribution.items():
+        if isinstance(raw_value, Fraction):
+            value = raw_value
+        else:
+            numeric_value = float(raw_value)
+            if not isfinite(numeric_value):
+                raise ExactKernelError(
+                    f"Probability distribution contains non-finite mass: {key!r}"
+                )
+            value = Fraction.from_float(numeric_value)
+        if value < 0:
+            raise ExactKernelError(
+                f"Probability distribution contains negative mass: {key!r}={value!r}"
+            )
+        if value > 0:
+            numeric[key] = value
+    total = sum(numeric.values(), start=Fraction(0))
+    if total <= 0:
         return {}
-    return {key: value / total for key, value in cleaned.items()}
+    return {key: value / total for key, value in numeric.items()}
 
 
-def _clamped_probability(value: float) -> float:
-    """Clamp a numeric selector to a probability. / 将数值 selector 截断为概率。"""
-    numeric = float(value)
-    if not isfinite(numeric):
-        raise ExactKernelError(f"Probability selector must be finite, got {numeric!r}.")
-    return max(0.0, min(1.0, numeric))
+def _normalized_fraction_mass(
+    distribution: Mapping[StateKey, float | Fraction],
+) -> dict[StateKey, Fraction]:
+    """Normalize represented probability floats exactly as rational masses."""
+    normalized = _normalize_fraction_distribution(distribution)
+    if not normalized:
+        raise ExactKernelError("Constraint mass requires positive probability mass.")
+    return normalized
 
 
-def _expectation(distribution: Mapping[Hashable, float]) -> float:
-    """Return numeric expectation of a finite distribution. / 返回有限分布的数值期望。"""
-    return sum(float(value) * probability for value, probability in distribution.items())
+def _fraction_mass_belief(
+    mass: Mapping[StateKey, Fraction],
+) -> dict[StateKey, float]:
+    """Convert exact unnormalized state mass to a diagnostic float belief."""
+    return {
+        state: float(probability)
+        for state, probability in _normalize_fraction_distribution(mass).items()
+    }
+
+
+def _upper_non_negative_fraction(value: Fraction) -> float:
+    """Convert a non-negative exact float-rational expression upward."""
+    if value < 0:
+        raise ExactKernelError(f"Expected a non-negative quantity, got {value!r}.")
+    rounded = float(value)
+    if not isfinite(rounded):
+        raise ExactKernelError("Constraint aggregation overflowed to a non-finite value.")
+    if Fraction.from_float(rounded) < value:
+        rounded = nextafter(rounded, float("inf"))
+    return rounded
+
+
+def _upper_probability_fraction(value: Fraction) -> float:
+    """Convert an exact probability expression upward and clamp to one."""
+    if value <= 0:
+        return 0.0
+    if value >= 1:
+        return 1.0
+    return _upper_non_negative_fraction(value)
+
+
+def _expectation(distribution: Mapping[Hashable, float | Fraction]) -> Fraction:
+    """Return the rational expectation of represented finite support."""
+    return sum(
+        (
+            Fraction.from_float(float(value)) * Fraction(probability)
+            for value, probability in distribution.items()
+        ),
+        start=Fraction(0),
+    )
 
 
 def _combine_distributions(distributions: Sequence[Distribution], fn: Any) -> Distribution:
     """Combine independent finite distributions with one operator. / 用一个算子组合多个有限分布。"""
     if not distributions:
-        return {fn(): 1.0}
-    result: dict[Hashable, float] = {}
+        return {fn(): Fraction(1)}
+    result: dict[Hashable, Fraction] = {}
     keys = [tuple(dist.items()) for dist in distributions]
     for combination in product(*keys):
         values = [item[0] for item in combination]
-        probability = prod(item[1] for item in combination)
+        probability = prod(Fraction(item[1]) for item in combination)
         output = _plain_value(fn(*values))
-        result[output] = result.get(output, 0.0) + probability
-    return _normalize_distribution(result)
+        result[output] = result.get(output, Fraction(0)) + probability
+    return _normalize_fraction_distribution(result)
 
 
 def _arith(op: str) -> Any:
@@ -1251,8 +1264,20 @@ def _relation(op: str) -> Any:
 
 
 def _observation_label(observation: ObservationKey) -> str:
-    """Return a compact observation label. / 返回紧凑 observation label。"""
+    """Return a compact *injective* label for one observation value.
+
+    Returning only the names of Boolean entries whose value is ``True``
+    silently merges histories such as ``{flag=True, colour='red'}`` and
+    ``{flag=True, colour='blue'}`` in the AND-OR node arena.  Since a policy
+    may select different actions after those observations, that changes the
+    policy-tree ILP rather than merely changing diagnostics.
+
+    Keep the familiar one-hot Boolean label used by existing navigation
+    models, but encode every other observation from the complete ordered key.
+    / 仅对 one-hot Boolean observation 保留紧凑名称；其余情况编码完整 key，
+    防止不同 observation history 被错误合并。
+    """
     active = [name for name, value in observation if value is True]
-    if active:
-        return ",".join(active)
-    return repr(dict(observation))
+    if len(active) == 1 and all(isinstance(value, bool) for _, value in observation):
+        return active[0]
+    return repr(observation)

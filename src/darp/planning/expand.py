@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from fractions import Fraction
+from typing import Any
 
-from darp.adapter.exact import ExactRDDLKernel, ObservationKey, StateKey
+from darp.adapter.exact import (
+    ExactRDDLKernel,
+    ObservationKey,
+    RiskConstraintType,
+    StateKey,
+    risk_constraint_type_for_kernel,
+)
 from darp.model.and_or_tree import ANDORNode, ANDORSearchInterface
 from darp.model.duration import (
-    Belief,
+    ChanceConstrainedDurationModel,
     DurationProgress,
     FixedDurationModel,
     HistoryDurationEvaluator,
@@ -18,76 +26,47 @@ from darp.planning.preprocess import FrontierItem
 
 @dataclass(frozen=True)
 class ExpansionMetrics:
-    """Store paper metrics for one expanded history. / 保存一次 history 展开的论文指标。"""
+    r"""Store Algorithm 2 constants with unambiguous constraint semantics.
 
-    reward: float
+    ``penalty`` is Lemma 3.2's ordinary-flow coefficient
+    :math:`\rho(q)E[P(S,a)]`; ``chance_risk`` is Lemma 3.3's safe-flow
+    first-entry coefficient. ``constraint_value`` selects the coefficient
+    used by the active constraint.
+
+    / ``penalty`` 和 ``chance_risk`` 分别对应 Lemma 3.2/3.3；
+    ``constraint_value`` 返回当前约束实际使用的系数。
+    """
+
     utility: float
-    risk: float
-    rho: float
-    safe_rho: float
-    observation_probability: float
-    tau: float
-    zeta: float
-    duration: DurationProgress
-    observation_label: str
-    state_label: str
-    terminated: bool
-    truncated: bool
+    penalty: float
+    chance_risk: float
+    constraint_type: RiskConstraintType
+    objective_support_preserved: bool
+    utility_exact: Fraction | None
+    penalty_exact: Fraction | None
+    chance_risk_exact: Fraction | None
 
     @property
-    def done(self) -> bool:
-        """Return whether the simulator stopped after this expansion. / 返回此次展开后 simulator 是否结束。"""
-        return self.terminated or self.truncated
-
-    @property
-    def should_expand(self) -> bool:
-        """Return whether children may still be expanded. / 返回是否还能继续展开子节点。"""
-        return not self.done and self.tau > self.zeta
+    def constraint_value(self) -> float:
+        """Return the ILP coefficient selected by the model. / 返回当前模型的 ILP 系数。"""
+        return self.chance_risk if self.constraint_type == "chance" else self.penalty
 
 
 @dataclass(frozen=True)
 class ExpandedAction:
     """Store one expanded action node and child frontiers. / 保存展开后的 action 节点和子 frontier。"""
 
-    action_node: ANDORNode
-    observation_node: ANDORNode
     child_frontier: tuple[FrontierItem, ...]
     metrics: ExpansionMetrics
-    observation_frontiers: tuple["ObservationFrontier", ...] = ()
+    observation_frontiers: tuple[ObservationFrontier, ...] = ()
 
 
 @dataclass(frozen=True)
 class ObservationFrontier:
     """Store one qao observation branch and its child actions. / 保存一个 qao observation 分支及其子 action。"""
 
-    observation_node: ANDORNode
     child_frontier: tuple[FrontierItem, ...]
-    probability: float
-    rho: float
-    safe_rho: float
-    tau: float
-    duration: DurationProgress
     should_expand: bool
-    smoothing: "Algorithm2Smoothing"
-
-
-@dataclass(frozen=True)
-class Algorithm2Smoothing:
-    r"""Store Algorithm 2 backward messages and smoothed beliefs.
-
-    `filtered_beliefs[i]` is the forward belief
-    $$\tilde b^i_{qao}(s_i)=Pr(s_i\mid q_{\le i})$$.
-    `backward_messages[i]` is
-    $$f_i(s_i)=Pr(q_{>i}\mid s_i)$$.
-    `smoothed_beliefs[i]` is the paper's smoothed belief
-    $$\bar b^i_{qao}(s_i)=Pr(s_i\mid qao)$$.
-
-    / 保存 Algorithm 2 的 filtered belief、backward message 和 smoothed belief。
-    """
-
-    filtered_beliefs: tuple[Mapping[StateKey, float], ...]
-    backward_messages: tuple[Mapping[StateKey, float], ...]
-    smoothed_beliefs: tuple[Mapping[StateKey, float], ...]
 
 
 # Paper Algorithm 2: Expand.
@@ -134,58 +113,73 @@ def expand_frontier_item(
     observation；函数会计算 full-ILP 所需的 $$u_q$$、$$r_q$$、$$\rho(qao)$$、$$\tilde\rho(qao)$$ 与 $$\tau(qao)$$
     """
     exact_kernel = interface.exact_kernel
-    if exact_kernel is None or item.belief is None:
-        raise ValueError("Paper Expand requires interface.exact_kernel and item.belief.")
+    if exact_kernel is None:
+        raise ValueError("Paper Expand requires an exact kernel.")
 
-    # Inputs include both ordinary and safe-conditioned belief/probability flows.
-    b_q = item.belief  # 以状态为键的普通 belief dict，表示历史 $$q$$ 中每个状态的概率；论文 C-POMDP 符号是 $$b_q$$。
-    safe_belief_q = (
-        item.safe_belief if item.safe_belief is not None else b_q
-    )  # 空 safe belief 表示该前缀已无安全概率，不能回退为普通 belief。
-    rho_q = item.rho  # 普通 history q 的到达概率，只用于 utility。
-    safe_rho_q = item.safe_rho  # $$\tilde\rho(q)$$：安全前缀概率，只用于 chance risk。
-    a_q = _action_assignment(item.node.metadata)
-    filtered_beliefs_q = item.belief_trace or (b_q,)
+    b_q = item.belief
+    ordinary_mass_q = item.ordinary_mass
+    constraint_mass_q = item.constraint_mass
+    a_q = item.node.assignment
+    if a_q is None:
+        raise ValueError("AND-OR action node has no action assignment.")
+    constraint_type = risk_constraint_type_for_kernel(exact_kernel)
+    u_qa, objective_support_preserved, utility_exact = (
+        exact_kernel.utility_coefficient_for_mass(ordinary_mass_q, a_q)
+    )
 
-    # Lines 1-4 for ordinary belief: enumerate T/O support for later smoothing.
-    # 普通 belief 路径：枚举完整 transition/observation support，供 backward message 和 duration smoothing 使用。
-    qa = exact_kernel.expand_action(b_q, a_q)
-    b_qa = qa.prior_belief  # $$b_{qa}(s') = \sum_s T(s,a_q,s') b_q(s)$$，动作后、观测前的 prior belief。
-    outcomes_qa = qa.observations  # 包含：所有可能 observation $$o$$，以及 $$Pr(o|qa)$$ 和 posterior $$b_{qao}$$。
+    # Expected-cost mass is exactly the ordinary mass, so its expansion is
+    # also the ordinary T/O expansion.  This avoids evaluating identical
+    # transition and observation rows twice.  Chance constraints necessarily
+    # retain distinct ordinary and survival-conditioned flows.
+    if constraint_type == "expected":
+        if dict(constraint_mass_q) != dict(ordinary_mass_q):
+            raise ValueError("Expected-cost constraint mass must equal ordinary mass.")
+        exact_constraint_qa = exact_kernel.expand_expected_constraint_mass(
+            constraint_mass_q, a_q
+        )
+        ordinary_mass_qa = exact_constraint_qa
+        p_qa = exact_constraint_qa.coefficient
+        penalty_exact = exact_constraint_qa.coefficient_exact
+        r_qa = 0.0
+        chance_risk_exact = None
+    else:
+        ordinary_mass_qa = exact_kernel.expand_ordinary_mass(ordinary_mass_q, a_q)
+        exact_constraint_qa = exact_kernel.expand_safe_constraint_mass(
+            constraint_mass_q, a_q
+        )
+        p_qa = 0.0
+        penalty_exact = None
+        r_qa = exact_constraint_qa.coefficient
+        chance_risk_exact = exact_constraint_qa.coefficient_exact
 
-    # Lemma 3.3 CC-POMDP constants:
-    # $$u_q = \rho(q) \sum_s b_q(s) U(s,a_q)$$ uses
-    # the ordinary history probability/belief from Eqns. (9)-(10), while
-    # $$r_q = \tilde\rho(q) r(b^{safe}_q,a_q)$$ uses the safe-prefix recursion.
-    # CC-POMDP 常量：效用走普通概率流，风险走安全概率流。
-    safe_qa = exact_kernel.expand_safe_action(safe_belief_q, a_q)
-    safe_outcomes_by_observation = {
-        outcome.observation: outcome
-        for outcome in safe_qa.observations
+    constraint_outcomes = {
+        outcome.observation: outcome for outcome in exact_constraint_qa.observations
     }
-    u_qa = rho_q * qa.utility
-    r_qa = safe_rho_q * safe_qa.risk
 
     # Lines 5-20: enumerate every qao branch and attach the next action frontier.
     # 第 5-20 行：枚举每个 $$qao$$ 分支，分别传播普通/安全概率、计算 smoothed belief 和 $$\tau(qao)$$。
     branches: list[ObservationFrontier] = []
     next_frontier: list[FrontierItem] = []
-    for outcome in outcomes_qa:
-        p_o = outcome.probability  # $$Pr(o|qa)$$，在 $$b_{qa}$$ 下观测到 $$o$$ 的概率。
-        rho_qao = rho_q * p_o  # Eqn. (9) ordinary occurrence probability.
-        safe_outcome = safe_outcomes_by_observation.get(outcome.observation)
-        p_safe_o = safe_outcome.probability if safe_outcome is not None else 0.0  # $$Pr(o|qa,safe)$$。
-        safe_belief_qao = safe_outcome.belief if safe_outcome is not None else {}  # safe-conditioned posterior belief。
-        safe_rho_qao = (
-            safe_rho_q
-            * safe_qa.survival_probability
-            * p_safe_o
-        )  # $$\tilde\rho(qao)=\tilde\rho(q)(1-r(b_{qa}))Pr(o|qa,safe)$$。
-        b_qao = outcome.belief  # $$b_{qao}$$，观测 $$o$$ 后的 posterior belief。
-        observation_keys_qao = item.observation_keys + (outcome.observation,)  # 完整观测序列 o_1..o_k。
-        filtered_beliefs_qao = filtered_beliefs_q + (b_qao,)  # forward beliefs \tilde b^0..\tilde b^k。
-        qao_node = interface.observation_node(item.node, outcome.label)
-        item.node.add_child(qao_node)
+    for ordinary_outcome in ordinary_mass_qa.observations:
+        observation = ordinary_outcome.observation
+        ordinary_mass_qao = ordinary_outcome.state_mass
+        b_qao = exact_kernel.constraint_mass_belief(ordinary_mass_qao)
+        constraint_outcome = constraint_outcomes.get(observation)
+        if constraint_type == "chance":
+            constraint_mass_qao = (
+                constraint_outcome.state_mass if constraint_outcome is not None else {}
+            )
+        else:
+            if constraint_outcome is None:
+                raise ValueError(
+                    "Expected-cost expansion omitted an ordinary observation branch."
+                )
+            constraint_mass_qao = constraint_outcome.state_mass
+        observation_keys_qao = item.observation_keys + (
+            observation,
+        )  # 完整观测序列 o_1..o_k。
+        ordinary_mass_trace_qao = item.ordinary_mass_trace + (ordinary_mass_qao,)
+        qao_node = interface.observation_node(item.node, ordinary_outcome.label)
 
         # Lines 10-20 after the backward messages: compute duration from
         # smoothed action-start beliefs.  For action a_i, D(S_i,a_i) uses
@@ -197,105 +191,87 @@ def expand_frontier_item(
             # backward smoothing cannot change tau. Carry one sufficient
             # statistic instead of recomputing the whole history per outcome.
             # 固定时长只需 O(1) 累加，无需为每个 observation 重跑整段 backward smoothing。
-            smoothing_qao = Algorithm2Smoothing(
-                filtered_beliefs=tuple(dict(belief) for belief in filtered_beliefs_qao),
-                backward_messages=(),
-                smoothed_beliefs=(),
-            )
             duration_qao = item.duration_progress.add(
                 duration_evaluator.model.estimate(
-                    duration_evaluator.default_belief,
+                    b_q,
                     item.action_label,
                 )
             )
-            duration_beliefs_qao = item.duration_beliefs
+        elif isinstance(duration_evaluator.model, ChanceConstrainedDurationModel):
+            # Paper Sec. 3 chance-constrained duration: propagate the exact
+            # posterior over augmented states (s, g), g being elapsed duration.
+            # State marginals or a scalar expected duration cannot preserve the
+            # correlation needed by Pr(G_q < h | q).
+            duration_qao = _advance_augmented_duration_belief(
+                exact_kernel=exact_kernel,
+                model=duration_evaluator.model,
+                progress=item.duration_progress,
+                current_state_mass=ordinary_mass_q,
+                action_label=item.action_label,
+                action_assignment=a_q,
+                observation=observation,
+            )
         else:
             actions_qa = item.node.history.actions
-            action_assignments_qa = _action_assignments_for_history(interface, actions_qa)
-            smoothing_qao = _algorithm2_backward_and_smoothed_beliefs(
+            action_assignments_qa = _action_assignments_for_history(
+                interface, actions_qa
+            )
+            exact_smoothed_beliefs_qao = _algorithm2_backward_and_smoothed_beliefs(
                 exact_kernel=exact_kernel,
                 actions=actions_qa,
                 action_assignments=action_assignments_qa,
                 observations=observation_keys_qao,
-                filtered_beliefs=filtered_beliefs_qao,
+                filtered_masses=ordinary_mass_trace_qao,
             )
-            duration_qao, duration_beliefs_qao = _algorithm2_duration_from_smoothed_beliefs(
-                exact_kernel=exact_kernel,
+            duration_qao = _algorithm2_duration_from_smoothed_beliefs(
                 actions=actions_qa,
-                smoothed_beliefs=smoothing_qao.smoothed_beliefs,
+                exact_smoothed_beliefs=exact_smoothed_beliefs_qao,
                 duration_evaluator=duration_evaluator,
             )
-        tau_qao = duration_evaluator.model.tau(duration_qao, duration_evaluator.horizon)
         expand_qao = duration_evaluator.model.should_continue(
             duration_qao,
             duration_evaluator.horizon,
             duration_evaluator.zeta,
         )
+        callback_belief_qao: Mapping[Any, Any] = _normalized_fraction_belief(
+            ordinary_mass_qao
+        )
+        should_expand_qao = (
+            expand_qao
+            and bool(ordinary_mass_qao)
+            and not interface.belief_is_terminal(callback_belief_qao)
+        )
         child_actions = _child_frontier(
-            item=item,
             observation_node=qao_node,
             interface=interface,
-            rho=rho_qao,
-            safe_rho=safe_rho_qao,
-            should_expand=expand_qao and rho_qao > 0.0 and bool(b_qao),
+            should_expand=should_expand_qao,
             belief=b_qao,
-            safe_belief=safe_belief_qao,
-            duration_beliefs=duration_beliefs_qao,
-            belief_trace=filtered_beliefs_qao,
+            action_belief=callback_belief_qao,
+            ordinary_mass=ordinary_mass_qao,
+            constraint_mass=constraint_mass_qao,
+            ordinary_mass_trace=ordinary_mass_trace_qao,
             observation_keys=observation_keys_qao,
             duration_progress=duration_qao,
         )
         branches.append(
             ObservationFrontier(
-                observation_node=qao_node,
                 child_frontier=child_actions,
-                probability=p_o,
-                rho=rho_qao,
-                safe_rho=safe_rho_qao,
-                tau=tau_qao,
-                duration=duration_qao,
-                should_expand=expand_qao and rho_qao > 0.0 and bool(b_qao),
-                smoothing=smoothing_qao,
+                should_expand=should_expand_qao,
             )
         )
         next_frontier.extend(child_actions)
 
-    # ExpandedAction still has single-value diagnostic fields; use the first
-    # branch only as a summary, while branches contains the actual qao set.
-    # ExpandedAction 仍保留单值诊断字段；summary_branch 只用于展示，真正的 qao 集合在 branches 中。
-    summary_branch = branches[0] if branches else None
-    summary_node = (
-        summary_branch.observation_node
-        if summary_branch
-        else interface.observation_node(item.node, "(none)")
-    )
-    if summary_branch:
-        summary_tau = summary_branch.tau
-        summary_duration = summary_branch.duration
-    else:
-        summary_duration = DurationProgress()
-        summary_tau = duration_evaluator.model.tau(summary_duration, duration_evaluator.horizon)
-    summary_label = str(summary_node.metadata.get("observation", "(none)"))
     metrics = ExpansionMetrics(
-        reward=qa.utility,
         utility=u_qa,
-        risk=r_qa,
-        rho=rho_q,
-        safe_rho=safe_rho_q,
-        observation_probability=sum(outcome.probability for outcome in outcomes_qa),
-        tau=summary_tau,
-        zeta=duration_evaluator.zeta,
-        duration=summary_duration,
-        observation_label=summary_label,
-        state_label="belief:" + repr(
-            {exact_kernel.state_label(state): prob for state, prob in b_qa.items()}
-        ),
-        terminated=False,
-        truncated=False,
+        penalty=p_qa,
+        chance_risk=r_qa,
+        constraint_type=constraint_type,
+        objective_support_preserved=objective_support_preserved,
+        utility_exact=utility_exact,
+        penalty_exact=penalty_exact,
+        chance_risk_exact=chance_risk_exact,
     )
     return ExpandedAction(
-        action_node=item.node,
-        observation_node=summary_node,
         child_frontier=tuple(next_frontier),
         metrics=metrics,
         observation_frontiers=tuple(branches),
@@ -308,8 +284,8 @@ def _algorithm2_backward_and_smoothed_beliefs(
     actions: Sequence[str],
     action_assignments: Sequence[Mapping[str, Any]],
     observations: Sequence[ObservationKey],
-    filtered_beliefs: Sequence[Mapping[StateKey, float]],
-) -> Algorithm2Smoothing:
+    filtered_masses: Sequence[Mapping[StateKey, Fraction]],
+) -> tuple[Mapping[StateKey, Fraction], ...]:
     r"""Compute Algorithm 2 backward messages and smoothed beliefs.
 
     For a concrete branch $$qao = (a_1,o_1,\ldots,a_k,o_k)$$,
@@ -334,101 +310,72 @@ def _algorithm2_backward_and_smoothed_beliefs(
     """
 
     if len(actions) != len(action_assignments):
-        raise ValueError("Action labels and action assignments must have the same length.")
+        raise ValueError(
+            "Action labels and action assignments must have the same length."
+        )
     if len(actions) != len(observations):
         raise ValueError("A complete qao branch must have one observation per action.")
-    if len(filtered_beliefs) != len(actions) + 1:
-        raise ValueError("Filtered belief trace must contain b0 plus one belief per observation.")
+    if len(filtered_masses) != len(actions) + 1:
+        raise ValueError(
+            "Exact mass trace must contain b0 plus one mass per observation."
+        )
 
-    # Algorithm 2 line 10 starts at $$i=|qao|$$ with $$f_i(s)=1$$.
-    # 论文第 10 行从末端开始：最后一步之后没有未来观测，所以 $$f_k(s)=1$$。
-    messages: list[dict[StateKey, float]] = [{} for _ in filtered_beliefs]
-    messages[-1] = {state: 1.0 for state in filtered_beliefs[-1]}
-
-    # Algorithm 2 line 10: for $$i = |qao|-1$$ downto $$0$$.
-    # 论文第 10 行：从后往前递推未来 action-observation 对当前 state 的 likelihood。
+    exact_messages: list[dict[StateKey, Fraction]] = [{} for _ in filtered_masses]
+    exact_messages[-1] = {state: Fraction(1) for state in filtered_masses[-1]}
     for index in range(len(actions) - 1, -1, -1):
-        action_i = action_assignments[index]
-        observation_next = observations[index]
-        next_message = messages[index + 1]
-        if hasattr(exact_kernel, "backward_message"):
-            messages[index] = dict(
-                exact_kernel.backward_message(
-                    filtered_beliefs[index],
-                    next_message,
-                    action_i,
-                    observation_next,
-                )
+        exact_messages[index] = dict(
+            exact_kernel.backward_fraction_message(
+                filtered_masses[index],
+                exact_messages[index + 1],
+                action_assignments[index],
+                observations[index],
             )
-        else:
-            # Compatibility path for small test kernels. / 小型测试 kernel 的兼容路径。
-            message_i: dict[StateKey, float] = {}
-            for state_i in filtered_beliefs[index]:
-                probability_of_future = 0.0
-                for state_next, transition_prob in exact_kernel.transition_distribution(
-                    exact_kernel.state_from_key(state_i),
-                    action_i,
-                ).items():
-                    observation_prob = exact_kernel.observation_probability(
-                        observation_next,
-                        state_next,
-                        action_i,
-                    )
-                    probability_of_future += (
-                        next_message.get(state_next, 0.0)
-                        * observation_prob
-                        * transition_prob
-                    )
-                message_i[state_i] = probability_of_future
-            messages[index] = message_i
+        )
 
-    smoothed: list[Mapping[StateKey, float]] = []
-    for index, filtered_belief_i in enumerate(filtered_beliefs):
-        # Paper Bayes rule after line 10:
-        # $$\bar b_i(s) = \alpha \tilde b_i(s) f_i(s)$$.
-        # 第 10 行后由 Bayes 公式得到 smoothed belief：
-        # 当前 filtered belief 乘以后向消息，再归一化。
+    exact_smoothed: list[Mapping[StateKey, Fraction]] = []
+    for index, filtered_mass in enumerate(filtered_masses):
         unnormalized = {
-            state: probability * messages[index].get(state, 0.0)
-            for state, probability in filtered_belief_i.items()
+            state: Fraction(probability) * exact_messages[index].get(state, Fraction(0))
+            for state, probability in filtered_mass.items()
+            if Fraction(probability) > 0
         }
-        smoothed_i = _normalize_state_distribution(unnormalized)
-        if not smoothed_i:
+        total = sum(unnormalized.values(), start=Fraction(0))
+        if total <= 0:
             raise ValueError(
-                "Algorithm 2 smoothing produced zero probability for a qao branch; "
-                "check observation likelihood support."
+                "Algorithm 2 exact smoothing produced zero probability for a qao branch."
             )
-        smoothed.append(smoothed_i)
+        exact_smoothed.append(
+            {
+                state: probability / total
+                for state, probability in unnormalized.items()
+                if probability > 0
+            }
+        )
 
-    return Algorithm2Smoothing(
-        filtered_beliefs=tuple(dict(belief) for belief in filtered_beliefs),
-        backward_messages=tuple(messages),
-        smoothed_beliefs=tuple(smoothed),
-    )
+    return tuple(exact_smoothed)
 
 
 def _algorithm2_duration_from_smoothed_beliefs(
     *,
-    exact_kernel: ExactRDDLKernel,
     actions: Sequence[str],
-    smoothed_beliefs: Sequence[Mapping[StateKey, float]],
     duration_evaluator: HistoryDurationEvaluator,
-) -> tuple[DurationProgress, tuple[Belief, ...]]:
+    exact_smoothed_beliefs: Sequence[Mapping[StateKey, Fraction]],
+) -> DurationProgress:
     r"""Compute fixed/stochastic duration formulas from smoothed beliefs.
 
     The paper's duration formulas use $$\bar b^i_{qao}(s)$$ for each
-    action-start state. DARP sidecars define durations over grounded fluent
-    names, so each exact state distribution is converted into fluent marginals
-    before calling `DurationModel.estimate`.
+    *complete* action-start state.  Sidecar fluent names are state selectors,
+    not independent probability atoms; converting the joint distribution into
+    fluent marginals would lose probability mass for all-false states and
+    double-count states with multiple true fluents.
 
-    / 用 smoothed belief 计算 fixed/expected/Gaussian duration；sidecar 以
-    grounded fluent 为键，因此先把 exact state belief 转为 fluent marginals。
+    / 用完整状态的 smoothed belief 计算 expected/Gaussian duration；
+    sidecar 中的 fluent 名是状态选择器，不是独立概率原子。
     """
 
     progress = DurationProgress()
-    duration_beliefs: list[Belief] = []
     for index, action_label in enumerate(actions):
-        # Duration contribution for action $$a_i$$: 
+        # Duration contribution for action $$a_i$$:
 
         # fixed: $$\sum_s \bar b_i(s) c_{a_i}$$
 
@@ -436,44 +383,154 @@ def _algorithm2_duration_from_smoothed_beliefs(
 
         # 动作 $$a_i$$ 的持续时间贡献由 smoothed action-start belief $$\bar b_i$$ 加权得到
 
-        belief_i = exact_kernel.fluent_belief(smoothed_beliefs[index])
-        estimate_i = duration_evaluator.model.estimate(belief_i, action_label)
+        estimate_i = duration_evaluator.model.estimate(
+            exact_smoothed_beliefs[index],
+            action_label,
+        )
         progress = progress.add(estimate_i)
-        duration_beliefs.append(belief_i)
-    return progress, tuple(duration_beliefs)
+    return progress
+
+
+def _advance_augmented_duration_belief(
+    *,
+    exact_kernel: ExactRDDLKernel,
+    model: ChanceConstrainedDurationModel,
+    progress: DurationProgress,
+    current_state_mass: Mapping[StateKey, Fraction],
+    action_label: str,
+    action_assignment: Mapping[str, Any],
+    observation: ObservationKey,
+) -> DurationProgress:
+    r"""Apply the paper's deterministic chance-duration state augmentation.
+
+    For each source augmented state :math:`(s,g)`, this computes
+
+    .. math::
+
+       T'((s,g),a,(s',g')) = T(s,a,s')
+       \quad\text{when }g'=g+D(s,a),
+
+    multiplies by :math:`O(o\mid s',a)`, and normalizes on the observed
+    history.  The returned distribution is therefore
+    :math:`Pr(S_{qao},G_{qao}\mid qao)` and directly supports
+    :math:`\tau(qao)=Pr(G_{qao}<h\mid qao)`.
+    """
+    if progress.augmented_belief is None:
+        state_weights = {
+            state: Fraction(probability)
+            for state, probability in current_state_mass.items()
+            if Fraction(probability) > 0
+        }
+        total = sum(state_weights.values(), start=Fraction(0))
+        if total <= 0:
+            raise ValueError(
+                "Chance-duration expansion requires a non-empty current belief."
+            )
+        source = {
+            (state, Fraction(0)): probability / total
+            for state, probability in state_weights.items()
+        }
+    else:
+        source = {
+            (state, elapsed): Fraction(probability)
+            for (state, elapsed), probability in progress.augmented_belief.items()
+            if Fraction(probability) > 0
+        }
+
+    unnormalized: dict[tuple[StateKey, Fraction], Fraction] = {}
+    for (state, elapsed), source_probability in source.items():
+        duration = Fraction.from_float(model.duration_for_state(state, action_label))
+        next_elapsed = elapsed + duration
+        state_mapping = exact_kernel.state_from_key(state)
+        transition_distribution = exact_kernel.transition_fraction_distribution(
+            state_mapping, action_assignment
+        )
+        transition_weights = {
+            next_state: (
+                Fraction(probability)
+                if isinstance(probability, Fraction)
+                else Fraction.from_float(float(probability))
+            )
+            for next_state, probability in transition_distribution.items()
+            if (
+                Fraction(probability)
+                if isinstance(probability, Fraction)
+                else Fraction.from_float(float(probability))
+            )
+            > 0
+        }
+        transition_total = sum(transition_weights.values(), start=Fraction(0))
+        if transition_total <= 0:
+            continue
+        for next_state, transition_weight in transition_weights.items():
+            observation_probability = exact_kernel.observation_fraction_probability(
+                observation, next_state, action_assignment
+            )
+            probability = (
+                source_probability
+                * transition_weight
+                / transition_total
+                * Fraction(observation_probability)
+            )
+            if probability > 0:
+                key = (next_state, next_elapsed)
+                unnormalized[key] = unnormalized.get(key, Fraction(0)) + probability
+
+    normalizer = sum(unnormalized.values(), start=Fraction(0))
+    if normalizer <= 0:
+        raise ValueError(
+            "Chance-duration augmented-state update has zero probability for "
+            f"observation {observation!r}."
+        )
+    augmented_belief = {
+        state_duration: probability / normalizer
+        for state_duration, probability in unnormalized.items()
+    }
+    mean_exact = sum(
+        (
+            elapsed * probability
+            for (_, elapsed), probability in augmented_belief.items()
+        ),
+        start=Fraction(0),
+    )
+    variance_exact = sum(
+        (
+            probability * (elapsed - mean_exact) ** 2
+            for (_, elapsed), probability in augmented_belief.items()
+        ),
+        start=Fraction(0),
+    )
+    return DurationProgress(
+        mean=mean_exact,
+        variance=variance_exact,
+        augmented_belief=augmented_belief,
+    )
 
 
 def _child_frontier(
     *,
-    item: FrontierItem,
     observation_node: ANDORNode,
     interface: ANDORSearchInterface,
-    rho: float,
-    safe_rho: float,
     should_expand: bool,
-    belief: Mapping[Any, float] | None,
-    safe_belief: Mapping[Any, float] | None,
-    duration_beliefs: tuple[Mapping[Any, float], ...],
-    belief_trace: tuple[Mapping[StateKey, float], ...],
+    belief: Mapping[Any, float],
+    action_belief: Mapping[Any, Any],
+    ordinary_mass: Mapping[StateKey, Fraction],
+    constraint_mass: Mapping[StateKey, Fraction],
+    ordinary_mass_trace: tuple[Mapping[StateKey, Fraction], ...],
     observation_keys: tuple[ObservationKey, ...],
     duration_progress: DurationProgress,
 ) -> tuple[FrontierItem, ...]:
     """Create action children under one observation node. / 在 observation 节点下创建 action 子节点。"""
     if not should_expand:
         return ()
-    action_nodes = interface.action_nodes(observation_node)
-    for child in action_nodes:
-        observation_node.add_child(child)
+    action_nodes = interface.action_nodes(observation_node, belief=action_belief)
     return tuple(
         FrontierItem(
             node=child,
-            rho=rho,
-            safe_rho=safe_rho,
-            root_action_label=item.root_label,
             belief=belief,
-            safe_belief=safe_belief,
-            duration_beliefs=duration_beliefs,
-            belief_trace=belief_trace,
+            ordinary_mass=ordinary_mass,
+            constraint_mass=constraint_mass,
+            ordinary_mass_trace=ordinary_mass_trace,
             observation_keys=observation_keys,
             duration_progress=duration_progress,
         )
@@ -481,12 +538,21 @@ def _child_frontier(
     )
 
 
-def _action_assignment(metadata: Mapping[str, object]) -> Mapping[str, Any]:
-    """Return the pyRDDLGym action assignment stored on an action node. / 返回 action 节点上保存的 pyRDDLGym action 赋值。"""
-    assignment = metadata.get("assignment")
-    if not isinstance(assignment, Mapping):
-        raise ValueError("AND-OR action node metadata must contain an action assignment.")
-    return assignment
+def _normalized_fraction_belief(
+    mass: Mapping[StateKey, Fraction],
+) -> dict[StateKey, Fraction]:
+    """Normalize authoritative mass without losing subnormal support."""
+    positive = {
+        state: Fraction(probability)
+        for state, probability in mass.items()
+        if Fraction(probability) > 0
+    }
+    total = sum(positive.values(), start=Fraction(0))
+    return (
+        {state: probability / total for state, probability in positive.items()}
+        if total > 0
+        else {}
+    )
 
 
 def _action_assignments_for_history(
@@ -501,18 +567,3 @@ def _action_assignments_for_history(
             raise ValueError(f"History references unknown action label: {label}")
         assignments.append(by_label[label])
     return tuple(assignments)
-
-
-def _normalize_state_distribution(
-    distribution: Mapping[StateKey, float],
-) -> dict[StateKey, float]:
-    """Normalize a state distribution. / 归一化 state 分布。"""
-    cleaned = {
-        state: float(probability)
-        for state, probability in distribution.items()
-        if abs(float(probability)) > 1e-15
-    }
-    total = sum(cleaned.values())
-    if total <= 0.0:
-        return {}
-    return {state: probability / total for state, probability in cleaned.items()}

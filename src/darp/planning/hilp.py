@@ -1,11 +1,9 @@
 """HILP-style partial frontier search for the paper algorithm."""
 
-# TODO: Reuse a persistent Gurobi model across refinements. Incumbent values
-# are already transferred as MIP starts, but variables/rows are still rebuilt.
-
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
+from fractions import Fraction
 from math import isfinite
 from time import perf_counter
 from typing import Literal, Mapping
@@ -16,29 +14,19 @@ from darp.ilp.gurobi import GurobiILPSolver
 from darp.ilp.model import ILPSolveResult
 from darp.model.and_or_tree import ANDORSearchInterface
 from darp.model.duration import HistoryDurationEvaluator
+from darp.planning.decision import ActionDecision
 from darp.planning.expand import ExpandedAction, expand_frontier_item
 from darp.planning.ilp_tree import (
     Algorithm1ExpansionRecord,
     PolicyTreeILP,
     _action_var_id,
     build_partial_tree_ilp,
+    validate_constraint_budget,
 )
 from darp.planning.preprocess import FrontierItem, initialize_root_frontier
-from darp.planning.rollout import ActionDecision
+from darp.planning.policy import extract_conditional_policy
 
 HILPHeuristicMode = Literal["one-step-greedy", "reachable-bellman"]
-
-
-@dataclass(frozen=True)
-class HILPSearchStats:
-    """Summarize one HILP-style partial-tree search. / 汇总一次 HILP 风格 partial-tree 搜索。"""
-
-    iterations: int
-    expanded_count: int
-    frontier_count: int
-    selected_frontier: tuple[str, ...]
-    partial_variable_count: int = 0
-
 
 @dataclass
 class HILPPlanner:
@@ -47,13 +35,9 @@ class HILPPlanner:
     heuristic_lookahead_depth: int = 4
     expansion_rounds: int | None = None
     frontier_width: int = 1
-    heuristic_mode: HILPHeuristicMode = "one-step-greedy"
+    heuristic_mode: HILPHeuristicMode = "reachable-bellman"
     risk_budget: float | None = None
     solver_time_limit_ms: float | None = 60_000.0
-    name: str = "hilp-partial-tree"
-    last_stats: HILPSearchStats | None = field(default=None, init=False)
-    last_ilp_result: ILPSolveResult | None = field(default=None, init=False)
-    last_partial_tree: PolicyTreeILP | None = field(default=None, init=False)
 
     def choose_action(
         self,
@@ -61,7 +45,6 @@ class HILPPlanner:
         interface: ANDORSearchInterface,
         duration_evaluator: HistoryDurationEvaluator,
         *,
-        remaining_depth: int,
         root_belief: Mapping[StateKey, float] | None = None,
     ) -> ActionDecision:
         r"""Choose an action with HILP-style partial-tree expansion.
@@ -96,13 +79,7 @@ class HILPPlanner:
             raise ValueError("expansion_rounds must be non-negative when provided.")
         if self.frontier_width < 1:
             raise ValueError("frontier_width must be at least 1.")
-        if remaining_depth < 1:
-            raise ValueError("remaining_depth must be at least 1.")
-        if self.risk_budget is not None and (
-            not isfinite(float(self.risk_budget))
-            or not 0.0 <= float(self.risk_budget) <= 1.0
-        ):
-            raise ValueError("risk_budget must be a finite probability in [0, 1].")
+        validate_constraint_budget(interface, self.risk_budget)
         if self.solver_time_limit_ms is not None and (
             not isfinite(float(self.solver_time_limit_ms))
             or float(self.solver_time_limit_ms) <= 0.0
@@ -111,12 +88,10 @@ class HILPPlanner:
         if self.heuristic_mode not in ("one-step-greedy", "reachable-bellman"):
             raise ValueError(f"Unsupported HILP heuristic mode: {self.heuristic_mode}")
 
-        # HILP tree expansion is bounded by the RDDL remaining horizon and the
-        # duration stopping condition.  `heuristic_lookahead_depth` is only for
-        # frontier scoring, not for truncating the partial policy tree.
-        # HILP 树展开由 RDDL 剩余 horizon 和 duration stopping condition 限制；
-        # `heuristic_lookahead_depth` 只用于 frontier 估值，不截断 partial tree。
-        expansion_depth_limit = max(1, remaining_depth)
+        # This optional limit is proved from the duration model itself; it is
+        # an optimization of the paper's tau test, not an integer horizon cap.
+        duration_depth_bound = duration_evaluator.action_depth_upper_bound()
+        expansion_depth_limit = duration_depth_bound
         solver_deadline = (
             started_at + float(self.solver_time_limit_ms) / 1000.0
             if self.solver_time_limit_ms is not None
@@ -126,14 +101,13 @@ class HILPPlanner:
         # Algorithm 3: $$F$$ starts from all root action histories. / 初始 frontier。
         frontier_f: dict[str, FrontierItem] = {
             _action_var_id(item): item
-            for item in root_frontier.frontier
+            for item in root_frontier
         }
         # Algorithm 3: $$E$$ stores histories that have already been expanded.
         # Algorithm 3：$$E$$ 保存已经调用过 Expand 的 action histories。
         expanded_e: dict[str, Algorithm1ExpansionRecord] = {}
         frontier_expansions: dict[str, ExpandedAction] = {}
         heuristic_cache: dict[tuple[object, ...], object] = {}
-        selected_frontier_labels: list[str] = []
         partial_tree: PolicyTreeILP | None = None
         partial_result: ILPSolveResult | None = None
         expansion_rounds = 0
@@ -141,12 +115,7 @@ class HILPPlanner:
         solver_limit_hit = False
         timing_totals = {
             "tree_ilp_build_ms": 0.0,
-            "frontier_expand_ms": 0.0,
-            "heuristic_eval_ms": 0.0,
-            "ilp_encode_ms": 0.0,
             "gurobi_solve_ms": 0.0,
-            "gurobi_call_ms": 0.0,
-            "mip_start_variables": 0.0,
         }
 
         while frontier_f and (
@@ -186,7 +155,6 @@ class HILPPlanner:
             for var_id, item in selected:
                 expanded_item = frontier_expansions[var_id]
                 del frontier_f[var_id]
-                selected_frontier_labels.append(item.node.history.label())
                 expanded_e[var_id] = Algorithm1ExpansionRecord(
                     var_id=var_id,
                     item=item,
@@ -215,15 +183,6 @@ class HILPPlanner:
                 timing_totals=timing_totals,
             )
             solver_limit_hit = solver_limit_hit or partial_result.status == "time_limit"
-        self.last_partial_tree = partial_tree
-        self.last_ilp_result = partial_result
-        self.last_stats = HILPSearchStats(
-            iterations=expansion_rounds,
-            expanded_count=len(expanded_e),
-            frontier_count=len(frontier_f),
-            selected_frontier=tuple(selected_frontier_labels),
-            partial_variable_count=len(partial_tree.spec.variables),
-        )
         selected_root = _selected_root_variable(partial_result, partial_tree)
         if selected_root is None:
             if partial_result.status == "time_limit":
@@ -232,26 +191,7 @@ class HILPPlanner:
                 "Gurobi HILP partial-tree ILP did not select a root action. "
                 f"status={partial_result.status}"
             )
-        postprocess_started_at = perf_counter()
         selected_item = partial_tree.variable_items[selected_root]
-        postprocess_ms = (perf_counter() - postprocess_started_at) * 1000.0
-        elapsed_ms = (perf_counter() - started_at) * 1000.0
-        decision_ms = (
-            timing_totals["tree_ilp_build_ms"]
-            + timing_totals["gurobi_solve_ms"]
-            + postprocess_ms
-        )
-        cache_info = (
-            interface.exact_kernel.cache_info()
-            if interface.exact_kernel is not None and hasattr(interface.exact_kernel, "cache_info")
-            else {}
-        )
-        uses_terminal_heuristic = (
-            self.heuristic_mode == "reachable-bellman"
-            and interface.exact_kernel is not None
-            and bool(getattr(interface.exact_kernel, "terminal_utility_enabled", True))
-            and callable(getattr(interface.exact_kernel, "terminal_utility", None))
-        )
         selected_expandable = self._selected_expandable_frontier(
             partial_tree,
             partial_result,
@@ -264,63 +204,81 @@ class HILPPlanner:
             partial_tree,
             frontier_f,
             frontier_expansions,
-            expansion_depth_limit=expansion_depth_limit,
         )
-        required_bound_depth = max(
-            (
-                expansion_depth_limit - item.node.history.depth
-                for _, item in globally_expandable
-            ),
-            default=0,
+        required_bound_depth = (
+            None
+            if duration_depth_bound is None and globally_expandable
+            else max(
+                (
+                    int(duration_depth_bound) - item.node.history.depth
+                    for _, item in globally_expandable
+                ),
+                default=0,
+            )
         )
         certifying_utility_bound = (
             not globally_expandable
             or (
-                self.heuristic_mode == "reachable-bellman"
+                required_bound_depth is not None
+                and self.heuristic_mode == "reachable-bellman"
                 and self.heuristic_lookahead_depth >= required_bound_depth
             )
         )
+        policy = extract_conditional_policy(partial_tree, partial_result)
         search_complete = (
-            partial_result.is_optimal
+            partial_result.numerically_optimal
+            and partial_tree.objective_coefficients_exact
+            and partial_tree.constraint_coefficients_exact
             and not solver_limit_hit
             and refinement_exhausted
             and certifying_utility_bound
-            and not uses_terminal_heuristic
+            and policy.duration_complete
+            and policy.feasible is not False
         )
+        # Executability and global search optimality are separate certificates.
+        # A duration-complete incumbent has an exact achieved utility even while
+        # unselected alternatives remain unrefined; ``decision.complete`` stays
+        # false until the HILP search certificate also closes.
+        achieved_utility = policy.achieved_utility
         return ActionDecision(
-            action=dict(selected_item.node.metadata["assignment"]),
+            action=dict(selected_item.node.assignment or {}),
             label=selected_item.action_label,
-            value=float(partial_result.objective_value or 0.0),
-            action_values=_root_objective_values(partial_tree),
-            remaining_depth=expansion_depth_limit,
-            elapsed_ms=elapsed_ms,
+            value=float(
+                achieved_utility
+                if achieved_utility is not None
+                else (partial_result.objective_value or 0.0)
+            ),
             complete=search_complete,
+            value_kind=(
+                "achieved_utility"
+                if achieved_utility is not None
+                else "heuristic_objective"
+            ),
+            policy=policy,
             timing={
-                "planner_elapsed_ms": elapsed_ms,
-                "decision_ms": decision_ms,
                 "tree_ilp_build_ms": timing_totals["tree_ilp_build_ms"],
-                "frontier_expand_ms": timing_totals["frontier_expand_ms"],
-                "heuristic_eval_ms": timing_totals["heuristic_eval_ms"],
-                "ilp_encode_ms": timing_totals["ilp_encode_ms"],
                 "gurobi_solve_ms": timing_totals["gurobi_solve_ms"],
-                "gurobi_call_ms": timing_totals["gurobi_call_ms"],
-                "mip_start_variables": timing_totals["mip_start_variables"],
-                "postprocess_ms": postprocess_ms,
                 "ilp_variables": float(len(partial_tree.spec.variables)),
                 "ilp_constraints": float(len(partial_tree.spec.constraints)),
                 "expanded_nodes": float(len(expanded_e)),
                 "frontier_nodes": float(len(frontier_f)),
                 "expansion_rounds": float(expansion_rounds),
-                "search_complete": 1.0 if search_complete else 0.0,
                 "frontier_refinement_exhausted": 1.0 if refinement_exhausted else 0.0,
                 "global_expandable_frontier": float(len(globally_expandable)),
                 "certifying_utility_bound": 1.0 if certifying_utility_bound else 0.0,
+                "solver_numerically_optimal": (
+                    1.0 if partial_result.numerically_optimal else 0.0
+                ),
+                "numerical_zero_gap": (
+                    1.0 if partial_result.has_numerical_zero_gap else 0.0
+                ),
+                "objective_coefficients_exact": (
+                    1.0 if partial_tree.objective_coefficients_exact else 0.0
+                ),
+                "constraint_coefficients_exact": (
+                    1.0 if partial_tree.constraint_coefficients_exact else 0.0
+                ),
                 "solver_time_limit_hit": 1.0 if solver_limit_hit else 0.0,
-                "used_terminal_heuristic": 1.0 if uses_terminal_heuristic else 0.0,
-                "heuristic_lookahead_depth": float(self.heuristic_lookahead_depth),
-                "hilp_heuristic_one_step_greedy": 1.0 if self.heuristic_mode == "one-step-greedy" else 0.0,
-                "hilp_heuristic_reachable_bellman": 1.0 if self.heuristic_mode == "reachable-bellman" else 0.0,
-                **{f"exact_{name}": float(value) for name, value in cache_info.items()},
             },
         )
 
@@ -334,7 +292,7 @@ class HILPPlanner:
         frontier: tuple[FrontierItem, ...],
         frontier_expansions: dict[str, ExpandedAction],
         heuristic_cache: dict[tuple[object, ...], object],
-        expansion_depth_limit: int,
+        expansion_depth_limit: int | None,
         root_belief: Mapping[StateKey, float] | None,
         warm_start: Mapping[str, float] | None,
         solver_deadline: float | None,
@@ -353,10 +311,13 @@ class HILPPlanner:
 
         build_started_at = perf_counter()
         frontier_records_list: list[Algorithm1ExpansionRecord] = []
-        frontier_expand_ms = 0.0
-        heuristic_eval_ms = 0.0
         for item in frontier:
-            record, record_timing = _frontier_leaf_record(
+            remaining_action_depth = (
+                None
+                if expansion_depth_limit is None
+                else max(0, expansion_depth_limit - item.node.history.depth)
+            )
+            record = _frontier_leaf_record(
                 item,
                 interface,
                 duration_evaluator,
@@ -365,15 +326,16 @@ class HILPPlanner:
                 heuristic_mode=self.heuristic_mode,
                 heuristic_lookahead_depth=min(
                     self.heuristic_lookahead_depth,
-                    max(0, expansion_depth_limit - item.node.history.depth),
+                    (
+                        self.heuristic_lookahead_depth
+                        if remaining_action_depth is None
+                        else remaining_action_depth
+                    ),
                 ),
-                risk_budget=self.risk_budget,
+                remaining_action_depth=remaining_action_depth,
             )
             frontier_records_list.append(record)
-            frontier_expand_ms += record_timing["frontier_expand_ms"]
-            heuristic_eval_ms += record_timing["heuristic_eval_ms"]
         frontier_records = tuple(frontier_records_list)
-        encode_started_at = perf_counter()
         partial_ilp = build_partial_tree_ilp(
             runtime=runtime,
             interface=interface,
@@ -382,7 +344,6 @@ class HILPPlanner:
             risk_budget=self.risk_budget,
             root_belief=root_belief,
         )
-        ilp_encode_ms = (perf_counter() - encode_started_at) * 1000.0
         build_ms = (perf_counter() - build_started_at) * 1000.0
         solve_started_at = perf_counter()
         remaining_solver_ms: float | None = None
@@ -400,17 +361,9 @@ class HILPPlanner:
             time_limit_ms=remaining_solver_ms,
             warm_start=shared_start,
         )
-        solver_call_ms = (perf_counter() - solve_started_at) * 1000.0
         if timing_totals is not None:
             timing_totals["tree_ilp_build_ms"] = timing_totals.get("tree_ilp_build_ms", 0.0) + build_ms
-            timing_totals["frontier_expand_ms"] = timing_totals.get("frontier_expand_ms", 0.0) + frontier_expand_ms
-            timing_totals["heuristic_eval_ms"] = timing_totals.get("heuristic_eval_ms", 0.0) + heuristic_eval_ms
-            timing_totals["ilp_encode_ms"] = timing_totals.get("ilp_encode_ms", 0.0) + ilp_encode_ms
             timing_totals["gurobi_solve_ms"] = timing_totals.get("gurobi_solve_ms", 0.0) + float(result.runtime_ms)
-            timing_totals["gurobi_call_ms"] = timing_totals.get("gurobi_call_ms", 0.0) + solver_call_ms
-            timing_totals["mip_start_variables"] = timing_totals.get("mip_start_variables", 0.0) + float(
-                len(shared_start or {})
-            )
         return partial_ilp, result
 
     def _selected_expandable_frontier(
@@ -420,7 +373,7 @@ class HILPPlanner:
         frontier: Mapping[str, FrontierItem],
         frontier_expansions: Mapping[str, ExpandedAction],
         *,
-        expansion_depth_limit: int,
+        expansion_depth_limit: int | None,
     ) -> tuple[tuple[str, FrontierItem], ...]:
         r"""Return only frontier leaves selected by the current p-ILP.
 
@@ -442,7 +395,10 @@ class HILPPlanner:
             if var_id not in frontier_ids or var_id not in incumbent_ids:
                 continue
             expanded = frontier_expansions[var_id]
-            if item.node.history.depth >= expansion_depth_limit:
+            if (
+                expansion_depth_limit is not None
+                and item.node.history.depth >= expansion_depth_limit
+            ):
                 continue
             if not expanded.child_frontier:
                 continue
@@ -470,22 +426,19 @@ class HILPPlanner:
         partial_tree: PolicyTreeILP,
         frontier: Mapping[str, FrontierItem],
         frontier_expansions: Mapping[str, ExpandedAction],
-        *,
-        expansion_depth_limit: int,
     ) -> tuple[tuple[str, FrontierItem], ...]:
         """Return every frontier with materializable descendants.
 
         This set is deliberately independent of the incumbent. It is used for
-        completeness certification: a non-admissible one-step score cannot
-        prove an unselected alternative subtree is inferior.
+        completeness certification and therefore also ignores an explicit
+        decision-step cap: a duration-feasible child beyond that cap remains
+        part of the paper's problem.
         """
-
         frontier_ids = set(partial_tree.frontier_variable_ids)
         return tuple(
             (var_id, item)
             for var_id, item in frontier.items()
             if var_id in frontier_ids
-            and item.node.history.depth < expansion_depth_limit
             and bool(frontier_expansions[var_id].child_frontier)
         )
 
@@ -499,16 +452,17 @@ def _frontier_leaf_record(
     *,
     heuristic_mode: HILPHeuristicMode,
     heuristic_lookahead_depth: int,
-    risk_budget: float | None,
-) -> tuple[Algorithm1ExpansionRecord, dict[str, float]]:
+    remaining_action_depth: int | None,
+) -> Algorithm1ExpansionRecord:
     r"""Return a frontier leaf record with the selected utility heuristic.
 
     Reference-code correspondence:
 
     - The author's ``heuristic_search`` stores one coefficient ``h`` on each
       frontier history and expands only frontier histories selected by p-ILP.
-    - ``one-step-greedy`` sets the frontier coefficient to the exact constant already
-      computed by Algorithm 2:
+    - ``one-step-greedy`` sets the frontier coefficient to the exact constant
+      already computed by Algorithm 2.  It is an approximate ordering score,
+      not in general an admissible bound on unfinished descendants:
 
       $$h_q^u := u_q = \rho(q)\sum_s b_q(s)U(s,a_q).$$
 
@@ -518,10 +472,9 @@ def _frontier_leaf_record(
 
       $$V_t(s)=\max_a\left[U(s,a)+\sum_{s'}T(s,a,s')V_{t-1}(s')\right].$$
 
-      It does not sample and does not expand observation branches.
-      If a kernel exposes ``terminal_utility(belief, risk_budget)``, that
-      admissible domain tail bound initializes $$V_0$$ (the paper grid uses
-      negative Manhattan distance in reward-maximization form).
+      It does not sample or expand the observation tree.  Exact one-step utility
+      is retained on every duration/action-depth terminal branch; Bellman future
+      value is added only to observation branches Algorithm 2 says may continue.
     - The risk coefficient remains the one-step safe-belief $$r_q$$, matching
       the reference code's unfinished risk-heuristic path.
 
@@ -531,81 +484,92 @@ def _frontier_leaf_record(
     safe-belief $$r_q$$。
     """
     var_id = _action_var_id(item)
-    expand_started_at = perf_counter()
-    expanded = _cached_expand(item, interface, duration_evaluator, frontier_expansions)
-    frontier_expand_ms = (perf_counter() - expand_started_at) * 1000.0
-    heuristic_eval_ms = 0.0
+    exact_expanded = _cached_expand(item, interface, duration_evaluator, frontier_expansions)
+    expanded = exact_expanded
+    can_continue = (
+        remaining_action_depth is None or remaining_action_depth > 0
+    ) and bool(expanded.child_frontier)
     if heuristic_mode == "reachable-bellman":
-        heuristic_started_at = perf_counter()
-        heuristic_utility = _reachable_bellman_frontier_utility(
-            item,
-            interface,
-            heuristic_cache,
-            heuristic_lookahead_depth=heuristic_lookahead_depth,
-            risk_budget=risk_budget,
-        )
-        expanded = replace(
-            expanded,
-            metrics=replace(
-                expanded.metrics,
-                utility=heuristic_utility,
-            ),
-        )
-        heuristic_eval_ms = (perf_counter() - heuristic_started_at) * 1000.0
+        if can_continue:
+            (
+                heuristic_utility,
+                heuristic_utility_exact,
+                heuristic_objective_exact,
+            ) = _reachable_bellman_frontier_utility(
+                expanded,
+                interface,
+                heuristic_cache,
+                heuristic_lookahead_depth=heuristic_lookahead_depth,
+            )
+            expanded = replace(
+                expanded,
+                metrics=replace(
+                    expanded.metrics,
+                    utility=heuristic_utility,
+                    utility_exact=heuristic_utility_exact,
+                    objective_support_preserved=(
+                        expanded.metrics.objective_support_preserved
+                        and heuristic_objective_exact
+                    ),
+                ),
+            )
     elif heuristic_mode != "one-step-greedy":
         raise ValueError(f"Unsupported HILP heuristic mode: {heuristic_mode}")
-    return (
-        Algorithm1ExpansionRecord(
-            var_id=var_id,
-            item=item,
-            expanded=expanded,
-            continues=False,
-        ),
-        {
-            "frontier_expand_ms": frontier_expand_ms,
-            "heuristic_eval_ms": heuristic_eval_ms,
-        },
+    return Algorithm1ExpansionRecord(
+        var_id=var_id,
+        item=item,
+        expanded=expanded,
+        continues=False,
+        exact_expanded=exact_expanded,
     )
 
 
 def _reachable_bellman_frontier_utility(
-    item: FrontierItem,
+    expanded: ExpandedAction,
     interface: ANDORSearchInterface,
     heuristic_cache: dict[tuple[object, ...], object],
     *,
     heuristic_lookahead_depth: int,
-    risk_budget: float | None,
-) -> float:
+) -> tuple[float, Fraction | None, bool]:
     r"""Return $$h_q^u$$ from a reachable-state fully observable Bellman table.
 
-    The frontier action $$a_q$$ is already fixed, so only its successor support
-    seeds the future value table:
+    The frontier action $$a_q$$ is already fixed and its exact Algorithm-2
+    utility is stored in ``expanded.metrics.utility``.  For each observation
+    branch that passes the paper's duration stopping test, its posterior support
+    seeds a fully observable future-value table:
 
-    $$h_q^u=\rho(q)\sum_s b_q(s)
-      \left[U(s,a_q)+\sum_{s'}T(s,a_q,s')V_{d-1}(s')\right].$$
+    $$h_q^u=u_q+\sum_{o:\tau(qao)>\varsigma}\rho(qao)
+      \sum_{s'}b_{qao}(s')V_d(s').$$
 
-    / 用当前 action 的后继状态作为 Bellman 表种子；不枚举全局状态空间。
+    Branches stopped by duration contribute exactly ``u_q`` and no invented
+    future reward. / 只对通过 duration stopping condition 的 observation
+    branch 加 Bellman 尾值；已终止 branch 不会获得虚构的未来 reward。
     """
     exact_kernel = interface.exact_kernel
     if exact_kernel is None:
         raise ValueError("Reachable Bellman HILP heuristic requires interface.exact_kernel.")
-    belief = item.belief
-    if not belief:
-        return 0.0
-    action = _action_assignment(item)
     future_horizon = max(0, heuristic_lookahead_depth)
+    continuing_masses: list[Mapping[StateKey, Fraction]] = []
     successor_states: set[StateKey] = set()
-    for state, probability in belief.items():
-        if float(probability) <= 0.0:
+    for branch in expanded.observation_frontiers:
+        if not branch.should_expand or not branch.child_frontier:
             continue
+        # Every action child of one observation node shares the same posterior.
+        child = branch.child_frontier[0]
+        mass = child.ordinary_mass
+        if not mass:
+            continue
+        continuing_masses.append(mass)
         successor_states.update(
-            _transition_distribution(
-                exact_kernel,
-                state,
-                item.action_label,
-                action,
-                heuristic_cache,
-            )
+            state
+            for state, probability in mass.items()
+            if Fraction(probability) > 0
+        )
+    if not continuing_masses:
+        return (
+            float(expanded.metrics.utility),
+            expanded.metrics.utility_exact,
+            expanded.metrics.objective_support_preserved,
         )
     future_values = _reachable_bellman_value_table(
         exact_kernel,
@@ -613,22 +577,23 @@ def _reachable_bellman_frontier_utility(
         seed_states=tuple(successor_states),
         horizon=future_horizon,
         heuristic_cache=heuristic_cache,
-        risk_budget=risk_budget,
     )
-    expected_q = sum(
-        float(probability)
-        * _fully_observable_action_value(
-            exact_kernel,
-            state,
-            item.action_label,
-            action,
-            future_values,
-            heuristic_cache,
-        )
-        for state, probability in belief.items()
-        if float(probability) > 0.0
+    expected_future = sum(
+        (
+            Fraction(probability) * Fraction(future_values.get(state, Fraction(0)))
+            for mass in continuing_masses
+            for state, probability in mass.items()
+            if Fraction(probability) > 0
+        ),
+        start=Fraction(0),
     )
-    return float(item.rho) * expected_q
+    exact = (
+        expanded.metrics.utility_exact
+        if expanded.metrics.utility_exact is not None
+        else Fraction.from_float(float(expanded.metrics.utility))
+    ) + expected_future
+    value = float(exact)
+    return value, exact, Fraction.from_float(value) == exact
 
 
 def _reachable_bellman_value_table(
@@ -638,8 +603,7 @@ def _reachable_bellman_value_table(
     seed_states: tuple[StateKey, ...],
     horizon: int,
     heuristic_cache: dict[tuple[object, ...], object],
-    risk_budget: float | None,
-) -> Mapping[StateKey, float]:
+) -> Mapping[StateKey, Fraction]:
     r"""Return $$V_H$$ over states reachable from ``seed_states``.
 
     Complexity is $$O(H|S_{reach}||A|d_T)$$ for sparse transitions, not full
@@ -647,7 +611,7 @@ def _reachable_bellman_value_table(
     """
     if not seed_states:
         return {}
-    cache_key = ("bellman_values", _state_set_key(seed_states), horizon, risk_budget)
+    cache_key = ("bellman_values", _state_set_key(seed_states), horizon)
     if cache_key in heuristic_cache:
         return heuristic_cache[cache_key]  # type: ignore[return-value]
     state_space = _reachable_state_space(
@@ -657,24 +621,15 @@ def _reachable_bellman_value_table(
         horizon=horizon,
         heuristic_cache=heuristic_cache,
     )
-    terminal_utility = (
-        getattr(exact_kernel, "terminal_utility", None)
-        if bool(getattr(exact_kernel, "terminal_utility_enabled", True))
-        else None
-    )
-    has_terminal_heuristic = callable(terminal_utility)
-    previous = {
-        state: (
-            float(terminal_utility({state: 1.0}, risk_budget))
-            if has_terminal_heuristic
-            else 0.0
-        )
-        for state in state_space
-    }
+    previous = {state: Fraction(0) for state in state_space}
     for depth in range(1, horizon + 1):
-        current: dict[StateKey, float] = {}
+        current: dict[StateKey, Fraction] = {}
         for state in state_space:
-            best_continuation = max(
+            if interface.belief_is_terminal({state: 1.0}):
+                current[state] = previous[state]
+                continue
+            choices = interface.action_choices({state: 1.0})
+            action_values = tuple(
                 _fully_observable_action_value(
                     exact_kernel,
                     state,
@@ -683,17 +638,18 @@ def _reachable_bellman_value_table(
                     previous,
                     heuristic_cache,
                 )
-                for choice in interface.actions
+                for choice in choices
             )
-            # Without a domain tail heuristic, the relaxed MDP may stop with
-            # zero value to preserve an optimistic upper bound for negative
-            # rewards. A supplied terminal heuristic already defines the
-            # continuation obligation and must not be bypassed by stopping.
-            current[state] = (
-                best_continuation
-                if has_terminal_heuristic
-                else max(0.0, best_continuation)
-            )
+            if not action_values:
+                # Terminal/dead-end states have no continuation.  Keeping the
+                # previous tail value is optimistic for the relaxed maximization
+                # problem; exact policy flow still excludes nonterminal dead ends.
+                current[state] = previous[state]
+                continue
+            best_continuation = max(action_values)
+            # The relaxed MDP may stop with zero value, preserving an
+            # optimistic upper bound when all reachable rewards are negative.
+            current[state] = max(Fraction(0), best_continuation)
         previous = current
     heuristic_cache[cache_key] = previous
     return previous
@@ -716,9 +672,11 @@ def _reachable_state_space(
     for _ in range(max(0, horizon)):
         next_frontier: set[StateKey] = set()
         for state in frontier:
-            for choice in interface.actions:
+            if interface.belief_is_terminal({state: 1.0}):
+                continue
+            for choice in interface.action_choices({state: 1.0}):
                 next_frontier.update(
-                    _transition_distribution(
+                    _transition_mass(
                         exact_kernel,
                         state,
                         choice.label,
@@ -741,12 +699,12 @@ def _fully_observable_action_value(
     state: StateKey,
     action_label: str,
     action: Mapping[str, object],
-    future_values: Mapping[StateKey, float],
+    future_values: Mapping[StateKey, Fraction],
     heuristic_cache: dict[tuple[object, ...], object],
-) -> float:
+) -> Fraction:
     r"""Return $$U(s,a)+\sum_{s'}T(s,a,s')V(s')$$. / 返回全可观测 action value。"""
     reward = _state_action_reward(exact_kernel, state, action_label, action, heuristic_cache)
-    transition = _transition_distribution(
+    transition = _transition_mass(
         exact_kernel,
         state,
         action_label,
@@ -754,8 +712,12 @@ def _fully_observable_action_value(
         heuristic_cache,
     )
     future = sum(
-        float(probability) * float(future_values.get(next_state, 0.0))
-        for next_state, probability in transition.items()
+        (
+            Fraction(probability)
+            * Fraction(future_values.get(next_state, Fraction(0)))
+            for next_state, probability in transition.items()
+        ),
+        start=Fraction(0),
     )
     return reward + future
 
@@ -766,48 +728,43 @@ def _state_action_reward(
     action_label: str,
     action: Mapping[str, object],
     heuristic_cache: dict[tuple[object, ...], object],
-) -> float:
+) -> Fraction:
     """Return $$U(s,a)$$ through the exact kernel. / 通过 exact kernel 返回 $$U(s,a)$$。"""
     cache_key = ("reward", state, action_label)
     if cache_key in heuristic_cache:
-        return float(heuristic_cache[cache_key])
-    if hasattr(exact_kernel, "expected_state_action_reward"):
-        reward = float(exact_kernel.expected_state_action_reward(state, action))  # type: ignore[attr-defined]
-    elif hasattr(exact_kernel, "expected_reward") and hasattr(exact_kernel, "_context"):
-        context = exact_kernel._context(exact_kernel.state_from_key(state), action)  # type: ignore[attr-defined]
-        reward = float(exact_kernel.expected_reward(context))  # type: ignore[attr-defined]
-    else:
-        expansion = exact_kernel.expand_action({state: 1.0}, action)  # type: ignore[attr-defined]
-        reward = float(expansion.utility)
+        return Fraction(heuristic_cache[cache_key])  # type: ignore[arg-type]
+    _, _, reward = exact_kernel.utility_coefficient_for_mass(  # type: ignore[attr-defined]
+        {state: Fraction(1)}, action
+    )
+    reward = Fraction(reward)
     heuristic_cache[cache_key] = reward
     return reward
 
 
-def _transition_distribution(
+def _transition_mass(
     exact_kernel: object,
     state: StateKey,
     action_label: str,
     action: Mapping[str, object],
     heuristic_cache: dict[tuple[object, ...], object],
-) -> Mapping[StateKey, float]:
+) -> Mapping[StateKey, Fraction]:
     r"""Return cached $$T(s,a,\cdot)$$. / 返回缓存的转移分布。"""
     cache_key = ("transition", state, action_label)
     if cache_key not in heuristic_cache:
-        heuristic_cache[cache_key] = dict(
-            exact_kernel.transition_distribution(  # type: ignore[attr-defined]
-                exact_kernel.state_from_key(state),  # type: ignore[attr-defined]
-                action,
-            )
+        expansion = exact_kernel.expand_ordinary_mass(  # type: ignore[attr-defined]
+            {state: Fraction(1)}, action
         )
+        weights = {
+            next_state: Fraction(probability)
+            for next_state, probability in expansion.post_action_mass.items()
+            if Fraction(probability) > 0
+        }
+        total = sum(weights.values(), start=Fraction(0))
+        heuristic_cache[cache_key] = {
+            next_state: probability / total
+            for next_state, probability in weights.items()
+        } if total > 0 else {}
     return heuristic_cache[cache_key]  # type: ignore[return-value]
-
-
-def _action_assignment(item: FrontierItem) -> Mapping[str, object]:
-    """Return the concrete action assignment for a frontier item. / 返回 frontier item 的具体动作赋值。"""
-    assignment = item.node.metadata.get("assignment")
-    if not isinstance(assignment, Mapping):
-        raise ValueError(f"Frontier item has no action assignment: {item.node.history.label()}")
-    return assignment
 
 
 def _state_set_key(states: tuple[StateKey, ...]) -> tuple[str, ...]:
@@ -830,8 +787,8 @@ def _cached_expand(
 
 def _is_noop_item(item: FrontierItem) -> bool:
     """Return whether a frontier item represents no enabled action. / 判断 frontier 是否为 noop。"""
-    assignment = item.node.metadata.get("assignment")
-    if isinstance(assignment, Mapping):
+    assignment = item.node.assignment
+    if assignment is not None:
         return not any(bool(value) for value in assignment.values())
     return item.action_label == "noop"
 
@@ -856,12 +813,3 @@ def _selected_root_variable(result: ILPSolveResult, tree: PolicyTreeILP) -> str 
         return None
     candidates.sort(key=lambda candidate: (-candidate[0], candidate[1], candidate[2]))
     return candidates[0][3]
-
-
-def _root_objective_values(tree: PolicyTreeILP) -> dict[str, float]:
-    """Return root-action objective coefficients for diagnostics. / 返回根 action 目标系数用于诊断。"""
-    values: dict[str, float] = {}
-    for var_id in tree.root_variable_ids:
-        item = tree.variable_items[var_id]
-        values[item.action_label] = float(tree.spec.objective.get(var_id, 0.0))
-    return values

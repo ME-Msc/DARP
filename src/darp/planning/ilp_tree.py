@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from fractions import Fraction
+from math import isfinite, nextafter
 from typing import Mapping, Sequence
 
 from darp.adapter.runtime import PyRDDLGymRuntime
-from darp.adapter.exact import StateKey
+from darp.adapter.exact import (
+    RiskConstraintType,
+    StateKey,
+    risk_constraint_type_for_kernel,
+)
 from darp.ilp.model import ILPLinearConstraint, ILPModelSpec, ILPVariable
 from darp.model.and_or_tree import ANDORSearchInterface
 from darp.model.duration import HistoryDurationEvaluator
@@ -25,9 +31,20 @@ class PolicyTreeILP:
 
     spec: ILPModelSpec
     variable_items: Mapping[str, FrontierItem]
-    variable_metrics: Mapping[str, ExpansionMetrics]
     root_variable_ids: tuple[str, ...]
     frontier_variable_ids: tuple[str, ...] = ()
+    constraint_type: RiskConstraintType = "chance"
+    # Keep the exact Algorithm-2 expansion behind every binary variable.  The
+    # p-ILP objective may replace a frontier utility with a heuristic, so this
+    # map deliberately stores ``exact_expanded`` rather than the possibly
+    # modified objective record.  Policy extraction needs the observation
+    # branches to prove that every duration-feasible continuation is present.
+    variable_expansions: Mapping[str, ExpandedAction] = field(default_factory=dict)
+    variable_continues: Mapping[str, bool] = field(default_factory=dict)
+    constraint_budget: float | None = None
+    initial_chance_risk_exact: Fraction = Fraction(0)
+    objective_coefficients_exact: bool = True
+    constraint_coefficients_exact: bool = True
 
 
 @dataclass(frozen=True)
@@ -38,10 +55,21 @@ class Algorithm1ExpansionRecord:
     item: FrontierItem
     expanded: ExpandedAction
     continues: bool
+    # HILP can score a frontier with a modified utility coefficient.  Retain
+    # the unmodified expansion for executable-policy validation and exact
+    # coefficient accounting.
+    exact_expanded: ExpandedAction | None = None
 
 
-class PolicyTreeExpansionLimitError(RuntimeError):
-    """Raised before full-tree preprocessing exceeds its explicit node cap."""
+@dataclass(frozen=True)
+class _ConstraintEncodingContext:
+    """Values shared by full- and partial-tree constraint encoders."""
+
+    constraint_type: RiskConstraintType
+    original_budget: float | None
+    effective_rhs: float | None
+    effective_rhs_exact: Fraction | None
+    initial_chance_risk_exact: Fraction
 
 
 def build_full_tree_ilp(
@@ -52,7 +80,6 @@ def build_full_tree_ilp(
     risk_budget: float | None = None,
     root_belief: Mapping[StateKey, float] | None = None,
     max_nodes: int | None = 100_000,
-    max_action_depth: int | None = None,
 ) -> PolicyTreeILP:
     r"""Encode the AND-OR policy tree as a binary full-ILP model.
 
@@ -92,11 +119,20 @@ def build_full_tree_ilp(
         duration_evaluator=duration_evaluator,
         root_belief=root_belief,
         max_nodes=max_nodes,
-        max_action_depth=max_action_depth,
+    )
+    constraint = _constraint_encoding_context(
+        runtime,
+        interface,
+        risk_budget,
+        root_belief,
     )
     return _encode_algorithm1_records_as_full_ilp(
         records,
-        risk_budget=_effective_safe_risk_budget(runtime, interface, risk_budget, root_belief),
+        risk_budget=constraint.effective_rhs,
+        constraint_type=constraint.constraint_type,
+        original_constraint_budget=constraint.original_budget,
+        initial_chance_risk_exact=constraint.initial_chance_risk_exact,
+        effective_constraint_rhs_exact=constraint.effective_rhs_exact,
         model_name="darp_full_tree",
     )
 
@@ -122,9 +158,19 @@ def build_partial_tree_ilp(
     """
 
     records = tuple(expanded_records) + tuple(frontier_records)
+    constraint = _constraint_encoding_context(
+        runtime,
+        interface,
+        risk_budget,
+        root_belief,
+    )
     return _encode_algorithm1_records_as_full_ilp(
         records,
-        risk_budget=_effective_safe_risk_budget(runtime, interface, risk_budget, root_belief),
+        risk_budget=constraint.effective_rhs,
+        constraint_type=constraint.constraint_type,
+        original_constraint_budget=constraint.original_budget,
+        initial_chance_risk_exact=constraint.initial_chance_risk_exact,
+        effective_constraint_rhs_exact=constraint.effective_rhs_exact,
         model_name="darp_hilp_partial_tree",
         frontier_variable_ids=tuple(record.var_id for record in frontier_records),
     )
@@ -137,7 +183,6 @@ def paper_preprocess(
     duration_evaluator: HistoryDurationEvaluator,
     root_belief: Mapping[StateKey, float] | None,
     max_nodes: int | None = 100_000,
-    max_action_depth: int | None = None,
 ) -> tuple[Algorithm1ExpansionRecord, ...]:
     r"""Run paper Algorithm 1 `Preprocess` and return expanded action records.
 
@@ -156,22 +201,19 @@ def paper_preprocess(
 
     / 运行论文 Algorithm 1：不断调用 `expand_frontier_item`，当
     $$\tau(qao)>\varsigma$$ 时继续加入下一层。`duration_evaluator`
-    实现论文的 durative stopping condition；可选 `max_action_depth`
-    另外保证不超过 RDDL/online API 尚余的决策步数。
+    实现论文的 durative stopping condition。
     """
 
     if max_nodes is not None and max_nodes < 1:
         raise ValueError("max_nodes must be positive when provided")
-    if max_action_depth is not None and max_action_depth < 1:
-        raise ValueError("max_action_depth must be positive when provided")
     root_frontier = initialize_root_frontier(runtime, interface, root_belief=root_belief)
-    queue = deque(root_frontier.frontier)
+    queue = deque(root_frontier)
     records: list[Algorithm1ExpansionRecord] = []
     seen: set[str] = set()
 
     while queue:
         if max_nodes is not None and len(records) >= max_nodes:
-            raise PolicyTreeExpansionLimitError(
+            raise RuntimeError(
                 "Full policy-tree preprocessing reached max_nodes="
                 f"{max_nodes}; use HILP for normal experiments or explicitly raise the oracle cap."
             )
@@ -184,10 +226,8 @@ def paper_preprocess(
         # Algorithm 1 lines 7-9: Algorithm 2 Expand creates child frontier entries
         # only for $$qao$$ branches satisfying $$tau(qao) > varsigma$$.
         # 论文第 7-9 行：Algorithm 2 Expand 只为 $$tau(qao)>varsigma$$ 的 $$qao$$ 分支
-        # 创建后继 frontier。API 的剩余 action depth 是额外的 RDDL 决策步上限。
-        continues = bool(expanded.child_frontier) and (
-            max_action_depth is None or item.node.history.depth < max_action_depth
-        )
+        # 创建后继 frontier。
+        continues = bool(expanded.child_frontier)
         records.append(
             Algorithm1ExpansionRecord(
                 var_id=var_id,
@@ -201,37 +241,103 @@ def paper_preprocess(
     return tuple(records)
 
 
-def _effective_safe_risk_budget(
+def _constraint_type(interface: ANDORSearchInterface) -> RiskConstraintType:
+    """Return the paper constraint selected by the exact kernel. / 返回 exact kernel 选定的论文约束。"""
+    if interface.exact_kernel is None:
+        return "chance"
+    return risk_constraint_type_for_kernel(interface.exact_kernel)
+
+
+def validate_constraint_budget(
+    interface: ANDORSearchInterface,
+    risk_budget: float | None,
+) -> None:
+    r"""Validate :math:`\Delta` for CC or :math:`C` for expected-cost C-POMDP.
+
+    A chance budget is a probability in ``[0, 1]``.  Lemma 3.2 permits a
+    general finite real expected-cost bound, so it must not inherit that
+    probability restriction.
+
+    / chance 预算是概率；expected-cost 预算是任意有限实数。
+    """
+    if risk_budget is None:
+        return
+    numeric = float(risk_budget)
+    constraint_type = _constraint_type(interface)
+    if not isfinite(numeric):
+        raise ValueError("risk_budget must be finite.")
+    if constraint_type == "chance" and not 0.0 <= numeric <= 1.0:
+        raise ValueError(
+            "risk_budget must be a finite probability in [0, 1] for a chance constraint."
+        )
+
+
+def _constraint_encoding_context(
     runtime: PyRDDLGymRuntime,
     interface: ANDORSearchInterface,
     risk_budget: float | None,
     root_belief: Mapping[StateKey, float] | None,
-) -> float | None:
-    r"""Return Lemma 3.3's residual risk budget.
+) -> _ConstraintEncodingContext:
+    r"""Resolve the shared Lemma 3.2/3.3 encoding constants once.
 
-    The paper rewrites the chance constraint as:
+    Lemma 3.2 keeps the cumulative expected-cost bound unchanged, ``R=C``.
+    Lemma 3.3 rewrites the chance constraint as:
 
     $$
        \sum_q r_q x_q \le R,\qquad R=\Delta-r(b_0).
     $$
 
-    / 返回 chance constraint 的剩余预算；初始 belief 的 unsafe 概率
-    $$r(b_0)$$ 先从用户给定的 $$\Delta$$ 中扣除。
+    / Lemma 3.2 直接使用 ``C``；Lemma 3.3 先从 $$\Delta$$
+    扣除初始 belief 的 unsafe 概率 $$r(b_0)$$。
     """
-    if risk_budget is None or interface.exact_kernel is None:
-        return risk_budget
-    root_belief = resolve_root_belief(runtime, interface, root_belief)
-    if root_belief is None:
-        return risk_budget
-    root_risk = getattr(interface.exact_kernel, "belief_state_risk_probability", None)
-    initial_risk = root_risk(root_belief) if root_risk is not None else 0.0
-    return float(risk_budget) - initial_risk
+    constraint_type = _constraint_type(interface)
+    validate_constraint_budget(interface, risk_budget)
+    initial_risk_exact = Fraction(0)
+    if constraint_type == "chance" and interface.exact_kernel is not None:
+        resolved_belief = resolve_root_belief(runtime, interface, root_belief)
+        if resolved_belief is not None:
+            exact_risk = getattr(
+                interface.exact_kernel,
+                "belief_state_risk_fraction",
+                None,
+            )
+            if exact_risk is None:
+                raise TypeError(
+                    "Chance constraints require exact "
+                    "belief_state_risk_fraction()."
+                )
+            initial_risk_exact = Fraction(exact_risk(resolved_belief))
+
+    effective_rhs_exact = (
+        None
+        if risk_budget is None
+        else Fraction.from_float(float(risk_budget))
+    )
+    if effective_rhs_exact is not None and constraint_type == "chance":
+        effective_rhs_exact -= initial_risk_exact
+    effective_rhs = risk_budget
+    if effective_rhs_exact is not None and constraint_type == "chance":
+        effective_rhs = float(effective_rhs_exact)
+        if Fraction.from_float(effective_rhs) > effective_rhs_exact:
+            effective_rhs = nextafter(effective_rhs, float("-inf"))
+
+    return _ConstraintEncodingContext(
+        constraint_type=constraint_type,
+        original_budget=risk_budget,
+        effective_rhs=effective_rhs,
+        effective_rhs_exact=effective_rhs_exact,
+        initial_chance_risk_exact=initial_risk_exact,
+    )
 
 
 def _encode_algorithm1_records_as_full_ilp(
     records: Sequence[Algorithm1ExpansionRecord],
     *,
     risk_budget: float | None,
+    constraint_type: RiskConstraintType,
+    original_constraint_budget: float | None,
+    initial_chance_risk_exact: Fraction = Fraction(0),
+    effective_constraint_rhs_exact: Fraction | None = None,
     model_name: str = "darp_full_tree",
     frontier_variable_ids: tuple[str, ...] = (),
 ) -> PolicyTreeILP:
@@ -265,6 +371,8 @@ def _encode_algorithm1_records_as_full_ilp(
     constraints: list[ILPLinearConstraint] = []
     variable_items: dict[str, FrontierItem] = {}
     variable_metrics: dict[str, ExpansionMetrics] = {}
+    variable_expansions: dict[str, ExpandedAction] = {}
+    variable_continues: dict[str, bool] = {}
     root_ids: list[str] = []
     declared_var_ids = {record.var_id for record in records}
 
@@ -275,18 +383,11 @@ def _encode_algorithm1_records_as_full_ilp(
         # Definition 3.1 variable: $$x_q=1$$ means this action-history is selected
         # in the deterministic policy tree. / Definition 3.1 变量：$$x_q=1$$
         # 表示 deterministic policy tree 选择该 action history。
-        variables[record.var_id] = ILPVariable(
-            var_id=record.var_id,
-            label=item.node.history.label(),
-            metadata={
-                "action": item.action_label,
-                "root_action": item.root_label,
-                "node_id": item.node.node_id,
-                "history": item.node.history.label(),
-            },
-        )
+        variables[record.var_id] = ILPVariable(var_id=record.var_id)
         variable_items[record.var_id] = item
         variable_metrics[record.var_id] = expanded.metrics
+        variable_expansions[record.var_id] = record.exact_expanded or expanded
+        variable_continues[record.var_id] = bool(record.continues)
         objective[record.var_id] = expanded.metrics.utility
         if item.node.history.depth == 1:
             root_ids.append(record.var_id)
@@ -314,15 +415,17 @@ def _encode_algorithm1_records_as_full_ilp(
         ),
     )
     if risk_budget is not None:
-        # Lemma 3.3 chance constraint: $$\sum_q r_q x_q \le R,\ R=\Delta-r(b_0)$$.
-        # Lemma 3.3 风险约束：由 safe-belief 递推得到的 $$r_q$$ 常量构成。
+        # Lemma 3.2 uses ordinary-flow penalty coefficients and R=C;
+        # Lemma 3.3 uses safe-flow first-entry coefficients and
+        # R=Delta-r(b0). / 两种约束必须选用各自的概率流。
+        row_name = "risk_budget" if constraint_type == "chance" else "expected_cost_budget"
         constraints.append(
             ILPLinearConstraint(
-                name="risk_budget",
+                name=row_name,
                 coefficients={
-                    var_id: metrics.risk
+                    var_id: metrics.constraint_value
                     for var_id, metrics in variable_metrics.items()
-                    if abs(metrics.risk) > 1e-12
+                    if metrics.constraint_value != 0.0
                 },
                 sense="<=",
                 rhs=float(risk_budget),
@@ -334,12 +437,49 @@ def _encode_algorithm1_records_as_full_ilp(
         objective=objective,
         constraints=tuple(constraints),
     )
+    active_exact_coefficients = tuple(
+        (
+            metrics.chance_risk_exact
+            if constraint_type == "chance"
+            else metrics.penalty_exact
+        )
+        for metrics in variable_metrics.values()
+    )
+    constraint_model_exact = (
+        original_constraint_budget is None
+        or (
+            all(
+                exact is not None
+                and Fraction.from_float(float(metrics.constraint_value)) == exact
+                for metrics, exact in zip(
+                    variable_metrics.values(),
+                    active_exact_coefficients,
+                )
+            )
+            and risk_budget is not None
+            and effective_constraint_rhs_exact is not None
+            and Fraction.from_float(float(risk_budget))
+            == Fraction(effective_constraint_rhs_exact)
+        )
+    )
     return PolicyTreeILP(
         spec=spec,
         variable_items=variable_items,
-        variable_metrics=variable_metrics,
         root_variable_ids=tuple(root_ids),
         frontier_variable_ids=frontier_variable_ids,
+        constraint_type=constraint_type,
+        variable_expansions=variable_expansions,
+        variable_continues=variable_continues,
+        constraint_budget=original_constraint_budget,
+        initial_chance_risk_exact=Fraction(initial_chance_risk_exact),
+        objective_coefficients_exact=all(
+            metrics.objective_support_preserved
+            and metrics.utility_exact is not None
+            and Fraction.from_float(float(metrics.utility))
+            == Fraction(metrics.utility_exact)
+            for metrics in variable_metrics.values()
+        ),
+        constraint_coefficients_exact=constraint_model_exact,
     )
 
 
@@ -369,11 +509,29 @@ def _definition31_flow_constraints(
     / 只对非叶子 action history 编码 observation-flow；duration 停止的叶子
     不应引用未声明的子变量。
     """
-    if not should_encode:
-        return ()
     constraints: list[ILPLinearConstraint] = []
+    has_nonterminal_deadend = any(
+        observation_frontier.should_expand
+        and not observation_frontier.child_frontier
+        for observation_frontier in expanded.observation_frontiers
+    )
+    if has_nonterminal_deadend:
+        # One zero row excludes the parent for every dead-end outcome; writing
+        # the same x_parent=0 equation once per observation only bloats the ILP.
+        constraints.append(
+            ILPLinearConstraint(
+                name=f"deadend_{parent_var_id}",
+                coefficients={parent_var_id: 1.0},
+                sense="==",
+                rhs=0.0,
+            )
+        )
     for index, observation_frontier in enumerate(expanded.observation_frontiers):
         child_frontier = observation_frontier.child_frontier
+        if observation_frontier.should_expand and not child_frontier:
+            continue
+        if not should_encode:
+            continue
         if not child_frontier:
             continue
         coefficients = {_action_var_id(child): 1.0 for child in child_frontier}

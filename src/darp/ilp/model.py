@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from math import isfinite
 from typing import Literal, Mapping
 
 ConstraintSense = Literal["==", "<=", ">="]
@@ -13,8 +14,6 @@ class ILPVariable:
     """Describe one binary policy variable. / 描述一个二元 policy 变量。"""
 
     var_id: str
-    label: str
-    metadata: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -35,7 +34,6 @@ class ILPModelSpec:
     variables: tuple[ILPVariable, ...]
     objective: Mapping[str, float]
     constraints: tuple[ILPLinearConstraint, ...]
-    maximize: bool = True
 
     def variable_ids(self) -> tuple[str, ...]:
         """Return variable ids in declaration order. / 按声明顺序返回变量 id。"""
@@ -55,16 +53,36 @@ class ILPModelSpec:
 class ILPSolveResult:
     """Store a Gurobi solve result in a solver-neutral shape. / 以 solver-neutral 形式保存 Gurobi 求解结果。"""
 
-    solver: str
     status: str
     objective_value: float | None
     variable_values: Mapping[str, float]
     selected_variables: tuple[str, ...]
     runtime_ms: float
     mip_gap: float | None = None
-    message: str | None = None
+    objective_bound: float | None = None
 
     @property
-    def is_optimal(self) -> bool:
-        """Return whether Gurobi reported an optimal solution. / 返回 Gurobi 是否报告最优解。"""
-        return self.status == "optimal"
+    def numerically_optimal(self) -> bool:
+        """Return whether Gurobi closed its floating-point objective gap."""
+        return self.status == "optimal" and self.has_numerical_zero_gap
+
+    @property
+    def has_numerical_zero_gap(self) -> bool:
+        """Return whether the reported floating-point incumbent and bound coincide."""
+        absolute_gap = self.absolute_gap
+        if absolute_gap is None or self.mip_gap is None:
+            return False
+        relative_gap = float(self.mip_gap)
+        return (
+            isfinite(relative_gap)
+            and relative_gap == 0.0
+            and isfinite(absolute_gap)
+            and absolute_gap == 0.0
+        )
+
+    @property
+    def absolute_gap(self) -> float | None:
+        """Return the incumbent-to-bound display gap in original objective units."""
+        if self.objective_value is None or self.objective_bound is None:
+            return None
+        return abs(float(self.objective_bound) - float(self.objective_value))

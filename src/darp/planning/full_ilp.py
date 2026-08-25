@@ -1,11 +1,8 @@
 """Gurobi full-ILP planner for the paper's policy-tree objective."""
 
-# TODO(phase-9.1): Add benchmark-scale pruning for large exact finite kernels
-# and richer finite random variables beyond the current supported subset.
-
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from math import isfinite
 from time import perf_counter
 from typing import Mapping
@@ -16,8 +13,13 @@ from darp.ilp.gurobi import GurobiILPSolver
 from darp.ilp.model import ILPSolveResult
 from darp.model.and_or_tree import ANDORSearchInterface
 from darp.model.duration import HistoryDurationEvaluator
-from darp.planning.ilp_tree import PolicyTreeILP, build_full_tree_ilp
-from darp.planning.rollout import ActionDecision
+from darp.planning.decision import ActionDecision
+from darp.planning.ilp_tree import (
+    PolicyTreeILP,
+    build_full_tree_ilp,
+    validate_constraint_budget,
+)
+from darp.planning.policy import extract_conditional_policy
 
 
 @dataclass
@@ -27,9 +29,6 @@ class FullILPPlanner:
     risk_budget: float | None = None
     max_tree_nodes: int | None = 100_000
     solver_time_limit_ms: float | None = 60_000.0
-    name: str = "full-ilp-gurobi"
-    last_ilp_result: ILPSolveResult | None = field(default=None, init=False)
-    last_policy_tree: PolicyTreeILP | None = field(default=None, init=False)
 
     def choose_action(
         self,
@@ -37,7 +36,6 @@ class FullILPPlanner:
         interface: ANDORSearchInterface,
         duration_evaluator: HistoryDurationEvaluator,
         *,
-        remaining_depth: int,
         root_belief: Mapping[StateKey, float] | None = None,
     ) -> ActionDecision:
         r"""Choose the root action by solving the full-ILP.
@@ -72,7 +70,7 @@ class FullILPPlanner:
 
         按论文 Algorithm 1/2 生成完整 policy tree；有 exact kernel 时使用
         pyRDDLGym grounded CPF 的有限 transition/observation 精确分支，然后直接
-        用 Gurobi 求解 full-ILP；这里没有递归 DP 或 rollout fallback。
+        用 Gurobi 直接求解 full-ILP。
 
         Reference-code correspondence:
 
@@ -89,14 +87,7 @@ class FullILPPlanner:
         与 ILP encoding 两步；变量和约束名称不同，但数学结构相同。
         """
 
-        started_at = perf_counter()
-        if remaining_depth < 1:
-            raise ValueError("remaining_depth must be at least 1.")
-        if self.risk_budget is not None and (
-            not isfinite(float(self.risk_budget))
-            or not 0.0 <= float(self.risk_budget) <= 1.0
-        ):
-            raise ValueError("risk_budget must be a finite probability in [0, 1].")
+        validate_constraint_budget(interface, self.risk_budget)
         if self.solver_time_limit_ms is not None and (
             not isfinite(float(self.solver_time_limit_ms))
             or float(self.solver_time_limit_ms) <= 0.0
@@ -111,58 +102,71 @@ class FullILPPlanner:
             risk_budget=self.risk_budget,
             root_belief=root_belief,
             max_nodes=self.max_tree_nodes,
-            max_action_depth=remaining_depth,
         )
         tree_ilp_build_ms = (perf_counter() - build_started_at) * 1000.0
-        self.last_policy_tree = ilp_tree
-        solve_started_at = perf_counter()
-        self.last_ilp_result = GurobiILPSolver().solve(
+        ilp_result = GurobiILPSolver().solve(
             ilp_tree.spec,
             time_limit_ms=self.solver_time_limit_ms,
         )
-        solver_call_ms = (perf_counter() - solve_started_at) * 1000.0
-        postprocess_started_at = perf_counter()
-        selected_root = _selected_root_variable(self.last_ilp_result, ilp_tree)
+        selected_root = _selected_root_variable(ilp_result, ilp_tree)
         if selected_root is None:
-            if self.last_ilp_result.status == "time_limit":
+            if ilp_result.status == "time_limit":
                 raise TimeoutError("Gurobi reached the full-ILP solve budget before finding an incumbent.")
             raise RuntimeError(
                 "Gurobi full-tree ILP did not select a root action. "
-                f"status={self.last_ilp_result.status}"
+                f"status={ilp_result.status}"
             )
 
         selected_item = ilp_tree.variable_items[selected_root]
-        postprocess_ms = (perf_counter() - postprocess_started_at) * 1000.0
-        elapsed_ms = (perf_counter() - started_at) * 1000.0
-        gurobi_ms = float(self.last_ilp_result.runtime_ms)
-        decision_ms = tree_ilp_build_ms + gurobi_ms + postprocess_ms
-        cache_info = (
-            interface.exact_kernel.cache_info()
-            if interface.exact_kernel is not None and hasattr(interface.exact_kernel, "cache_info")
-            else {}
+        policy = extract_conditional_policy(ilp_tree, ilp_result)
+        decision_complete = (
+            ilp_result.numerically_optimal
+            and ilp_tree.objective_coefficients_exact
+            and ilp_tree.constraint_coefficients_exact
+            and policy.duration_complete
+            and policy.feasible is not False
         )
+        # A duration-complete incumbent is executable and its selected exact
+        # coefficients are achieved utility even when optimality has not yet
+        # been proved (for example at a solver time limit).
+        achieved_utility = policy.achieved_utility
+        gurobi_ms = float(ilp_result.runtime_ms)
         return ActionDecision(
-            action=dict(selected_item.node.metadata["assignment"]),
+            action=dict(selected_item.node.assignment or {}),
             label=selected_item.action_label,
-            value=float(self.last_ilp_result.objective_value or 0.0),
-            action_values=_root_objective_values(ilp_tree),
-            remaining_depth=remaining_depth,
-            elapsed_ms=elapsed_ms,
-            complete=self.last_ilp_result.is_optimal,
+            value=float(
+                achieved_utility
+                if achieved_utility is not None
+                else (ilp_result.objective_value or 0.0)
+            ),
+            complete=decision_complete,
+            value_kind=(
+                "achieved_utility"
+                if achieved_utility is not None
+                else "heuristic_objective"
+            ),
+            policy=policy,
             timing={
-                "planner_elapsed_ms": elapsed_ms,
-                "decision_ms": decision_ms,
                 "tree_ilp_build_ms": tree_ilp_build_ms,
                 "gurobi_solve_ms": gurobi_ms,
-                "gurobi_call_ms": solver_call_ms,
-                "postprocess_ms": postprocess_ms,
                 "ilp_variables": float(len(ilp_tree.spec.variables)),
                 "ilp_constraints": float(len(ilp_tree.spec.constraints)),
                 "expanded_nodes": float(len(ilp_tree.variable_items)),
-                "solver_time_limit_hit": (
-                    1.0 if self.last_ilp_result.status == "time_limit" else 0.0
+                "solver_numerically_optimal": (
+                    1.0 if ilp_result.numerically_optimal else 0.0
                 ),
-                **{f"exact_{name}": float(value) for name, value in cache_info.items()},
+                "numerical_zero_gap": (
+                    1.0 if ilp_result.has_numerical_zero_gap else 0.0
+                ),
+                "objective_coefficients_exact": (
+                    1.0 if ilp_tree.objective_coefficients_exact else 0.0
+                ),
+                "constraint_coefficients_exact": (
+                    1.0 if ilp_tree.constraint_coefficients_exact else 0.0
+                ),
+                "solver_time_limit_hit": (
+                    1.0 if ilp_result.status == "time_limit" else 0.0
+                ),
             },
         )
 
@@ -171,12 +175,3 @@ def _selected_root_variable(result: ILPSolveResult, tree: PolicyTreeILP) -> str 
     """Return the selected root action variable id. / 返回被选中的根 action 变量 id。"""
     root_ids = set(tree.root_variable_ids)
     return next((var_id for var_id in result.selected_variables if var_id in root_ids), None)
-
-
-def _root_objective_values(tree: PolicyTreeILP) -> dict[str, float]:
-    """Return root-action utility coefficients for diagnostics. / 返回根 action utility 系数用于诊断。"""
-    values: dict[str, float] = {}
-    for var_id in tree.root_variable_ids:
-        item = tree.variable_items[var_id]
-        values[item.action_label] = float(tree.spec.objective.get(var_id, 0.0))
-    return values

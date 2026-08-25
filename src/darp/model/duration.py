@@ -1,58 +1,53 @@
 """Durative-action models and tau computations."""
 
-# TODO(phase-9.3): Add chance-constrained duration via augmented state space.
-
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from collections.abc import Hashable
-from math import erf, isfinite, sqrt
-from typing import Iterable, Mapping
-
-from darp.model.and_or_tree import History
+from fractions import Fraction
+from math import erfc, isfinite, nextafter, sqrt
+from typing import Any, Iterable, Mapping
 
 ActionName = str
 StateKey = Hashable
 Belief = Mapping[StateKey, float]
+AugmentedStateKey = tuple[StateKey, Fraction]
+AugmentedBelief = Mapping[AugmentedStateKey, Fraction]
 
 
 @dataclass(frozen=True)
 class DurationEstimate:
     """Store one action-duration estimate. / 保存一次动作时长估计。"""
 
-    mean: float
-    variance: float = 0.0
+    mean: Fraction
+    variance: Fraction = Fraction(0)
 
 
 @dataclass(frozen=True)
 class DurationProgress:
     """Track accumulated duration along a history. / 跟踪一条 history 上累计的动作时长。"""
 
-    mean: float = 0.0
-    variance: float = 0.0
+    mean: Fraction = Fraction(0)
+    variance: Fraction = Fraction(0)
+    augmented_belief: AugmentedBelief | None = None
 
     def add(self, estimate: DurationEstimate) -> "DurationProgress":
         """Return progress after adding one estimate. / 返回加入一次估计后的累计进度。"""
+        if self.augmented_belief is not None:
+            raise ValueError(
+                "Augmented chance-duration progress must be advanced jointly with "
+                "the state transition and observation."
+            )
+        mean = self.mean + estimate.mean
+        variance = self.variance + estimate.variance
         return DurationProgress(
-            mean=self.mean + estimate.mean,
-            variance=self.variance + estimate.variance,
+            mean=mean,
+            variance=variance,
         )
-
-
-@dataclass(frozen=True)
-class HistoryDurationRecord:
-    """Store one action's duration contribution along a history. / 保存 history 中一次 action 的 duration 贡献。"""
-
-    action: ActionName
-    belief: Belief
-    estimate: DurationEstimate
-    progress: DurationProgress
 
 
 class DurationModel:
     """Base class for duration models. / 动作时长模型基类。"""
-
-    kind = "base"
 
     def estimate(self, belief: Belief, action: ActionName) -> DurationEstimate:
         """Estimate duration for an action under a belief. / 在给定 belief 下估计动作时长。"""
@@ -74,7 +69,6 @@ class HistoryDurationEvaluator:
     model: DurationModel
     horizon: float
     zeta: float = 0.0
-    default_belief: Belief = field(default_factory=lambda: {"__default__": 1.0})
 
     def __post_init__(self) -> None:
         """Reject stopping rules that cannot define a finite search tree."""
@@ -82,60 +76,72 @@ class HistoryDurationEvaluator:
             raise ValueError("duration horizon must be a finite positive number")
         if not isfinite(self.zeta) or self.zeta < 0.0:
             raise ValueError("duration zeta must be a finite non-negative number")
-        if isinstance(self.model, GaussianDurationModel) and self.zeta > 1.0:
-            raise ValueError("Gaussian duration zeta must be in [0, 1]")
-
-    def records_for_actions(
-        self,
-        actions: Iterable[ActionName],
-        beliefs: Iterable[Belief] | None = None,
-    ) -> tuple[HistoryDurationRecord, ...]:
-        """Return duration records for an action sequence. / 返回一串 action 的 duration 记录。"""
-        belief_sequence = tuple(beliefs or ())
-        progress = DurationProgress()
-        records: list[HistoryDurationRecord] = []
-        for index, action in enumerate(actions):
-            belief = belief_sequence[index] if index < len(belief_sequence) else self.default_belief
-            estimate = self.model.estimate(belief, action)
-            progress = progress.add(estimate)
-            records.append(
-                HistoryDurationRecord(
-                    action=action,
-                    belief=belief,
-                    estimate=estimate,
-                    progress=progress,
-                )
+        if isinstance(self.model, (GaussianDurationModel, ChanceConstrainedDurationModel)) and self.zeta > 1.0:
+            raise ValueError("probabilistic duration zeta must be in [0, 1]")
+        root_tau = float(self.model.tau(DurationProgress(), self.horizon))
+        if not isfinite(root_tau):
+            raise ValueError("duration tau at the empty history must be finite")
+        if not self.model.should_continue(
+            DurationProgress(),
+            self.horizon,
+            self.zeta,
+        ):
+            # The planner API must return a root action, whereas the paper's
+            # admissible history set is empty when tau(empty) <= zeta.  Reject
+            # that no-action problem explicitly instead of forcing an action
+            # outside the paper's policy space.
+            raise ValueError(
+                "duration stopping condition already holds at the empty "
+                "history (tau(empty) must be greater than zeta)"
             )
-        return tuple(records)
 
-    def progress_for_actions(
-        self,
-        actions: Iterable[ActionName],
-        beliefs: Iterable[Belief] | None = None,
-    ) -> DurationProgress:
-        """Return cumulative duration progress for actions. / 返回 action 序列的累计 duration progress。"""
-        records = self.records_for_actions(actions, beliefs)
-        return records[-1].progress if records else DurationProgress()
+    def action_depth_upper_bound(self) -> int | None:
+        r"""Return a proof that Algorithm 1 must stop by this action depth.
 
-    def progress_for_history(
-        self,
-        history: History,
-        beliefs: Iterable[Belief] | None = None,
-    ) -> DurationProgress:
-        """Return cumulative duration progress for a DARP history. / 返回 DARP history 的累计 duration progress。"""
-        return self.progress_for_actions(history.actions, beliefs)
-
-    def tau_for_history(self, history: History, beliefs: Iterable[Belief] | None = None) -> float:
-        """Return tau for a DARP history. / 返回 DARP history 对应的 tau。"""
-        return self.model.tau(self.progress_for_history(history, beliefs), self.horizon)
-
-    def should_expand(self, history: History, beliefs: Iterable[Belief] | None = None) -> bool:
-        """Return whether Phase 7 search should expand the history. / 返回 Phase 7 搜索是否应继续展开该 history。"""
-        return self.model.should_continue(self.progress_for_history(history, beliefs), self.horizon, self.zeta)
-
-    def elapsed_for_history(self, history: History, beliefs: Iterable[Belief] | None = None) -> float:
-        """Return expected elapsed duration, like duration_model(q). / 返回期望累计时长，类似 duration_model(q)。"""
-        return self.progress_for_history(history, beliefs).mean
+        This is a *derived* bound on the paper's duration test, not an
+        independent decision-step horizon.  ``None`` means no finite bound can
+        be proved from the configured model (for example Gaussian noise with
+        :math:`\zeta=0`, or chance duration with a possible zero-duration
+        loop).  Search may still terminate branch by branch, but must not use
+        the RDDL integer horizon as a substitute proof.
+        """
+        if isinstance(self.model, FixedDurationModel):
+            minimum = min(
+                (float(self.model.default), *(float(value) for value in self.model.durations.values()))
+            )
+            return _fixed_depth_bound(
+                horizon=self.horizon,
+                zeta=self.zeta,
+                minimum_increment=minimum,
+            )
+        if isinstance(self.model, StateDependentDurationModel):
+            # The per-step estimate is a normalized floating-point dot
+            # product.  Although its real-arithmetic value is bounded below by
+            # the smallest configured duration, normalization and summation
+            # can undershoot that value by more than one ULP.  Do not turn the
+            # configuration minimum into a false finite-depth certificate;
+            # branch-local tau checks still terminate the actual expansion.
+            return None
+        if isinstance(self.model, ChanceConstrainedDurationModel):
+            if self.zeta >= 1.0:
+                return 1
+            minimum = min(
+                (float(self.model.default), *(float(value) for value in self.model.durations.values()))
+            )
+            if minimum <= 0.0:
+                return None
+            return _deterministic_depth_bound(
+                target=self.horizon,
+                minimum_increment=minimum,
+            )
+        if isinstance(self.model, GaussianDurationModel):
+            # Both Gaussian moments are belief-weighted floating-point sums.
+            # Without interval arithmetic there is no machine-checkable
+            # uniform lower/upper moment bound strong enough to certify a
+            # strict tau boundary.  Exhaust branches using their exact stored
+            # progress instead of claiming a derived action-depth proof.
+            return None
+        return None
 
 
 @dataclass(frozen=True)
@@ -144,19 +150,30 @@ class FixedDurationModel(DurationModel):
 
     durations: Mapping[ActionName, float]
     default: float = 1.0
-    kind: str = "fixed"
 
     def __post_init__(self) -> None:
         """Require positive finite durations so tree expansion terminates."""
-        _validate_positive_durations(self.durations.values(), default=self.default, kind=self.kind)
+        _validate_positive_durations(
+            self.durations.values(), default=self.default, model_name="fixed"
+        )
 
     def estimate(self, belief: Belief, action: ActionName) -> DurationEstimate:
         """Return the configured fixed duration. / 返回配置中的固定动作时长。"""
-        return DurationEstimate(mean=float(self.durations.get(action, self.default)))
+        mean = float(self.durations.get(action, self.default))
+        return DurationEstimate(mean=Fraction.from_float(mean))
 
     def tau(self, progress: DurationProgress, horizon: float) -> float:
         """Return remaining time after accumulated duration. / 返回累计时长后的剩余时间。"""
-        return horizon - progress.mean
+        return _diagnostic_float(
+            Fraction.from_float(float(horizon)) - progress.mean
+        )
+
+    def should_continue(self, progress: DurationProgress, horizon: float, zeta: float) -> bool:
+        """Evaluate the paper's strict remaining-time test exactly."""
+        return (
+            Fraction.from_float(float(horizon)) - progress.mean
+            > Fraction.from_float(float(zeta))
+        )
 
 
 @dataclass(frozen=True)
@@ -165,23 +182,80 @@ class StateDependentDurationModel(DurationModel):
 
     durations: Mapping[tuple[StateKey, ActionName], float]
     default: float = 1.0
-    kind: str = "expected"
 
     def __post_init__(self) -> None:
         """Require positive finite expected-duration entries."""
-        _validate_positive_durations(self.durations.values(), default=self.default, kind=self.kind)
+        _validate_positive_durations(
+            self.durations.values(), default=self.default, model_name="expected"
+        )
 
     def estimate(self, belief: Belief, action: ActionName) -> DurationEstimate:
         """Return belief-weighted expected duration. / 返回 belief 加权的期望时长。"""
-        mean = sum(
-            prob * float(self.durations.get((state, action), self.default))
-            for state, prob in belief.items()
+        mean_exact = sum(
+            (
+                probability * Fraction.from_float(self.duration_for_state(state, action))
+                for state, probability in _normalized_belief_fraction_items(belief)
+            ),
+            start=Fraction(0),
         )
-        return DurationEstimate(mean=mean)
+        return DurationEstimate(mean=mean_exact)
+
+    def duration_for_state(self, state: StateKey, action: ActionName) -> float:
+        """Return :math:`D(s,a)` for one complete state."""
+        return _state_action_value(self.durations, state, action, self.default)
 
     def tau(self, progress: DurationProgress, horizon: float) -> float:
         """Return remaining time after expected duration. / 返回期望累计时长后的剩余时间。"""
-        return horizon - progress.mean
+        return _diagnostic_float(
+            Fraction.from_float(float(horizon)) - progress.mean
+        )
+
+    def should_continue(self, progress: DurationProgress, horizon: float, zeta: float) -> bool:
+        """Evaluate the strict expected-duration boundary as rationals."""
+        return (
+            Fraction.from_float(float(horizon)) - progress.mean
+            > Fraction.from_float(float(zeta))
+        )
+
+
+@dataclass(frozen=True)
+class ChanceConstrainedDurationModel(DurationModel):
+    r"""Deterministic :math:`D(s,a)` with an exact augmented-state chance bound.
+
+    The sufficient statistic for a history is the posterior over
+    :math:`(S_q,G_q)`, where :math:`G_q` is accumulated duration.  Algorithm 2
+    updates that distribution jointly with each transition and observation;
+    retaining only the marginal state belief or expected duration is not exact.
+
+    / 为确定性状态依赖时长保留论文中的增广状态
+    ``(state, accumulated duration)`` 后验分布。
+    """
+
+    durations: Mapping[tuple[StateKey, ActionName], float]
+    default: float = 1.0
+
+    def __post_init__(self) -> None:
+        """Require finite non-negative deterministic durations."""
+        _validate_non_negative_durations(
+            self.durations.values(), default=self.default, model_name="chance"
+        )
+
+    def duration_for_state(self, state: StateKey, action: ActionName) -> float:
+        """Return deterministic :math:`D(s,a)` for one complete state."""
+        return _state_action_value(self.durations, state, action, self.default)
+
+    def tau(self, progress: DurationProgress, horizon: float) -> float:
+        r"""Return :math:`Pr(G_q < h \mid q)` from the augmented belief."""
+        probability, total = _chance_duration_mass(progress, horizon)
+        return _upward_probability_fraction(probability / total) if total > 0 else 0.0
+
+    def should_continue(self, progress: DurationProgress, horizon: float, zeta: float) -> bool:
+        """Compare the exact augmented safe-duration mass with zeta."""
+        numerator, denominator = _chance_duration_mass(progress, horizon)
+        return (
+            denominator > 0
+            and numerator > Fraction.from_float(float(zeta)) * denominator
+        )
 
 
 @dataclass(frozen=True)
@@ -192,34 +266,302 @@ class GaussianDurationModel(DurationModel):
     variances: Mapping[tuple[StateKey, ActionName], float]
     default_mean: float = 1.0
     default_variance: float = 0.0
-    kind: str = "gaussian"
 
     def __post_init__(self) -> None:
         """Validate Gaussian moments before they control tree expansion."""
-        _validate_positive_durations(self.means.values(), default=self.default_mean, kind=self.kind)
+        _validate_positive_durations(
+            self.means.values(), default=self.default_mean, model_name="gaussian"
+        )
         variances = (*self.variances.values(), self.default_variance)
         if any(not isfinite(float(value)) or float(value) < 0.0 for value in variances):
             raise ValueError("gaussian duration variances must be finite and non-negative")
 
     def estimate(self, belief: Belief, action: ActionName) -> DurationEstimate:
         """Return belief-weighted Gaussian mean and variance. / 返回 belief 加权的 Gaussian 均值与方差。"""
-        mean = 0.0
-        variance = 0.0
-        for state, prob in belief.items():
-            mean += prob * float(self.means.get((state, action), self.default_mean))
-            variance += (prob**2) * float(self.variances.get((state, action), self.default_variance))
-        return DurationEstimate(mean=mean, variance=max(0.0, variance))
+        mean_exact = Fraction(0)
+        variance_exact = Fraction(0)
+        for state, probability in _normalized_belief_fraction_items(belief):
+            state_mean, state_variance = self.moments_for_state(state, action)
+            mean_exact += probability * Fraction.from_float(state_mean)
+            # Paper Sec. 3: sigma_q^2 = sum_i sum_s b_i(s)^2 sigma^2_{s,a_i}.
+            variance_exact += probability**2 * Fraction.from_float(state_variance)
+        return DurationEstimate(mean=mean_exact, variance=variance_exact)
+
+    def moments_for_state(self, state: StateKey, action: ActionName) -> tuple[float, float]:
+        """Return the configured Gaussian moments for one complete state."""
+        return (
+            _state_action_value(self.means, state, action, self.default_mean),
+            _state_action_value(self.variances, state, action, self.default_variance),
+        )
 
     def tau(self, progress: DurationProgress, horizon: float) -> float:
-        """Return the probability that duration stays within horizon. / 返回时长不超过 horizon 的概率。"""
-        if progress.variance <= 1e-12:
-            return 1.0 if progress.mean < horizon else 0.0
-        z = (horizon - progress.mean) / sqrt(2.0 * progress.variance)
-        return 0.5 * (1.0 + erf(z))
+        r"""Return the numerical Gaussian probability :math:`Pr(G<h)`.
+
+        The paper permits standard numerical evaluation of the Gaussian CDF.
+        ``erfc`` avoids the cancellation in ``1 - erf``.  The standardized
+        squared distance is formed from the represented rational moments before
+        conversion to binary64, so a sub-ULP difference between the mean and
+        horizon is not discarded prematurely.
+        """
+        variance = progress.variance
+        centered = progress.mean - Fraction.from_float(float(horizon))
+        if variance <= 0:
+            return 1.0 if centered < 0 else 0.0
+        if centered == 0:
+            return 0.5
+        squared_distance = centered * centered / (2 * variance)
+        try:
+            standardized = sqrt(float(squared_distance))
+        except OverflowError:
+            standardized = float("inf")
+        probability = 0.5 * erfc(
+            standardized if centered > 0 else -standardized
+        )
+        return min(1.0, max(0.0, probability))
+
+    def should_continue(
+        self,
+        progress: DurationProgress,
+        horizon: float,
+        zeta: float,
+    ) -> bool:
+        """Apply Algorithm 2's strict continuation test ``tau(q) > zeta``.
+
+        Exact degenerate and symmetry cases avoid unnecessary floating-point
+        work.  The ``zeta == 0`` case is analytic because every non-degenerate
+        Gaussian has positive mass below any finite horizon, even when that
+        tail is too small for binary64 ``erfc`` to represent.
+        """
+        threshold = Fraction.from_float(float(zeta))
+        variance = progress.variance
+        centered = progress.mean - Fraction.from_float(float(horizon))
+        if variance <= 0:
+            probability = Fraction(1) if centered < 0 else Fraction(0)
+            return probability > threshold
+        if threshold <= 0:
+            # Every non-degenerate Gaussian assigns positive mass below every
+            # finite boundary, including tails below binary64's range.
+            return True
+        if threshold >= 1:
+            return False
+        if centered == 0:
+            return Fraction(1, 2) > threshold
+        if centered < 0 and threshold <= Fraction(1, 2):
+            return True
+        if centered > 0 and threshold >= Fraction(1, 2):
+            return False
+        return self.tau(progress, horizon) > float(zeta)
 
 
-def _validate_positive_durations(values: Iterable[float], *, default: float, kind: str) -> None:
+def _validate_positive_durations(
+    values: Iterable[float], *, default: float, model_name: str
+) -> None:
     """Require every possible duration to advance time by a finite amount."""
     durations = (*values, default)
     if any(not isfinite(float(value)) or float(value) <= 0.0 for value in durations):
-        raise ValueError(f"{kind} durations must be finite and strictly positive")
+        raise ValueError(
+            f"{model_name} durations must be finite and strictly positive"
+        )
+
+
+def _validate_non_negative_durations(
+    values: Iterable[float], *, default: float, model_name: str
+) -> None:
+    """Validate deterministic chance-duration entries, for which zero is meaningful."""
+    durations = (*values, default)
+    if any(not isfinite(float(value)) or float(value) < 0.0 for value in durations):
+        raise ValueError(f"{model_name} durations must be finite and non-negative")
+
+
+def _deterministic_depth_bound(
+    *,
+    target: float,
+    minimum_increment: float,
+) -> int | None:
+    """Bound strict continuation using exact represented-float durations."""
+    if target <= 0.0:
+        return 1
+    if not isfinite(minimum_increment) or minimum_increment <= 0.0:
+        return None
+    target_exact = Fraction.from_float(float(target))
+    increment_exact = Fraction.from_float(float(minimum_increment))
+    ratio = target_exact / increment_exact
+    estimate = max(1, _ceil_fraction(ratio))
+    if estimate > 1_000_000:
+        return None
+    return estimate
+
+
+def _fixed_depth_bound(
+    *,
+    horizon: float,
+    zeta: float,
+    minimum_increment: float,
+) -> int | None:
+    """Prove a bound for the exact strict test ``h-elapsed > zeta``."""
+    if not isfinite(minimum_increment) or minimum_increment <= 0.0:
+        return None
+    target = Fraction.from_float(float(horizon)) - Fraction.from_float(float(zeta))
+    if target <= 0:
+        return 1
+    increment = Fraction.from_float(float(minimum_increment))
+    depth = max(1, _ceil_fraction(target / increment))
+    return depth if depth <= 1_000_000 else None
+
+
+def _ceil_fraction(value: Fraction) -> int:
+    """Return the mathematical ceiling of a rational number."""
+    return -(-value.numerator // value.denominator)
+
+
+def _chance_duration_mass(
+    progress: DurationProgress,
+    horizon: float,
+) -> tuple[Fraction, Fraction]:
+    """Return exact ``(mass below horizon, total mass)`` for chance duration."""
+    horizon_exact = Fraction.from_float(float(horizon))
+    if progress.augmented_belief is None:
+        return (
+            (Fraction(1), Fraction(1))
+            if progress.mean < horizon_exact
+            else (Fraction(0), Fraction(1))
+        )
+    numerator = sum(
+        (
+            Fraction(probability)
+            for (_, elapsed), probability in progress.augmented_belief.items()
+            if elapsed < horizon_exact
+        ),
+        start=Fraction(0),
+    )
+    denominator = sum(
+        (Fraction(probability) for probability in progress.augmented_belief.values()),
+        start=Fraction(0),
+    )
+    return numerator, denominator
+
+
+def _upward_probability_fraction(value: Fraction) -> float:
+    """Convert a rational probability to binary64 without rounding downward."""
+    if value <= 0:
+        return 0.0
+    if value >= 1:
+        return 1.0
+    rounded = float(value)
+    if Fraction.from_float(rounded) < value:
+        rounded = nextafter(rounded, float("inf"))
+    return rounded
+
+
+def _diagnostic_float(value: Fraction) -> float:
+    """Convert an exact scalar, saturating only its non-authoritative display."""
+    value = Fraction(value)
+    try:
+        return float(value)
+    except OverflowError:
+        return float("inf") if value > 0 else float("-inf")
+
+
+def _normalized_belief_fraction_items(
+    belief: Belief,
+) -> tuple[tuple[StateKey, Fraction], ...]:
+    """Normalize represented belief entries exactly as rational weights."""
+    entries: tuple[tuple[StateKey, Fraction], ...] = tuple(
+        (
+            state,
+            probability
+            if isinstance(probability, Fraction)
+            else Fraction.from_float(float(probability)),
+        )
+        for state, probability in belief.items()
+    )
+    if not entries:
+        raise ValueError("state-dependent duration requires a non-empty joint-state belief")
+    if any(probability < 0 for _, probability in entries):
+        raise ValueError("duration belief probabilities must be finite and non-negative")
+    positive = tuple(
+        (state, probability)
+        for state, probability in entries
+        if probability > 0
+    )
+    total = sum((probability for _, probability in positive), start=Fraction(0))
+    if total <= 0:
+        raise ValueError("duration belief must contain positive probability mass")
+    return tuple((state, probability / total) for state, probability in positive)
+
+
+def _state_action_value(
+    values: Mapping[tuple[StateKey, ActionName], float],
+    state: StateKey,
+    action: ActionName,
+    default: float,
+) -> float:
+    r"""Resolve one state/action value without confusing marginals with states.
+
+    Programmatic models may key entries by the complete hashable state directly.
+    Sidecars additionally support Boolean fluent selectors (``muddy`` means
+    ``muddy=true``) and conjunctions such as ``muddy=true&loaded=false``.  The
+    most specific matching selector wins; conflicting equal-specificity rules
+    are rejected instead of being silently summed.
+    """
+    try:
+        direct_key = (state, action)
+        if direct_key in values:
+            return float(values[direct_key])
+    except TypeError:
+        pass
+
+    state_mapping = _state_mapping(state)
+    if state_mapping is None:
+        return float(default)
+
+    matches: list[tuple[int, str, float]] = []
+    for (selector, configured_action), value in values.items():
+        if configured_action != action or not isinstance(selector, str):
+            continue
+        specificity = _selector_specificity(selector, state_mapping)
+        if specificity is not None:
+            matches.append((specificity, selector, float(value)))
+    if not matches:
+        return float(default)
+
+    best_specificity = max(specificity for specificity, _, _ in matches)
+    best = [(selector, value) for specificity, selector, value in matches if specificity == best_specificity]
+    distinct = {value for _, value in best}
+    if len(distinct) > 1:
+        selectors = ", ".join(sorted(selector for selector, _ in best))
+        raise ValueError(
+            f"Conflicting duration selectors for action {action!r} and state {state!r}: {selectors}"
+        )
+    return best[0][1]
+
+
+def _state_mapping(state: StateKey) -> Mapping[str, Any] | None:
+    """Return a mapping view for the exact kernel's tuple-of-pairs state key."""
+    if isinstance(state, Mapping):
+        return {str(name): value for name, value in state.items()}
+    if isinstance(state, tuple) and all(isinstance(entry, tuple) and len(entry) == 2 for entry in state):
+        return {str(name): value for name, value in state}
+    return None
+
+
+def _selector_specificity(selector: str, state: Mapping[str, Any]) -> int | None:
+    """Return matched-clause count for one sidecar Boolean-state selector."""
+    clauses = selector.split("&")
+    parsed: list[tuple[str, bool]] = []
+    for clause in clauses:
+        name, separator, raw_value = clause.partition("=")
+        name = name.strip()
+        if not name:
+            return None
+        if not separator:
+            expected = True
+        else:
+            normalized = raw_value.strip().lower()
+            if normalized not in {"true", "false"}:
+                return None
+            expected = normalized == "true"
+        parsed.append((name, expected))
+    if all(name in state and bool(state[name]) is expected for name, expected in parsed):
+        return len(parsed)
+    return None

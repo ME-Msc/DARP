@@ -1,12 +1,8 @@
 """AND-OR history tree data structures for DARP search."""
 
-# TODO(phase-9.1): Add optional trace links from tree nodes to ILP variables if
-# benchmark reports need them.
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any, Mapping
 from urllib.parse import quote
 
@@ -41,37 +37,15 @@ class History:
         return " / ".join(parts) if parts else "root"
 
 
-class ANDORNodeKind(str, Enum):
-    """Distinguish action-choice and observation-outcome nodes. / 区分 action choice 与 observation outcome 节点。"""
-
-    AND = "and"
-    OR = "or"
-
-
 @dataclass(slots=True)
 class ANDORNode:
     """Represent one node in an AND-OR history tree. / 表示 AND-OR history tree 中的一个节点。"""
 
     node_id: str
-    kind: ANDORNodeKind
     node_index: int = -1  # Compact arena id for hot-path lookup. / 热路径查询使用的紧凑节点编号。
-    parent_index: int | None = None  # Parent arena id; root uses None. / 父节点编号，root 为 None。
     history: History = field(default_factory=History)
-    children: list["ANDORNode"] = field(default_factory=list)
-    metadata: Mapping[str, object] = field(default_factory=dict)
-    _child_ids: set[str] = field(default_factory=set, init=False, repr=False)
-
-    def add_child(self, child: "ANDORNode") -> None:
-        """Attach a child once with O(1) id lookup. / 使用 O(1) 编号查询仅挂接一次子节点。"""
-        if child.node_id in self._child_ids:
-            return
-        self._child_ids.add(child.node_id)
-        self.children.append(child)
-
-    @property
-    def is_leaf(self) -> bool:
-        """Return whether the node has no children. / 返回该节点是否没有子节点。"""
-        return not self.children
+    action_label: str | None = None
+    assignment: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,10 +58,9 @@ class ActionChoice:
 
 @dataclass(frozen=True, slots=True)
 class ObservationScope:
-    """Describe which variables define observations. / 描述哪些变量定义 observation。"""
+    """Identify whether histories observe POMDP outputs or MDP states."""
 
     mode: str
-    variables: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,11 +78,6 @@ class ANDORSearchInterface:
         self.root.node_index = 0
         self._nodes_by_id[self.root.node_id] = self.root
 
-    @property
-    def node_count(self) -> int:
-        """Return the number of unique materialized histories. / 返回已实体化的唯一 history 数量。"""
-        return len(self._nodes_by_id)
-
     @classmethod
     def from_actions_and_observations(
         cls,
@@ -119,41 +87,71 @@ class ANDORSearchInterface:
     ) -> "ANDORSearchInterface":
         """Create a root interface from action choices and observation scope. / 从 action choice 和 observation scope 创建根接口。"""
         return cls(
-            root=ANDORNode(node_id="root", kind=ANDORNodeKind.OR),
+            root=ANDORNode(node_id="root"),
             actions=actions,
             observation_scope=observation_scope,
             exact_kernel=exact_kernel,
         )
 
-    def action_nodes(self, parent: ANDORNode | None = None) -> tuple[ANDORNode, ...]:
-        """Return AND children for each action choice. / 为每个 action choice 返回 AND 子节点。"""
+    def action_choices(
+        self,
+        belief: Mapping[Any, Any] | None = None,
+    ) -> tuple[ActionChoice, ...]:
+        """Return actions available at ``belief``, preserving grounded order.
+
+        Kernels with state-dependent action sets may expose
+        ``available_action_labels(belief)``.  Static RDDL kernels need no extra
+        method and retain the original global action set.
+        """
+        available = getattr(self.exact_kernel, "available_action_labels", None)
+        if belief is None or not callable(available):
+            return self.actions
+        labels = tuple(available(belief))
+        if any(not isinstance(label, str) for label in labels):
+            raise TypeError("available_action_labels() must return string labels")
+        if len(labels) != len(set(labels)):
+            raise ValueError("available_action_labels() returned duplicate labels")
+        known = {action.label for action in self.actions}
+        unknown = set(labels) - known
+        if unknown:
+            raise ValueError(
+                "available_action_labels() returned unknown actions: "
+                + ", ".join(sorted(unknown))
+            )
+        selected = set(labels)
+        return tuple(action for action in self.actions if action.label in selected)
+
+    def action_nodes(
+        self,
+        parent: ANDORNode | None = None,
+        *,
+        belief: Mapping[Any, Any] | None = None,
+    ) -> tuple[ANDORNode, ...]:
+        """Return available AND children. / 返回当前 belief 下可用的 AND 子节点。"""
         source = parent or self.root
         return tuple(
             self._intern_node(
                 ANDORNode(
                     node_id=f"{source.node_id}/a:{_node_token(action.label)}",
-                    kind=ANDORNodeKind.AND,
-                    parent_index=source.node_index,
                     history=source.history.append_action(action.label),
-                    metadata={"action": action.label, "assignment": dict(action.assignment)},
+                    action_label=action.label,
+                    assignment=dict(action.assignment),
                 )
             )
-            for action in self.actions
+            for action in self.action_choices(belief)
         )
+
+    def belief_is_terminal(self, belief: Mapping[Any, Any]) -> bool:
+        """Return an optional kernel-defined terminal-belief predicate."""
+        predicate = getattr(self.exact_kernel, "belief_is_terminal", None)
+        return bool(predicate(belief)) if callable(predicate) else False
 
     def observation_node(self, parent: ANDORNode, observation_label: str) -> ANDORNode:
         """Return an OR child for one observation outcome. / 为一个 observation outcome 返回 OR 子节点。"""
         return self._intern_node(
             ANDORNode(
                 node_id=f"{parent.node_id}/o:{_node_token(observation_label)}",
-                kind=ANDORNodeKind.OR,
-                parent_index=parent.node_index,
                 history=parent.history.append_observation(observation_label),
-                metadata={
-                    "observation": observation_label,
-                    "observation_mode": self.observation_scope.mode,
-                    "observation_variables": self.observation_scope.variables,
-                },
             )
         )
 
