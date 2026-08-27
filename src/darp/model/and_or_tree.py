@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any
 from urllib.parse import quote
 
 
@@ -19,11 +20,11 @@ class History:
         """Return the number of action decisions in the history. / 返回 history 中 action decision 的数量。"""
         return len(self.actions)
 
-    def append_action(self, action: str) -> "History":
+    def append_action(self, action: str) -> History:
         """Return a history extended by one action. / 返回追加一个 action 后的 history。"""
         return History(actions=self.actions + (action,), observations=self.observations)
 
-    def append_observation(self, observation: str) -> "History":
+    def append_observation(self, observation: str) -> History:
         """Return a history extended by one observation. / 返回追加一个 observation 后的 history。"""
         return History(actions=self.actions, observations=self.observations + (observation,))
 
@@ -84,7 +85,7 @@ class ANDORSearchInterface:
         actions: tuple[ActionChoice, ...],
         observation_scope: ObservationScope,
         exact_kernel: Any | None = None,
-    ) -> "ANDORSearchInterface":
+    ) -> ANDORSearchInterface:
         """Create a root interface from action choices and observation scope. / 从 action choice 和 observation scope 创建根接口。"""
         return cls(
             root=ANDORNode(node_id="root"),

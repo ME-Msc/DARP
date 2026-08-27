@@ -1,20 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run the publication comparison against the pinned upstream Quad model.
+# Run DARP vs RAO* using the paper-derived experiment configuration.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${VENV_DIR:-${ROOT_DIR}/.venv}"
-OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/experiments/outputs/raostar-quad}"
-
-if [[ -z "${RAOSTAR_CHECKOUT:-}" ]]; then
-  echo "Set RAOSTAR_CHECKOUT to the clean manifest-pinned RAOStar checkout." >&2
-  exit 2
-fi
-if [[ "${RAOSTAR_ACCEPT_NO_LICENSE:-}" != "1" ]]; then
-  echo "Set RAOSTAR_ACCEPT_NO_LICENSE=1 after reviewing the upstream license notice." >&2
-  exit 2
-fi
+OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/output/DARP-vs-RAOstar}"
 
 export PYTHONDONTWRITEBYTECODE=1
 cd "${ROOT_DIR}"
@@ -24,12 +15,22 @@ if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
 fi
 
 mkdir -p "${OUTPUT_DIR}"
-"${VENV_DIR}/bin/python" -m experiments.scripts.run_raostar_quad \
-  --checkout "${RAOSTAR_CHECKOUT}" \
-  --python "${RAOSTAR_PYTHON:-${VENV_DIR}/bin/python}" \
-  --accept-no-license \
-  --timeout "${TIMEOUT_SECONDS:-300}" \
-  --repetitions "${REPETITIONS:-25}" \
-  --include-full-ilp \
-  --full-ilp-max-horizon 2 \
-  --output "${OUTPUT_DIR}/raostar_quad_results.jsonl"
+
+RUN_ARGS=(
+  --trials "${TRIALS:-25}"
+  --output "${OUTPUT_DIR}/raw.csv"
+  --summary "${OUTPUT_DIR}/summary.md"
+  --resume
+)
+
+if [[ -n "${CONSTRAINED_POMDP_REPO:-}" ]]; then
+  RUN_ARGS+=(--constrained-pomdp-repo "${CONSTRAINED_POMDP_REPO}")
+fi
+if [[ -n "${RAOSTAR_CHECKOUT:-}" ]]; then
+  RUN_ARGS+=(--raostar-checkout "${RAOSTAR_CHECKOUT}")
+fi
+if [[ -n "${BASELINE_CACHE:-}" ]]; then
+  RUN_ARGS+=(--baseline-cache "${BASELINE_CACHE}")
+fi
+
+"${VENV_DIR}/bin/python" -m experiments.DARP-vs-RAOstar.run "${RUN_ARGS[@]}"

@@ -10,15 +10,14 @@ $$
 M=\langle S,A,\mathcal O,T,O,U,b_0,h\rangle,
 $$
 
-其中 $T(s,a,s')=P(s'\mid s,a)$，$O(o,s',a)=P(o\mid s',a)$。历史
-$q=\langle(a^1,o^1),\ldots,(a^k,o^k)\rangle$，确定性条件策略把每个可达的 observation history 映射到一个 action。
+其中 $T(s,a,s')=P(s'\mid s,a)$，$O(o,s',a)=P(o\mid s',a)$。历史 $q=\langle(a^1,o^1),\ldots,(a^k,o^k)\rangle$，确定性条件策略把每个可达的 observation history 映射到一个 action。
 
 约束有两类：
 
 - C-POMDP：期望累计 cost 不超过 $C$；
 - CC-POMDP：执行中首次进入风险集合的概率不超过 $\Delta$。
 
-RDDL 经 `adapter/grounded.py` 解析成有限模型回调；`adapter/exact.py` 只枚举从根 belief 实际可达的状态、转移和观测，并以 `Fraction` 保存概率质量。
+RDDL 经 `adapter/grounded.py` 解析成模型回调；`adapter/exact.py` 只枚举从根 belief 在有限 history 内实际可达的状态、转移和观测，并以 `Fraction` 保存概率质量。语法上允许 `int` fluent，但 exact 执行要求每个已触达 CPF row 的 support 可有限枚举；具体状态编码由 domain 决定，核心求解器不包含 Grid 或 Manhattan 特例。
 
 ## 2. Algorithm 1：预处理
 
@@ -101,7 +100,7 @@ $$
 
 它与论文的 $\tfrac12[1+\operatorname{erf}((h-\mu_q)/(\sigma_q\sqrt2))]$ 代数等价，并减少尾部消减误差。判定仍是严格 `>`，没有固定 ULP 上移或 `>=`。这是稳定的 binary64 CDF 实现，不是有向舍入的数学区间证书。
 
-RDDL 的整数 horizon 不会隐式截断 duration tree；只有论文的 duration stopping test 决定 action depth。HILP 若因 expansion round 或 solver time 上限停止，结果保持 incomplete。
+Duration 参数必须从 RDDL 之外的 JSON sidecar 读入，求解器不会隐式假设单位时长。RDDL 的整数 horizon 只作为 sidecar evaluator 的时间阈值，不会额外截断 duration tree；只有论文的 duration stopping test 决定 action depth。HILP 若因 expansion round 或 solver time 上限停止，结果保持 incomplete。
 
 ## 5. ILP
 
@@ -132,4 +131,14 @@ $$
 3. 只展开这些 frontier；
 4. warm-start 下一轮，直到没有可展开的选中 frontier 或达到显式资源上限。
 
-默认 `reachable-bellman` 在精确可达 kernel 上提供 optimistic utility tail；`one-step-greedy` 只是近似排序分数。只要仍有未展开的候选 subtree、启发式可采纳性无法验证或资源上限截断，结果就不能标记 complete。full-ILP 枚举完整有限树，仅作为很小 horizon 的结构 oracle。
+一次 HILP 搜索在同一个 Gurobi model 上增量维护这些 p-ILP：已有 root、变量和 flow 行保持不变；frontier $q$ 展开时把目标系数从 $h_q$ 更新为精确 $u_q$，再加入 child variables、flow 行并扩展同一条全局风险行。每轮仍用最新完整 `ILPModelSpec` 做精确 incumbent 复核，因此这是 Algorithm 3 的实现优化，不固定策略前缀，也不改变数学问题。
+
+领域启发式通过 `UtilityHeuristic` 外部注入。回调只计算单个状态的 utility-to-go，核心负责论文规定的 history 概率加权：
+
+$$
+h_q=\sum_s \rho(q)b_q(s)h(s,a_q).
+$$
+
+cost-to-go 回调必须返回负值，因为 DARP 最大化 utility。未提供回调时只使用精确一步 utility 作为非认证 fallback；核心不再内置 reachable-Bellman 或 Manhattan。`frontier_width=None` 展开 incumbent 中全部 frontier，与论文复现实验一致；有限宽度仅是显式的 batching 选项。`terminal_heuristic` 单独控制 duration 边界的评价，避免把实验的 terminal value 混进 RDDL reward。当前 action-level terminal value 要求同一 action 的所有 observation branch 同时停止；混合停止/继续会 fail fast，callback 也必须为模型 terminal state 返回正确终值。
+
+只要仍有未展开的候选 subtree、启发式上界无法验证或资源上限截断，结果就不能标记 complete。full-ILP 枚举完整有限树，仅作为很小 horizon 的结构 oracle。

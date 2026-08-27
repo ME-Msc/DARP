@@ -6,9 +6,10 @@ __pycache__/
 build/
 dist/
 
-.cache/
+/.cache/
 .agents/
 .codex
 
-experiments/outputs/
+# Generated results under this repository root (not the system root).
+/output/
 *.tmp

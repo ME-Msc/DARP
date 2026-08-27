@@ -1,0 +1,26 @@
+non-fluents paper_grid_5_h3_nf {
+    domain = darp_vs_raostar_grid;
+    non-fluents {
+        max_row = 4;
+        max_col = 4;
+        goal_row = 0;
+        goal_col = 4;
+        transition_accuracy = 0.85;
+        observation_accuracy = 0.85;
+    };
+}
+
+instance paper_grid_5_h3 {
+    domain = darp_vs_raostar_grid;
+    non-fluents = paper_grid_5_h3_nf;
+    init-state {
+        grid_row = 4;
+        grid_col = 0;
+        row_mod5 = 4;
+        col_mod5 = 0;
+        noise = 0;
+    };
+    max-nondef-actions = 1;
+    horizon = 3;
+    discount = 1.0;
+}

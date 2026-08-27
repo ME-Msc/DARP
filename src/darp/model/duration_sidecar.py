@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from darp.adapter.exact import RiskConstraintSpec, RiskConstraintType
 from darp.model.duration import (

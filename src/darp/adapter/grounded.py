@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any
 
-from darp.model.and_or_tree import ANDORSearchInterface, ActionChoice, ObservationScope
+from darp.model.and_or_tree import ActionChoice, ANDORSearchInterface, ObservationScope
 
 if TYPE_CHECKING:
     from pyRDDLGym.core.compiler.model import RDDLGroundedModel
@@ -19,7 +20,7 @@ class UnsupportedRDDLFeatureError(ValueError):
 class GroundedRDDLView:
     """Expose stable DARP accessors for a pyRDDLGym grounded model. / 为 pyRDDLGym grounded model 暴露稳定的 DARP 读取接口。"""
 
-    grounded_model: "RDDLGroundedModel"
+    grounded_model: RDDLGroundedModel
 
     @property
     def discount(self) -> float:
@@ -83,7 +84,6 @@ class GroundedRDDLView:
         for attribute, label in (
             ("preconditions", "action preconditions"),
             ("invariants", "state invariants"),
-            ("terminations", "termination conditions"),
         ):
             expressions = getattr(self.grounded_model, attribute, ()) or ()
             if expressions:

@@ -1,19 +1,22 @@
-"""Policy-tree ILP encoders for full-tree and HILP partial trees."""
+"""Policy-tree ILP encoders for full-tree and HILP partial trees.
+
+/ full-tree 与 HILP partial-tree 共用的策略树 ILP 编码器。
+"""
 
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
 from math import isfinite, nextafter
-from typing import Mapping, Sequence
 
-from darp.adapter.runtime import PyRDDLGymRuntime
 from darp.adapter.exact import (
     RiskConstraintType,
     StateKey,
     risk_constraint_type_for_kernel,
 )
+from darp.adapter.runtime import PyRDDLGymRuntime
 from darp.ilp.model import ILPLinearConstraint, ILPModelSpec, ILPVariable
 from darp.model.and_or_tree import ANDORSearchInterface
 from darp.model.duration import HistoryDurationEvaluator
@@ -39,6 +42,9 @@ class PolicyTreeILP:
     # map deliberately stores ``exact_expanded`` rather than the possibly
     # modified objective record.  Policy extraction needs the observation
     # branches to prove that every duration-feasible continuation is present.
+    # 即使 p-ILP 用 heuristic 替换 frontier utility，这里仍保存
+    # ``exact_expanded``；policy extraction 依靠精确 observation branches
+    # 验证所有 duration-feasible continuation 都已存在。
     variable_expansions: Mapping[str, ExpandedAction] = field(default_factory=dict)
     variable_continues: Mapping[str, bool] = field(default_factory=dict)
     constraint_budget: float | None = None
@@ -58,12 +64,17 @@ class Algorithm1ExpansionRecord:
     # HILP can score a frontier with a modified utility coefficient.  Retain
     # the unmodified expansion for executable-policy validation and exact
     # coefficient accounting.
+    # frontier 可以使用修改后的 heuristic utility 评分，但必须另外保留未经
+    # 修改的精确展开，用于可执行策略验证和精确系数核算。
     exact_expanded: ExpandedAction | None = None
 
 
 @dataclass(frozen=True)
 class _ConstraintEncodingContext:
-    """Values shared by full- and partial-tree constraint encoders."""
+    """Values shared by full- and partial-tree constraint encoders.
+
+    / 保存两类编码器共享的约束类型、原始预算、有效 RHS 及其精确值。
+    """
 
     constraint_type: RiskConstraintType
     original_budget: float | None
@@ -518,6 +529,8 @@ def _definition31_flow_constraints(
     if has_nonterminal_deadend:
         # One zero row excludes the parent for every dead-end outcome; writing
         # the same x_parent=0 equation once per observation only bloats the ILP.
+        # 任一非终止 observation 成为死路时，一条 x_parent=0 就能排除父动作；
+        # 无需按 observation 重复写入同一个等式，从而避免无意义地增大 ILP。
         constraints.append(
             ILPLinearConstraint(
                 name=f"deadend_{parent_var_id}",

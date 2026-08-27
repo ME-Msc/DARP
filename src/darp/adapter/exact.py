@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from itertools import product
 from math import isfinite, nextafter, prod
-from typing import Any, Hashable, Iterable, Literal, Mapping, Sequence
+from typing import Any, Literal
 
 StateKey = tuple[tuple[str, Hashable], ...]
 ObservationKey = tuple[tuple[str, Hashable], ...]
@@ -149,12 +150,16 @@ class ExactRDDLKernel:
     _observation_names_cache: tuple[str, ...] = field(default=(), init=False, repr=False, compare=False)
     _non_fluents_cache: Mapping[str, Any] = field(default_factory=dict, init=False, repr=False, compare=False)
     _cpfs_cache: Mapping[str, Any] = field(default_factory=dict, init=False, repr=False, compare=False)
+    _terminations_cache: tuple[Any, ...] = field(default=(), init=False, repr=False, compare=False)
     _state_index: _LazyStateIndex = field(default_factory=_LazyStateIndex, init=False, repr=False, compare=False)
     _action_ids: dict[ActionKey, int] = field(default_factory=dict, init=False, repr=False, compare=False)
     _transition_rows: dict[tuple[int, int], SparseTransitionRow] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
     _reward_fraction_cache: dict[tuple[int, int], Fraction] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _transition_failure_cache: dict[tuple[int, int, int], Fraction] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
     _observation_cache: dict[tuple[int, int], Mapping[ObservationKey, Fraction]] = field(
@@ -181,6 +186,11 @@ class ExactRDDLKernel:
         cpfs = getattr(self.grounded_model, "cpfs", None)
         object.__setattr__(self, "_non_fluents_cache", non_fluents if isinstance(non_fluents, Mapping) else {})
         object.__setattr__(self, "_cpfs_cache", cpfs if isinstance(cpfs, Mapping) else {})
+        object.__setattr__(
+            self,
+            "_terminations_cache",
+            tuple(getattr(self.grounded_model, "terminations", ()) or ()),
+        )
 
     @classmethod
     def from_grounded_model(
@@ -188,7 +198,7 @@ class ExactRDDLKernel:
         grounded_model: Any,
         *,
         risk: RiskConstraintSpec | None = None,
-    ) -> "ExactRDDLKernel":
+    ) -> ExactRDDLKernel:
         """Build an exact kernel from a pyRDDLGym grounded model. / 从 pyRDDLGym grounded model 构建 exact kernel。"""
         kernel = cls(grounded_model=grounded_model, risk=risk or RiskConstraintSpec())
         kernel._validate_supported()
@@ -271,6 +281,23 @@ class ExactRDDLKernel:
         if not isinstance(declared, Mapping):
             raise ExactKernelError("Grounded model does not expose a declared initial state.")
         return self.initial_belief_from_state(declared)
+
+    def belief_is_terminal(self, belief: Mapping[StateKey, float | Fraction]) -> bool:
+        """Match RDDL termination semantics for every positive-support state."""
+        if not self._terminations_cache:
+            return False
+        states = tuple(state for state, probability in belief.items() if probability > 0)
+        return bool(states) and all(self._state_is_terminal(state) for state in states)
+
+    def _state_is_terminal(self, state: StateKey) -> bool:
+        context = self._context(self.state_from_key(state), {})
+        for expression in self._terminations_cache:
+            distribution = self.expression_distribution(expression, context)
+            if len(distribution) != 1:
+                raise ExactKernelError("RDDL termination expressions must be deterministic.")
+            if bool(next(iter(distribution))):
+                return True
+        return False
 
     def state_key(self, state: Mapping[str, Any]) -> StateKey:
         """Convert a state mapping to a stable key. / 将 state mapping 转成稳定 key。"""
@@ -490,6 +517,14 @@ class ExactRDDLKernel:
         action: Mapping[str, Any],
     ) -> Fraction:
         """Return the exact first-entry failure probability for a transition."""
+        cache_key = (
+            self._state_index.register(source),
+            self._state_index.register(target),
+            self._action_id(action),
+        )
+        cached = self._transition_failure_cache.get(cache_key)
+        if cached is not None:
+            return cached
         failures = (
             min(
                 Fraction(1),
@@ -517,9 +552,12 @@ class ExactRDDLKernel:
             ),
         )
         if any(probability >= 1 for probability in failures):
-            return Fraction(1)
-        survival = prod(Fraction(1) - probability for probability in failures)
-        return Fraction(1) - survival
+            failure = Fraction(1)
+        else:
+            survival = prod(Fraction(1) - probability for probability in failures)
+            failure = Fraction(1) - survival
+        self._transition_failure_cache[cache_key] = failure
+        return failure
 
     def transition_fraction_distribution(
         self,
@@ -756,7 +794,16 @@ class ExactRDDLKernel:
         if cached is not None:
             return cached
         state = self.state_from_key(self._state_index.key(state_id))
-        reward_fraction = self.expected_reward_fraction(self._context(state, action))
+        context = self._context(state, action)
+        row = self._transition_row(state_id, action_id, action)
+        reward_fraction = Fraction(0)
+        for target_id, probability in zip(row.next_state_ids, row.probabilities):
+            target = self.state_from_key(self._state_index.key(int(target_id)))
+            next_context = {
+                **context,
+                **{f"{name}'": target.get(name, False) for name in self.state_names},
+            }
+            reward_fraction += probability * self.expected_reward_fraction(next_context)
         self._reward_fraction_cache[cache_key] = reward_fraction
         return reward_fraction
 
@@ -843,7 +890,7 @@ class ExactRDDLKernel:
         for (selector, configured_action), value in costs.items():
             if str(configured_action) != action_label or not isinstance(selector, str):
                 continue
-            specificity = _boolean_selector_specificity(selector, state_mapping)
+            specificity = _selector_specificity(selector, state_mapping)
             if specificity is not None:
                 matches.append((specificity, selector, float(value)))
         if not matches:
@@ -859,16 +906,17 @@ class ExactRDDLKernel:
         return Fraction.from_float(best[0][1])
 
     def _validate_supported(self) -> None:
-        """Validate finite bool/enumerable assumptions. / 验证有限 bool/enumerable 假设。"""
+        """Validate scalar ranges whose reached CPF rows have finite support."""
         state_ranges = getattr(self.grounded_model, "state_ranges", {}) or {}
         unsupported = [
             name
             for name in self.state_names
-            if str(state_ranges.get(name, "bool")) != "bool"
+            if str(state_ranges.get(name, "bool")) not in {"bool", "int"}
         ]
         if unsupported:
             raise ExactKernelError(
-                "Current exact kernel supports bool state fluents only: "
+                "Current exact kernel supports bool and finite-horizon int "
+                "state fluents only: "
                 + ", ".join(unsupported)
             )
         configured_cost_fluents = set(self.risk.state_fluent_costs) | set(
@@ -911,7 +959,7 @@ class ExactRDDLKernel:
             for selector, action in table:
                 configured_actions.add(str(action))
                 if isinstance(selector, str):
-                    selector_names.update(_boolean_selector_names(selector))
+                    selector_names.update(_selector_names(selector))
                 elif _looks_like_state_key(selector):
                     selector_names.update(str(name) for name, _ in selector)
                 else:
@@ -992,15 +1040,15 @@ def _action_label_from_assignment(
     return "+".join(active) if active else "noop"
 
 
-def _boolean_selector_specificity(
+def _selector_specificity(
     selector: str,
     state: Mapping[str, Any],
 ) -> int | None:
-    """Return matched Boolean-clause count, with ``*`` matching every state."""
+    """Return matched equality-clause count, with ``*`` matching every state."""
     if selector.strip() == "*":
         return 0
     clauses = selector.split("&")
-    parsed: list[tuple[str, bool]] = []
+    parsed: list[tuple[str, Hashable]] = []
     for clause in clauses:
         name, separator, raw_value = clause.partition("=")
         name = name.strip()
@@ -1009,18 +1057,21 @@ def _boolean_selector_specificity(
         if not separator:
             expected = True
         else:
-            normalized = raw_value.strip().lower()
-            if normalized not in {"true", "false"}:
+            try:
+                expected = _selector_literal(raw_value)
+            except ValueError:
                 return None
-            expected = normalized == "true"
         parsed.append((name, expected))
-    if all(name in state and bool(state[name]) is expected for name, expected in parsed):
+    if all(
+        name in state and _plain_value(state[name]) == expected
+        for name, expected in parsed
+    ):
         return len(parsed)
     return None
 
 
-def _boolean_selector_names(selector: str) -> tuple[str, ...]:
-    """Validate a sidecar Boolean selector and return its fluent names."""
+def _selector_names(selector: str) -> tuple[str, ...]:
+    """Validate a sidecar equality selector and return its fluent names."""
     if selector.strip() == "*":
         return ()
     names: list[str] = []
@@ -1029,13 +1080,31 @@ def _boolean_selector_names(selector: str) -> tuple[str, ...]:
         name = name.strip()
         if not name:
             raise ExactKernelError(f"Risk state selector is invalid: {selector!r}")
-        if separator and raw_value.strip().lower() not in {"true", "false"}:
-            raise ExactKernelError(
-                "Risk state selectors support only Boolean values: "
-                f"{selector!r}"
-            )
+        if separator:
+            try:
+                _selector_literal(raw_value)
+            except ValueError as error:
+                raise ExactKernelError(
+                    f"Risk state selector has an invalid value: {selector!r}"
+                ) from error
         names.append(name)
     return tuple(names)
+
+
+def _selector_literal(raw_value: str) -> bool | int:
+    """Parse the Boolean/integer syntax used by JSON sidecar selectors."""
+    value = raw_value.strip()
+    if not value:
+        raise ValueError("empty selector value")
+    normalized = value.lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    try:
+        return int(value)
+    except ValueError as error:
+        raise ValueError("selector value must be Boolean or integer") from error
 
 
 def _looks_like_state_key(value: object) -> bool:
@@ -1081,7 +1150,7 @@ def _canonical_complete_state_selector(
     """Validate and order one direct-API selector as a complete StateKey."""
     if not _looks_like_state_key(selector):
         raise ExactKernelError(
-            "Risk state-action table keys must use a Boolean state selector "
+            "Risk state-action table keys must use a scalar state selector "
             f"string or complete StateKey, got {selector!r}."
         )
     entries = tuple(selector)
@@ -1116,9 +1185,9 @@ def _canonical_complete_state_selector(
     values: dict[str, Hashable] = {}
     for name, raw_value in entries:
         value = _plain_value(raw_value)
-        if value is not True and value is not False:
+        if not isinstance(value, (bool, int)):
             raise ExactKernelError(
-                "Risk direct StateKey selectors support only Boolean values; "
+                "Risk direct StateKey selector values must be Boolean or integer; "
                 f"{name!r} has {raw_value!r}."
             )
         values[str(name)] = value

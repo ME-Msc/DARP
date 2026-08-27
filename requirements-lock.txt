@@ -13,6 +13,9 @@ gurobipy==13.0.2
 numpy==2.4.6
 pyRDDLGym==2.7
 
+# External HILP/RAO* comparison dependency.
+networkx==3.6.1
+
 # Transitive runtime dependencies.
 cloudpickle==3.1.2
 contourpy==1.3.3

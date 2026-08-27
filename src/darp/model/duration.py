@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Hashable, Iterable, Mapping
 from dataclasses import dataclass
-from collections.abc import Hashable
 from fractions import Fraction
 from math import erfc, isfinite, nextafter, sqrt
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 ActionName = str
 StateKey = Hashable
@@ -31,7 +31,7 @@ class DurationProgress:
     variance: Fraction = Fraction(0)
     augmented_belief: AugmentedBelief | None = None
 
-    def add(self, estimate: DurationEstimate) -> "DurationProgress":
+    def add(self, estimate: DurationEstimate) -> DurationProgress:
         """Return progress after adding one estimate. / 返回加入一次估计后的累计进度。"""
         if self.augmented_belief is not None:
             raise ValueError(

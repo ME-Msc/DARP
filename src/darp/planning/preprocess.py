@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from fractions import Fraction
 from math import isfinite
-from typing import Mapping
 
-from darp.adapter.runtime import PyRDDLGymRuntime
-from darp.model.and_or_tree import ANDORNode, ANDORSearchInterface
-from darp.model.duration import DurationProgress
 from darp.adapter.exact import (
     ObservationKey,
     StateKey,
     risk_constraint_type_for_kernel,
 )
+from darp.adapter.runtime import PyRDDLGymRuntime
+from darp.model.and_or_tree import ANDORNode, ANDORSearchInterface
+from darp.model.duration import DurationProgress
 
 
 @dataclass(frozen=True, eq=False)
@@ -91,6 +91,8 @@ def initialize_root_frontier(
         for node in action_nodes
     )
     return frontier
+
+
 def resolve_root_belief(
     runtime: PyRDDLGymRuntime,
     interface: ANDORSearchInterface,

@@ -1,1 +1,1 @@
-"""DARP–RAO* Quad experiment."""
+"""Reproducible validation experiments for DARP."""

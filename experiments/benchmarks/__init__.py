@@ -1,1 +1,0 @@
-"""Shared Quad benchmark bridge."""

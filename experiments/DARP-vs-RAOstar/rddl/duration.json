@@ -1,0 +1,41 @@
+{
+  "kind": "fixed",
+  "default": 1.0,
+  "zeta": 0.0,
+  "risk": {
+    "budget": 0.1,
+    "constraint_type": "chance",
+    "next_state_actions": {
+      "row_mod5=0&col_mod5=0": {
+        "noop": 1.0,
+        "move_up": 1.0,
+        "move_right": 1.0,
+        "move_down": 1.0
+      },
+      "row_mod5=3&col_mod5=0": {
+        "noop": 1.0,
+        "move_up": 1.0,
+        "move_right": 1.0,
+        "move_down": 1.0
+      },
+      "row_mod5=3&col_mod5=1": {
+        "noop": 1.0,
+        "move_up": 1.0,
+        "move_right": 1.0,
+        "move_down": 1.0
+      },
+      "row_mod5=1&col_mod5=3": {
+        "noop": 1.0,
+        "move_up": 1.0,
+        "move_right": 1.0,
+        "move_down": 1.0
+      },
+      "row_mod5=1&col_mod5=4": {
+        "noop": 1.0,
+        "move_up": 1.0,
+        "move_right": 1.0,
+        "move_down": 1.0
+      }
+    }
+  }
+}
