@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from math import isfinite
 from time import perf_counter
-from typing import Mapping
 
-from darp.adapter.exact import StateKey
+from darp.adapter.kernel import StateKey
 from darp.adapter.runtime import PyRDDLGymRuntime
 from darp.ilp.gurobi import GurobiILPSolver
 from darp.ilp.model import ILPSolveResult
@@ -45,8 +45,8 @@ class FullILPPlanner:
         - Algorithm 1 initializes the root history and repeatedly calls
           Algorithm 2 (`Expand`) until all histories that violate the duration
           stopping test have been expanded. DARP implements this tree-building
-          phase in `build_full_tree_ilp(...)`. With an exact kernel,
-          this tree uses exact finite transition/observation branches from the
+          phase in `build_full_tree_ilp(...)`. With a finite kernel,
+          this tree uses finite transition/observation branches from the
           pyRDDLGym grounded CPFs.
 
         - Algorithm 2 computes the constants for each action history $$q \in \tilde{A}$$:
@@ -68,8 +68,8 @@ class FullILPPlanner:
 
           $$\sum_q r_q x_q \le R.$$
 
-        按论文 Algorithm 1/2 生成完整 policy tree；有 exact kernel 时使用
-        pyRDDLGym grounded CPF 的有限 transition/observation 精确分支，然后直接
+        按论文 Algorithm 1/2 生成完整 policy tree；有限 kernel 使用
+        pyRDDLGym grounded CPF 的有限 transition/observation 分支，然后直接
         用 Gurobi 直接求解 full-ILP。
 
         Reference-code correspondence:
@@ -120,13 +120,11 @@ class FullILPPlanner:
         selected_item = ilp_tree.variable_items[selected_root]
         policy = extract_conditional_policy(ilp_tree, ilp_result)
         decision_complete = (
-            ilp_result.numerically_optimal
-            and ilp_tree.objective_coefficients_exact
-            and ilp_tree.constraint_coefficients_exact
+            ilp_result.status == "optimal"
             and policy.duration_complete
             and policy.feasible is not False
         )
-        # A duration-complete incumbent is executable and its selected exact
+        # A duration-complete incumbent is executable and its selected
         # coefficients are achieved utility even when optimality has not yet
         # been proved (for example at a solver time limit).
         achieved_utility = policy.achieved_utility
@@ -152,18 +150,6 @@ class FullILPPlanner:
                 "ilp_variables": float(len(ilp_tree.spec.variables)),
                 "ilp_constraints": float(len(ilp_tree.spec.constraints)),
                 "expanded_nodes": float(len(ilp_tree.variable_items)),
-                "solver_numerically_optimal": (
-                    1.0 if ilp_result.numerically_optimal else 0.0
-                ),
-                "numerical_zero_gap": (
-                    1.0 if ilp_result.has_numerical_zero_gap else 0.0
-                ),
-                "objective_coefficients_exact": (
-                    1.0 if ilp_tree.objective_coefficients_exact else 0.0
-                ),
-                "constraint_coefficients_exact": (
-                    1.0 if ilp_tree.constraint_coefficients_exact else 0.0
-                ),
                 "solver_time_limit_hit": (
                     1.0 if ilp_result.status == "time_limit" else 0.0
                 ),

@@ -1,15 +1,14 @@
-"""Paper-style exact Expand operation over grounded finite kernels."""
+"""Paper Algorithm 2 over grounded finite transition kernels."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from fractions import Fraction
 from typing import Any
 
-from darp.adapter.exact import (
-    ExactRDDLKernel,
+from darp.adapter.kernel import (
     ObservationKey,
+    RDDLKernel,
     RiskConstraintType,
     StateKey,
     risk_constraint_type_for_kernel,
@@ -41,10 +40,6 @@ class ExpansionMetrics:
     penalty: float
     chance_risk: float
     constraint_type: RiskConstraintType
-    objective_support_preserved: bool
-    utility_exact: Fraction | None
-    penalty_exact: Fraction | None
-    chance_risk_exact: Fraction | None
 
     @property
     def constraint_value(self) -> float:
@@ -69,6 +64,55 @@ class ObservationFrontier:
     should_expand: bool
 
 
+def evaluate_frontier_leaf_metrics(
+    item: FrontierItem,
+    interface: ANDORSearchInterface,
+    *,
+    utility: float,
+) -> ExpansionMetrics:
+    """Combine a leaf utility with its risk without materializing children.
+
+    The caller supplies the frontier utility (normally :math:`h_q`); this
+    function computes only the active constraint coefficient. Observation
+    posteriors, duration branches, AND-OR nodes, one-step utility and child
+    actions are deliberately postponed until the incumbent selects the leaf.
+
+    / 调用方提供 frontier utility（通常为 :math:`h_q`）；这里只计算
+    risk/penalty，observation、duration、一步 utility 和 children 均延迟。
+    """
+    kernel = interface.kernel
+    if kernel is None:
+        raise ValueError("Paper frontier evaluation requires a finite kernel.")
+    action = item.node.assignment
+    if action is None:
+        raise ValueError("AND-OR action node has no action assignment.")
+
+    constraint_type = risk_constraint_type_for_kernel(kernel)
+    if constraint_type == "expected":
+        if dict(item.constraint_mass) != dict(item.ordinary_mass):
+            raise ValueError("Expected-cost constraint mass must equal ordinary mass.")
+        constraint = kernel.expand_expected_constraint_mass(
+            item.constraint_mass,
+            action,
+            include_observations=False,
+        )
+        penalty = constraint.coefficient
+        chance_risk = 0.0
+    else:
+        chance_risk = kernel.safe_constraint_coefficient_for_mass(
+            item.constraint_mass,
+            action,
+        )
+        penalty = 0.0
+
+    return ExpansionMetrics(
+        utility=utility,
+        penalty=penalty,
+        chance_risk=chance_risk,
+        constraint_type=constraint_type,
+    )
+
+
 # Paper Algorithm 2: Expand.
 # 论文 Algorithm 2：Expand。
 def expand_frontier_item(
@@ -87,8 +131,8 @@ def expand_frontier_item(
             u_{qa}=\rho(q)\,\mathbb E_{b_q}[U(s,a)],\quad
             r_{qa}=\tilde\rho(q)\,r(b^{\mathrm{safe}}_q,a).
         $$
-      DARP evaluates these values from pyRDDLGym grounded CPFs through
-      `ExactRDDLKernel`; ordinary beliefs support smoothing, while safe
+      DARP evaluates these values from pyRDDLGym grounded CPFs through its
+      finite kernel; ordinary beliefs support smoothing, while safe
       beliefs support the chance constraint.
 
     - Lines 5-9 compute observation branches and their occurrence probability:
@@ -109,12 +153,12 @@ def expand_frontier_item(
 
     - Line 21 returns the ILP constants and child histories.
 
-    / 显式实现论文 Algorithm 2：从 grounded CPF 精确枚举 transition 与
+    / 显式实现论文 Algorithm 2：从 grounded CPF 枚举 transition 与
     observation；函数会计算 full-ILP 所需的 $$u_q$$、$$r_q$$、$$\rho(qao)$$、$$\tilde\rho(qao)$$ 与 $$\tau(qao)$$
     """
-    exact_kernel = interface.exact_kernel
-    if exact_kernel is None:
-        raise ValueError("Paper Expand requires an exact kernel.")
+    kernel = interface.kernel
+    if kernel is None:
+        raise ValueError("Paper Expand requires a finite kernel.")
 
     b_q = item.belief
     ordinary_mass_q = item.ordinary_mass
@@ -122,10 +166,8 @@ def expand_frontier_item(
     a_q = item.node.assignment
     if a_q is None:
         raise ValueError("AND-OR action node has no action assignment.")
-    constraint_type = risk_constraint_type_for_kernel(exact_kernel)
-    u_qa, objective_support_preserved, utility_exact = (
-        exact_kernel.utility_coefficient_for_mass(ordinary_mass_q, a_q)
-    )
+    constraint_type = risk_constraint_type_for_kernel(kernel)
+    u_qa = kernel.utility_coefficient_for_mass(ordinary_mass_q, a_q)
 
     # Expected-cost mass is exactly the ordinary mass, so its expansion is
     # also the ordinary T/O expansion.  This avoids evaluating identical
@@ -134,26 +176,22 @@ def expand_frontier_item(
     if constraint_type == "expected":
         if dict(constraint_mass_q) != dict(ordinary_mass_q):
             raise ValueError("Expected-cost constraint mass must equal ordinary mass.")
-        exact_constraint_qa = exact_kernel.expand_expected_constraint_mass(
+        constraint_qa = kernel.expand_expected_constraint_mass(
             constraint_mass_q, a_q
         )
-        ordinary_mass_qa = exact_constraint_qa
-        p_qa = exact_constraint_qa.coefficient
-        penalty_exact = exact_constraint_qa.coefficient_exact
+        ordinary_mass_qa = constraint_qa
+        p_qa = constraint_qa.coefficient
         r_qa = 0.0
-        chance_risk_exact = None
     else:
-        ordinary_mass_qa = exact_kernel.expand_ordinary_mass(ordinary_mass_q, a_q)
-        exact_constraint_qa = exact_kernel.expand_safe_constraint_mass(
+        ordinary_mass_qa = kernel.expand_ordinary_mass(ordinary_mass_q, a_q)
+        constraint_qa = kernel.expand_safe_constraint_mass(
             constraint_mass_q, a_q
         )
         p_qa = 0.0
-        penalty_exact = None
-        r_qa = exact_constraint_qa.coefficient
-        chance_risk_exact = exact_constraint_qa.coefficient_exact
+        r_qa = constraint_qa.coefficient
 
     constraint_outcomes = {
-        outcome.observation: outcome for outcome in exact_constraint_qa.observations
+        outcome.observation: outcome for outcome in constraint_qa.observations
     }
 
     # Lines 5-20: enumerate every qao branch and attach the next action frontier.
@@ -163,7 +201,7 @@ def expand_frontier_item(
     for ordinary_outcome in ordinary_mass_qa.observations:
         observation = ordinary_outcome.observation
         ordinary_mass_qao = ordinary_outcome.state_mass
-        b_qao = exact_kernel.constraint_mass_belief(ordinary_mass_qao)
+        b_qao = kernel.constraint_mass_belief(ordinary_mass_qao)
         constraint_outcome = constraint_outcomes.get(observation)
         if constraint_type == "chance":
             constraint_mass_qao = (
@@ -198,12 +236,12 @@ def expand_frontier_item(
                 )
             )
         elif isinstance(duration_evaluator.model, ChanceConstrainedDurationModel):
-            # Paper Sec. 3 chance-constrained duration: propagate the exact
+            # Paper Sec. 3 chance-constrained duration: propagate the
             # posterior over augmented states (s, g), g being elapsed duration.
             # State marginals or a scalar expected duration cannot preserve the
             # correlation needed by Pr(G_q < h | q).
             duration_qao = _advance_augmented_duration_belief(
-                exact_kernel=exact_kernel,
+                kernel=kernel,
                 model=duration_evaluator.model,
                 progress=item.duration_progress,
                 current_state_mass=ordinary_mass_q,
@@ -216,8 +254,8 @@ def expand_frontier_item(
             action_assignments_qa = _action_assignments_for_history(
                 interface, actions_qa
             )
-            exact_smoothed_beliefs_qao = _algorithm2_backward_and_smoothed_beliefs(
-                exact_kernel=exact_kernel,
+            smoothed_beliefs_qao = _algorithm2_backward_and_smoothed_beliefs(
+                kernel=kernel,
                 actions=actions_qa,
                 action_assignments=action_assignments_qa,
                 observations=observation_keys_qao,
@@ -225,7 +263,7 @@ def expand_frontier_item(
             )
             duration_qao = _algorithm2_duration_from_smoothed_beliefs(
                 actions=actions_qa,
-                exact_smoothed_beliefs=exact_smoothed_beliefs_qao,
+                smoothed_beliefs=smoothed_beliefs_qao,
                 duration_evaluator=duration_evaluator,
             )
         expand_qao = duration_evaluator.model.should_continue(
@@ -233,9 +271,8 @@ def expand_frontier_item(
             duration_evaluator.horizon,
             duration_evaluator.zeta,
         )
-        callback_belief_qao: Mapping[Any, Any] = _normalized_fraction_belief(
-            ordinary_mass_qao
-        )
+        # Reuse the normalized posterior for terminal and action callbacks.
+        callback_belief_qao: Mapping[Any, Any] = b_qao
         should_expand_qao = (
             expand_qao
             and bool(ordinary_mass_qao)
@@ -266,10 +303,6 @@ def expand_frontier_item(
         penalty=p_qa,
         chance_risk=r_qa,
         constraint_type=constraint_type,
-        objective_support_preserved=objective_support_preserved,
-        utility_exact=utility_exact,
-        penalty_exact=penalty_exact,
-        chance_risk_exact=chance_risk_exact,
     )
     return ExpandedAction(
         child_frontier=tuple(next_frontier),
@@ -280,12 +313,12 @@ def expand_frontier_item(
 
 def _algorithm2_backward_and_smoothed_beliefs(
     *,
-    exact_kernel: ExactRDDLKernel,
+    kernel: RDDLKernel,
     actions: Sequence[str],
     action_assignments: Sequence[Mapping[str, Any]],
     observations: Sequence[ObservationKey],
-    filtered_masses: Sequence[Mapping[StateKey, Fraction]],
-) -> tuple[Mapping[StateKey, Fraction], ...]:
+    filtered_masses: Sequence[Mapping[StateKey, float]],
+) -> tuple[Mapping[StateKey, float], ...]:
     r"""Compute Algorithm 2 backward messages and smoothed beliefs.
 
     For a concrete branch $$qao = (a_1,o_1,\ldots,a_k,o_k)$$,
@@ -317,49 +350,49 @@ def _algorithm2_backward_and_smoothed_beliefs(
         raise ValueError("A complete qao branch must have one observation per action.")
     if len(filtered_masses) != len(actions) + 1:
         raise ValueError(
-            "Exact mass trace must contain b0 plus one mass per observation."
+            "Mass trace must contain b0 plus one mass per observation."
         )
 
-    exact_messages: list[dict[StateKey, Fraction]] = [{} for _ in filtered_masses]
-    exact_messages[-1] = {state: Fraction(1) for state in filtered_masses[-1]}
+    messages: list[dict[StateKey, float]] = [{} for _ in filtered_masses]
+    messages[-1] = {state: 1.0 for state in filtered_masses[-1]}
     for index in range(len(actions) - 1, -1, -1):
-        exact_messages[index] = dict(
-            exact_kernel.backward_fraction_message(
+        messages[index] = dict(
+            kernel.backward_message(
                 filtered_masses[index],
-                exact_messages[index + 1],
+                messages[index + 1],
                 action_assignments[index],
                 observations[index],
             )
         )
 
-    exact_smoothed: list[Mapping[StateKey, Fraction]] = []
+    smoothed: list[Mapping[StateKey, float]] = []
     for index, filtered_mass in enumerate(filtered_masses):
         unnormalized = {
-            state: Fraction(probability) * exact_messages[index].get(state, Fraction(0))
+            state: float(probability) * messages[index].get(state, 0.0)
             for state, probability in filtered_mass.items()
-            if Fraction(probability) > 0
+            if float(probability) > 0.0
         }
-        total = sum(unnormalized.values(), start=Fraction(0))
+        total = sum(unnormalized.values())
         if total <= 0:
             raise ValueError(
-                "Algorithm 2 exact smoothing produced zero probability for a qao branch."
+                "Algorithm 2 smoothing produced zero probability for a qao branch."
             )
-        exact_smoothed.append(
+        smoothed.append(
             {
                 state: probability / total
                 for state, probability in unnormalized.items()
-                if probability > 0
+                if probability > 0.0
             }
         )
 
-    return tuple(exact_smoothed)
+    return tuple(smoothed)
 
 
 def _algorithm2_duration_from_smoothed_beliefs(
     *,
     actions: Sequence[str],
     duration_evaluator: HistoryDurationEvaluator,
-    exact_smoothed_beliefs: Sequence[Mapping[StateKey, Fraction]],
+    smoothed_beliefs: Sequence[Mapping[StateKey, float]],
 ) -> DurationProgress:
     r"""Compute fixed/stochastic duration formulas from smoothed beliefs.
 
@@ -384,7 +417,7 @@ def _algorithm2_duration_from_smoothed_beliefs(
         # 动作 $$a_i$$ 的持续时间贡献由 smoothed action-start belief $$\bar b_i$$ 加权得到
 
         estimate_i = duration_evaluator.model.estimate(
-            exact_smoothed_beliefs[index],
+            smoothed_beliefs[index],
             action_label,
         )
         progress = progress.add(estimate_i)
@@ -393,10 +426,10 @@ def _algorithm2_duration_from_smoothed_beliefs(
 
 def _advance_augmented_duration_belief(
     *,
-    exact_kernel: ExactRDDLKernel,
+    kernel: RDDLKernel,
     model: ChanceConstrainedDurationModel,
     progress: DurationProgress,
-    current_state_mass: Mapping[StateKey, Fraction],
+    current_state_mass: Mapping[StateKey, float],
     action_label: str,
     action_assignment: Mapping[str, Any],
     observation: ObservationKey,
@@ -417,66 +450,57 @@ def _advance_augmented_duration_belief(
     """
     if progress.augmented_belief is None:
         state_weights = {
-            state: Fraction(probability)
+            state: float(probability)
             for state, probability in current_state_mass.items()
-            if Fraction(probability) > 0
+            if float(probability) > 0.0
         }
-        total = sum(state_weights.values(), start=Fraction(0))
+        total = sum(state_weights.values())
         if total <= 0:
             raise ValueError(
                 "Chance-duration expansion requires a non-empty current belief."
             )
         source = {
-            (state, Fraction(0)): probability / total
+            (state, 0.0): probability / total
             for state, probability in state_weights.items()
         }
     else:
         source = {
-            (state, elapsed): Fraction(probability)
+            (state, float(elapsed)): float(probability)
             for (state, elapsed), probability in progress.augmented_belief.items()
-            if Fraction(probability) > 0
+            if float(probability) > 0.0
         }
 
-    unnormalized: dict[tuple[StateKey, Fraction], Fraction] = {}
+    unnormalized: dict[tuple[StateKey, float], float] = {}
     for (state, elapsed), source_probability in source.items():
-        duration = Fraction.from_float(model.duration_for_state(state, action_label))
+        duration = model.duration_for_state(state, action_label)
         next_elapsed = elapsed + duration
-        state_mapping = exact_kernel.state_from_key(state)
-        transition_distribution = exact_kernel.transition_fraction_distribution(
+        state_mapping = kernel.state_from_key(state)
+        transition_distribution = kernel.transition_distribution(
             state_mapping, action_assignment
         )
         transition_weights = {
-            next_state: (
-                Fraction(probability)
-                if isinstance(probability, Fraction)
-                else Fraction.from_float(float(probability))
-            )
+            next_state: float(probability)
             for next_state, probability in transition_distribution.items()
-            if (
-                Fraction(probability)
-                if isinstance(probability, Fraction)
-                else Fraction.from_float(float(probability))
-            )
-            > 0
+            if float(probability) > 0.0
         }
-        transition_total = sum(transition_weights.values(), start=Fraction(0))
+        transition_total = sum(transition_weights.values())
         if transition_total <= 0:
             continue
         for next_state, transition_weight in transition_weights.items():
-            observation_probability = exact_kernel.observation_fraction_probability(
+            observation_probability = kernel.observation_probability(
                 observation, next_state, action_assignment
             )
             probability = (
                 source_probability
                 * transition_weight
                 / transition_total
-                * Fraction(observation_probability)
+                * observation_probability
             )
             if probability > 0:
                 key = (next_state, next_elapsed)
-                unnormalized[key] = unnormalized.get(key, Fraction(0)) + probability
+                unnormalized[key] = unnormalized.get(key, 0.0) + probability
 
-    normalizer = sum(unnormalized.values(), start=Fraction(0))
+    normalizer = sum(unnormalized.values())
     if normalizer <= 0:
         raise ValueError(
             "Chance-duration augmented-state update has zero probability for "
@@ -486,23 +510,17 @@ def _advance_augmented_duration_belief(
         state_duration: probability / normalizer
         for state_duration, probability in unnormalized.items()
     }
-    mean_exact = sum(
-        (
-            elapsed * probability
-            for (_, elapsed), probability in augmented_belief.items()
-        ),
-        start=Fraction(0),
+    mean = sum(
+        elapsed * probability
+        for (_, elapsed), probability in augmented_belief.items()
     )
-    variance_exact = sum(
-        (
-            probability * (elapsed - mean_exact) ** 2
-            for (_, elapsed), probability in augmented_belief.items()
-        ),
-        start=Fraction(0),
+    variance = sum(
+        probability * (elapsed - mean) ** 2
+        for (_, elapsed), probability in augmented_belief.items()
     )
     return DurationProgress(
-        mean=mean_exact,
-        variance=variance_exact,
+        mean=mean,
+        variance=variance,
         augmented_belief=augmented_belief,
     )
 
@@ -514,9 +532,9 @@ def _child_frontier(
     should_expand: bool,
     belief: Mapping[Any, float],
     action_belief: Mapping[Any, Any],
-    ordinary_mass: Mapping[StateKey, Fraction],
-    constraint_mass: Mapping[StateKey, Fraction],
-    ordinary_mass_trace: tuple[Mapping[StateKey, Fraction], ...],
+    ordinary_mass: Mapping[StateKey, float],
+    constraint_mass: Mapping[StateKey, float],
+    ordinary_mass_trace: tuple[Mapping[StateKey, float], ...],
     observation_keys: tuple[ObservationKey, ...],
     duration_progress: DurationProgress,
 ) -> tuple[FrontierItem, ...]:
@@ -535,23 +553,6 @@ def _child_frontier(
             duration_progress=duration_progress,
         )
         for child in action_nodes
-    )
-
-
-def _normalized_fraction_belief(
-    mass: Mapping[StateKey, Fraction],
-) -> dict[StateKey, Fraction]:
-    """Normalize authoritative mass without losing subnormal support."""
-    positive = {
-        state: Fraction(probability)
-        for state, probability in mass.items()
-        if Fraction(probability) > 0
-    }
-    total = sum(positive.values(), start=Fraction(0))
-    return (
-        {state: probability / total for state, probability in positive.items()}
-        if total > 0
-        else {}
     )
 
 

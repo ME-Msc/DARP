@@ -53,12 +53,12 @@ class GroundedRDDLView:
 
     def build_and_or_interface(self, runtime: Any, risk: Any | None = None) -> ANDORSearchInterface:
         """Build the action/observation interface consumed by AND-OR search. / 构建 AND-OR 搜索消费的 action/observation 接口。"""
-        from darp.adapter.exact import ExactRDDLKernel
+        from darp.adapter.kernel import RDDLKernel
 
         return ANDORSearchInterface.from_actions_and_observations(
             actions=self.action_choices(runtime),
             observation_scope=self.observation_scope(),
-            exact_kernel=ExactRDDLKernel.from_grounded_model(self.grounded_model, risk=risk),
+            kernel=RDDLKernel.from_grounded_model(self.grounded_model, risk=risk),
         )
 
     def validate_supported(self) -> None:
@@ -88,7 +88,7 @@ class GroundedRDDLView:
             expressions = getattr(self.grounded_model, attribute, ()) or ()
             if expressions:
                 unsupported.append(
-                    f"{label}: {len(expressions)} expression(s); current exact search does not "
+                    f"{label}: {len(expressions)} expression(s); current search does not "
                     "evaluate them while generating actions/histories"
                 )
         if abs(self.discount - 1.0) > 1e-12:

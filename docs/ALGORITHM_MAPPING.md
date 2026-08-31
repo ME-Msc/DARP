@@ -17,7 +17,7 @@ $$
 - C-POMDP：期望累计 cost 不超过 $C$；
 - CC-POMDP：执行中首次进入风险集合的概率不超过 $\Delta$。
 
-RDDL 经 `adapter/grounded.py` 解析成模型回调；`adapter/exact.py` 只枚举从根 belief 在有限 history 内实际可达的状态、转移和观测，并以 `Fraction` 保存概率质量。语法上允许 `int` fluent，但 exact 执行要求每个已触达 CPF row 的 support 可有限枚举；具体状态编码由 domain 决定，核心求解器不包含 Grid 或 Manhattan 特例。
+RDDL 经 `adapter/grounded.py` 解析成模型回调；`adapter/kernel.py` 只枚举从根 belief 在有限 history 内实际触达的状态、转移和观测，并以稀疏 `float` 保存概率质量。每个触达的 CPF row 必须具有可有限枚举的 support；具体状态编码由 domain 决定，核心求解器不包含 Grid 或 Manhattan 特例。
 
 ## 2. Algorithm 1：预处理
 
@@ -60,7 +60,7 @@ r_q=\tilde\rho(q)\,r(\bar b_q),
 r(b)=\sum_{s\in R}b(s).
 $$
 
-因此 unsafe successor 仍保留在普通流和 utility 中，只从后续 safe flow 中移除；它的首次失败质量只计一次。根 belief 已有风险从总预算中扣除。`planning/expand.py` 实现上述双流、backward message 和 smoothed belief；`planning/policy.py` 对选中策略重新传播精确质量，独立核对 constraint 与 achieved utility。
+因此 unsafe successor 仍保留在普通流和 utility 中，只从后续 safe flow 中移除；它的首次失败质量只计一次。根 belief 已有风险从总预算中扣除。`planning/expand.py` 实现上述双流、backward message 和 smoothed belief；`planning/policy.py` 汇总选中节点的浮点 constraint 与 achieved utility。
 
 期望 cost 约束使用普通概率流：
 
@@ -68,7 +68,7 @@ $$
 r_q=\rho(q)\sum_s\tilde b_{q-1}(s)P(s,a_q).
 $$
 
-state/action-conditioned failure 与 expected-cost callback 都必须声明精确语义；未知约束字段和无法验证的 exactness 会 fail closed。
+state/action-conditioned failure 与 expected-cost callback 必须显式声明约束语义；未知约束字段或超出合法范围的数值会直接报错。
 
 ## 4. Duration continuation
 
@@ -78,7 +78,7 @@ $$
 \tau(q)>\varsigma
 $$
 
-成立时继续扩展。fixed、expected 和 deterministic-chance duration 对可表示输入使用有理数累计。
+成立时继续扩展。fixed、expected 和 deterministic-chance duration 使用 binary64 浮点累计。
 
 独立 Gaussian duration $D(s,a)\sim\mathcal N(\mu_{s,a},\sigma^2_{s,a})$ 使用论文公式
 
@@ -98,7 +98,7 @@ $$
 \tfrac12\operatorname{erfc}\!\left(\frac{\mu_q-h}{\sqrt{2\sigma_q^2}}\right),
 $$
 
-它与论文的 $\tfrac12[1+\operatorname{erf}((h-\mu_q)/(\sigma_q\sqrt2))]$ 代数等价，并减少尾部消减误差。判定仍是严格 `>`，没有固定 ULP 上移或 `>=`。这是稳定的 binary64 CDF 实现，不是有向舍入的数学区间证书。
+它与论文的 $\tfrac12[1+\operatorname{erf}((h-\mu_q)/(\sigma_q\sqrt2))]$ 代数等价，并减少尾部消减误差。判定仍是严格 `>`，没有固定 ULP 上移或 `>=`；所有 duration 数值与概率流一样使用 binary64。
 
 Duration 参数必须从 RDDL 之外的 JSON sidecar 读入，求解器不会隐式假设单位时长。RDDL 的整数 horizon 只作为 sidecar evaluator 的时间阈值，不会额外截断 duration tree；只有论文的 duration stopping test 决定 action depth。HILP 若因 expansion round 或 solver time 上限停止，结果保持 incomplete。
 
@@ -120,7 +120,7 @@ $$
 \text{s.t. }\sum_q r_qx_q\le R.
 $$
 
-`planning/ilp_tree.py` 生成 root、flow、observation-closure 和风险/成本行；`ilp/gurobi.py` 求解二元模型并复核 incumbent 的精确系数。Gurobi 的 `MIPGap=0` 与 `MIPGapAbs=0` 只表示浮点模型的 numerical zero gap。`Fraction` 复核证明选中策略在已编码模型中的精确可行性和实际效用，不证明全局数学最优。
+`planning/ilp_tree.py` 生成 root、flow、observation-closure 和风险/成本行；`ilp/gurobi.py` 直接求解 binary64 系数的二元模型。与论文参考代码相同，Gurobi 使用 `MIPGap=1e-4` 和默认线程设置；返回 `OPTIMAL` 表示在该数值容差内完成搜索。实现不再进行 zero-gap 求解、有理数 incumbent 复核或 no-good 重求解，策略风险由浮点传播以统一容差判断。
 
 ## 6. Algorithm 3：HILP
 
@@ -131,7 +131,7 @@ $$
 3. 只展开这些 frontier；
 4. warm-start 下一轮，直到没有可展开的选中 frontier 或达到显式资源上限。
 
-一次 HILP 搜索在同一个 Gurobi model 上增量维护这些 p-ILP：已有 root、变量和 flow 行保持不变；frontier $q$ 展开时把目标系数从 $h_q$ 更新为精确 $u_q$，再加入 child variables、flow 行并扩展同一条全局风险行。每轮仍用最新完整 `ILPModelSpec` 做精确 incumbent 复核，因此这是 Algorithm 3 的实现优化，不固定策略前缀，也不改变数学问题。
+一次 HILP 搜索在同一个 Gurobi model 上增量维护这些 p-ILP：已有 root、变量和 flow 行保持不变；frontier $q$ 展开时把目标系数从 $h_q$ 更新为 $u_q$，再加入 child variables、flow 行并扩展同一条全局风险行。上一轮 incumbent 作为下一轮 MIP start；该增量更新不固定策略前缀，也不改变论文的数学问题。
 
 领域启发式通过 `UtilityHeuristic` 外部注入。回调只计算单个状态的 utility-to-go，核心负责论文规定的 history 概率加权：
 
@@ -139,6 +139,6 @@ $$
 h_q=\sum_s \rho(q)b_q(s)h(s,a_q).
 $$
 
-cost-to-go 回调必须返回负值，因为 DARP 最大化 utility。未提供回调时只使用精确一步 utility 作为非认证 fallback；核心不再内置 reachable-Bellman 或 Manhattan。`frontier_width=None` 展开 incumbent 中全部 frontier，与论文复现实验一致；有限宽度仅是显式的 batching 选项。`terminal_heuristic` 单独控制 duration 边界的评价，避免把实验的 terminal value 混进 RDDL reward。当前 action-level terminal value 要求同一 action 的所有 observation branch 同时停止；混合停止/继续会 fail fast，callback 也必须为模型 terminal state 返回正确终值。
+cost-to-go 回调必须返回负值，因为 DARP 最大化 utility。未提供回调时只使用一步 utility 作为 fallback；核心不再内置 reachable-Bellman 或 Manhattan。`frontier_width=None` 展开 incumbent 中全部 frontier，与论文复现实验一致；有限宽度仅是显式的 batching 选项。`terminal_heuristic` 单独控制 duration 边界的评价，避免把实验的 terminal value 混进 RDDL reward。当前 action-level terminal value 要求同一 action 的所有 observation branch 同时停止；混合停止/继续会 fail fast，callback 也必须为模型 terminal state 返回正确终值。
 
-只要仍有未展开的候选 subtree、启发式上界无法验证或资源上限截断，结果就不能标记 complete。full-ILP 枚举完整有限树，仅作为很小 horizon 的结构 oracle。
+只有算法不再包含被当前策略选中的可展开 frontier、Gurobi 返回容差内 `OPTIMAL`、浮点风险满足预算且没有触发资源上限时，结果才标记 `complete`。full-ILP 枚举完整有限树，仅作为很小 horizon 的结构 oracle。

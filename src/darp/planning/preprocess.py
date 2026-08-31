@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from fractions import Fraction
 from math import isfinite
 
-from darp.adapter.exact import (
+from darp.adapter.kernel import (
     ObservationKey,
     StateKey,
     risk_constraint_type_for_kernel,
@@ -19,13 +18,13 @@ from darp.model.duration import DurationProgress
 
 @dataclass(frozen=True, eq=False)
 class FrontierItem:
-    """Track one action history with authoritative exact probability masses."""
+    """Track one action history with ordinary and constraint probability flow."""
 
     node: ANDORNode
     belief: Mapping[StateKey, float]
-    ordinary_mass: Mapping[StateKey, Fraction]
-    constraint_mass: Mapping[StateKey, Fraction]
-    ordinary_mass_trace: tuple[Mapping[StateKey, Fraction], ...] = ()
+    ordinary_mass: Mapping[StateKey, float]
+    constraint_mass: Mapping[StateKey, float]
+    ordinary_mass_trace: tuple[Mapping[StateKey, float], ...] = ()
     observation_keys: tuple[ObservationKey, ...] = ()
     duration_progress: DurationProgress = field(default_factory=DurationProgress)
 
@@ -60,14 +59,14 @@ def initialize_root_frontier(
     # Algorithm 1 line 1: initialize $$G$$, $$N=\{0\}$$, $$F=\emptyset$$, and $$\rho(0)=1$$.
     # 论文第 1 行：初始化树、open observation history 集合 $$N$$、已展开集合 $$F$$，以及 $$\rho(0)$$。
     root = interface.root
-    kernel = interface.exact_kernel
+    kernel = interface.kernel
     if kernel is None:
-        raise ValueError("Paper preprocessing requires interface.exact_kernel.")
+        raise ValueError("Paper preprocessing requires interface.kernel.")
     root_belief = resolve_root_belief(runtime, interface, root_belief)
     if root_belief is None:
         raise ValueError("Paper preprocessing requires a root belief.")
 
-    # Exact unnormalized mass is the sole probability-flow representation.
+    # Unnormalised mass directly stores the history occurrence probability.
     root_ordinary_mass = kernel.initial_constraint_mass(root_belief)
     constraint_type = risk_constraint_type_for_kernel(kernel)
     if constraint_type == "chance":
@@ -105,30 +104,27 @@ def resolve_root_belief(
     uses the runtime's current state, which matters when the public planner API
     is called after the environment has already advanced.
     """
-    if interface.exact_kernel is None:
+    if interface.kernel is None:
         return None
     if root_belief is not None:
         return _normalize_root_belief(root_belief)
     if interface.observation_scope.mode == "pomdp-observation":
         return _normalize_root_belief(
-            interface.exact_kernel.initial_belief_from_model()
+            interface.kernel.initial_belief_from_model()
         )
-    return interface.exact_kernel.initial_belief_from_state(runtime.state)
+    return interface.kernel.initial_belief_from_state(runtime.state)
 
 
 def _normalize_root_belief(belief: Mapping[StateKey, float]) -> Mapping[StateKey, float]:
     """Normalize root belief probabilities. / 归一化 root belief 概率。"""
-    numeric: dict[StateKey, Fraction] = {}
-    non_finite: dict[StateKey, object] = {}
+    numeric: dict[StateKey, float] = {}
+    non_finite: dict[StateKey, float] = {}
     for state, raw_probability in belief.items():
-        if isinstance(raw_probability, Fraction):
-            numeric[state] = raw_probability
-            continue
         probability = float(raw_probability)
         if not isfinite(probability):
             non_finite[state] = probability
         else:
-            numeric[state] = Fraction.from_float(probability)
+            numeric[state] = probability
     if non_finite:
         raise ValueError(f"Root belief contains non-finite probability mass: {non_finite!r}")
     negative = {
@@ -143,7 +139,7 @@ def _normalize_root_belief(belief: Mapping[StateKey, float]) -> Mapping[StateKey
         for state, probability in numeric.items()
         if probability > 0
     }
-    total = sum(cleaned.values(), start=Fraction(0))
+    total = sum(cleaned.values())
     if total <= 0:
         raise ValueError("Root belief must contain positive probability mass.")
     return {state: probability / total for state, probability in cleaned.items()}

@@ -1,6 +1,6 @@
 # DARP
 
-DARP 是论文 *Heuristic Search in Dual Space for Constrained Fixed-Horizon POMDPs with Durative Actions* 的研究实现。它从 RDDL 构建有限可达模型，以精确概率质量传播 belief/risk，并使用 Gurobi 求解 full-ILP 或增量 HILP。
+DARP 是论文 *Heuristic Search in Dual Space for Constrained Fixed-Horizon POMDPs with Durative Actions* 的研究实现。它从 RDDL 按需构建有限可达模型，采用与论文参考实现一致的稀疏浮点概率质量传播 belief/risk，并使用 Gurobi 求解 full-ILP 或增量 HILP。
 
 仓库目前只保留核心求解器和 `DARP vs RAO*` 验证实验。
 
@@ -24,26 +24,38 @@ $$
 h_q=\sum_s \rho(q)b_q(s)h(s,a_q).
 $$
 
-Duration 不写入 RDDL，必须通过 `--duration` 指定 JSON sidecar。支持 fixed、state-dependent、chance 和 Gaussian duration。
+Duration 不写入 RDDL，必须通过 `--duration` 指定 JSON sidecar。支持 fixed、state-dependent、chance 和 Gaussian duration。fixed duration 使用以下格式：
+
+```json
+{
+  "kind": "fixed",
+  "default": 1.0,
+  "actions": {
+    "slow_action": 2.0
+  }
+}
+```
+
+`default` 是所有动作的有限正时长；可选的 `actions` 按 grounded action label 覆盖个别动作，统一时长时直接省略。horizon 由 instance RDDL 提供。论文规定 fixed duration 的 $\varsigma=0$，因此该格式不接受 `zeta`。
 
 单独运行或调试 DARP 时，必须同时指定 domain、instance 和 duration：
 
 ```bash
 .venv/bin/python -m darp \
-  --domain experiments/DARP-vs-RAOstar/rddl/domain.rddl \
-  --instance experiments/DARP-vs-RAOstar/rddl/instance_5_h3.rddl \
-  --duration experiments/DARP-vs-RAOstar/rddl/duration.json \
-  --heuristic experiments.DARP-vs-RAOstar.darp_runner:MANHATTAN \
-  --root-belief experiments.DARP-vs-RAOstar.darp_runner:initial_belief \
+  --domain experiments/DARP-vs-RAOstar-grid/rddl/domain.rddl \
+  --instance experiments/DARP-vs-RAOstar-grid/rddl/instance_5_h3.rddl \
+  --duration experiments/DARP-vs-RAOstar-grid/rddl/duration.json \
+  --heuristic experiments.DARP-vs-RAOstar-grid.darp_runner:MANHATTAN \
+  --root-belief experiments.DARP-vs-RAOstar-grid.darp_runner:initial_belief \
   --terminal-heuristic \
-  --output output/DARP-vs-RAOstar/darp.json
+  --output output/DARP-vs-RAOstar-grid/darp.json
 ```
 
 `.vscode/launch.json` 使用同一入口和显式文件路径。
 
 ## DARP vs RAO* 实验
 
-实验位于 `experiments/DARP-vs-RAOstar/`，使用原论文 Table 2 的 Grid 配置，对比：
+实验位于 `experiments/DARP-vs-RAOstar-grid/`，使用原论文 Table 2 的 Grid 配置，对比：
 
 - DARP-HILP；
 - 固定提交的外部 RAO* reimplementation。
@@ -53,10 +65,10 @@ Duration 不写入 RDDL，必须通过 `--duration` 指定 JSON sidecar。支持
 单配置检查：
 
 ```bash
-.venv/bin/python -m experiments.DARP-vs-RAOstar.run \
-  --instance experiments/DARP-vs-RAOstar/rddl/instance_5_h3.rddl \
+.venv/bin/python -m experiments.DARP-vs-RAOstar-grid.run \
+  --instance experiments/DARP-vs-RAOstar-grid/rddl/instance_5_h3.rddl \
   --trials 1 \
-  --output output/DARP-vs-RAOstar/smoke.csv
+  --output output/DARP-vs-RAOstar-grid/smoke.csv
 ```
 
 单实例模式从 RDDL 读取网格大小与 horizon，并从 `rddl/duration.json` 读取默认 risk budget；命令行只保留 trial、timeout、seed 和输出等执行选项。批量 Table 2 实验中的 `size/horizon/delta` 列表仍是实验矩阵筛选器，每个被选实例的实际模型参数都会再次从 RDDL 校验。
@@ -67,7 +79,7 @@ Duration 不写入 RDDL，必须通过 `--duration` 指定 JSON sidecar。支持
 bash tools/run_repro.sh
 ```
 
-结果写入被 Git 忽略的 `output/DARP-vs-RAOstar/`。已有本地 checkout 或离线运行时，可选设置 `CONSTRAINED_POMDP_REPO`、`RAOSTAR_CHECKOUT` 和 `BASELINE_CACHE`；本地 checkout 必须处在固定 commit 且 worktree clean。外部实现的 provenance、指标定义和计时边界见 [实验协议](docs/EXPERIMENT_PROTOCOL.md)。算法公式与代码对应见 [算法映射](docs/ALGORITHM_MAPPING.md)。
+结果写入被 Git 忽略的 `output/DARP-vs-RAOstar-grid/`。已有本地 checkout 或离线运行时，可选设置 `CONSTRAINED_POMDP_REPO`、`RAOSTAR_CHECKOUT` 和 `BASELINE_CACHE`；本地 checkout 必须处在固定 commit 且 worktree clean。外部实现的 provenance、指标定义和计时边界见 [实验协议](docs/EXPERIMENT_PROTOCOL.md)。算法公式与代码对应见 [算法映射](docs/ALGORITHM_MAPPING.md)。
 
 新增 RDDL 对比场景时可以复用同一 RAO* 缓存，但仍需在新的实验目录中提供该场景到 RAO* model API 的薄适配和等价性检查；不需要修改 DARP 的解析器、HILP、ILP 或 Gurobi 实现。
 
@@ -75,13 +87,13 @@ bash tools/run_repro.sh
 
 ```text
 RDDL + duration/risk sidecar
-  -> adapter       # 精确有限模型
+  -> adapter       # 按需构建的稀疏浮点有限模型
   -> preprocess    # Algorithm 1
   -> expand        # Algorithm 2
   -> ilp_tree      # policy/flow/risk 约束
   -> hilp          # Algorithm 3
   -> gurobi        # 增量 p-ILP
-  -> policy        # 策略与约束复核
+  -> policy        # 策略提取与浮点指标汇总
 ```
 
 ## 自定义 Heuristic
@@ -144,4 +156,4 @@ result = solve_rddl(
 )
 ```
 
-只有能够证明 heuristic 是最大化 utility 的上界时，才能设置 `upper_bound=True`；该标志用于最优性认证。普通场景不要添加 `--terminal-heuristic`，因为它会在 duration 边界用 heuristic 替换 RDDL 叶节点 reward，仅适用于明确采用这种终端估值定义的实验。
+只有能够证明 heuristic 是最大化 utility 的上界时，才能设置 `upper_bound=True`；HILP 用该标志判断 frontier 清空后是否可以正常结束。普通场景不要添加 `--terminal-heuristic`，因为它会在 duration 边界用 heuristic 替换 RDDL 叶节点 reward，仅适用于明确采用这种终端估值定义的实验。

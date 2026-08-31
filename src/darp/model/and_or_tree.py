@@ -71,7 +71,7 @@ class ANDORSearchInterface:
     root: ANDORNode
     actions: tuple[ActionChoice, ...]
     observation_scope: ObservationScope
-    exact_kernel: Any | None = None
+    kernel: Any | None = None
     _nodes_by_id: dict[str, ANDORNode] = field(default_factory=dict, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -84,14 +84,14 @@ class ANDORSearchInterface:
         cls,
         actions: tuple[ActionChoice, ...],
         observation_scope: ObservationScope,
-        exact_kernel: Any | None = None,
+        kernel: Any | None = None,
     ) -> ANDORSearchInterface:
         """Create a root interface from action choices and observation scope. / 从 action choice 和 observation scope 创建根接口。"""
         return cls(
             root=ANDORNode(node_id="root"),
             actions=actions,
             observation_scope=observation_scope,
-            exact_kernel=exact_kernel,
+            kernel=kernel,
         )
 
     def action_choices(
@@ -104,7 +104,7 @@ class ANDORSearchInterface:
         ``available_action_labels(belief)``.  Static RDDL kernels need no extra
         method and retain the original global action set.
         """
-        available = getattr(self.exact_kernel, "available_action_labels", None)
+        available = getattr(self.kernel, "available_action_labels", None)
         if belief is None or not callable(available):
             return self.actions
         labels = tuple(available(belief))
@@ -144,7 +144,7 @@ class ANDORSearchInterface:
 
     def belief_is_terminal(self, belief: Mapping[Any, Any]) -> bool:
         """Return an optional kernel-defined terminal-belief predicate."""
-        predicate = getattr(self.exact_kernel, "belief_is_terminal", None)
+        predicate = getattr(self.kernel, "belief_is_terminal", None)
         return bool(predicate(belief)) if callable(predicate) else False
 
     def observation_node(self, parent: ANDORNode, observation_label: str) -> ANDORNode:

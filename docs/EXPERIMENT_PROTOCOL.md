@@ -52,10 +52,10 @@ run.py             参数矩阵、配对执行、CSV 和 Markdown 汇总
 单配置：
 
 ```bash
-.venv/bin/python -m experiments.DARP-vs-RAOstar.run \
-  --instance experiments/DARP-vs-RAOstar/rddl/instance_5_h3.rddl \
+.venv/bin/python -m experiments.DARP-vs-RAOstar-grid.run \
+  --instance experiments/DARP-vs-RAOstar-grid/rddl/instance_5_h3.rddl \
   --trials 1 \
-  --output output/DARP-vs-RAOstar/smoke.csv
+  --output output/DARP-vs-RAOstar-grid/smoke.csv
 ```
 
 完整 24-cell × 25-trial 矩阵：
@@ -64,8 +64,8 @@ run.py             参数矩阵、配对执行、CSV 和 Markdown 汇总
 bash tools/run_repro.sh
 ```
 
-`run.py` 同时生成 long-form CSV 和 Markdown 均值表。默认路径位于被 Git 忽略的 `output/DARP-vs-RAOstar/`。离线运行可指定 `--constrained-pomdp-repo`、`--raostar-checkout` 和 `--baseline-cache`。
+`run.py` 同时生成 long-form CSV 和 Markdown 均值表。默认路径位于被 Git 忽略的 `output/DARP-vs-RAOstar-grid/`。离线运行可指定 `--constrained-pomdp-repo`、`--raostar-checkout` 和 `--baseline-cache`。
 
 正式 completion-time 实验不设置 timeout；调试时的 `--timeout` 同时传给 DARP 和 RAO*。模型加载、parity、外部 import 和 Gurobi warm-up 都不计入 planner time。
 
-`complete` 表示算法自然结束并返回可行完整策略；`certified` 是 DARP 更严格的系数精确性证书，RAO* 没有同义字段。DARP 的 `n` 是 `expanded+frontier` action histories，RAO* 的 `n` 是 belief hypergraph nodes；`iterations` 也分别表示 p-ILP solves 和 RAO* expansions，二者只能作为各自实现的搜索规模指标。
+`complete` 表示算法自然收敛、Gurobi 在 `MIPGap=1e-4` 下返回 `OPTIMAL`，且浮点风险值满足预算；它不表示 zero-gap 或有理数复核。Gurobi 线程数使用默认设置，与论文参考代码一致。DARP 的 `n` 是 `expanded+frontier` action histories，RAO* 的 `n` 是 belief hypergraph nodes；`iterations` 也分别表示 p-ILP solves 和 RAO* expansions，二者只能作为各自实现的搜索规模指标。

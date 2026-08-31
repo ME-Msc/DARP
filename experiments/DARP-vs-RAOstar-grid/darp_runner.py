@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping
-from fractions import Fraction
 from math import isclose
 from pathlib import Path
 from typing import Any
 
-from darp.adapter.exact import ExactRDDLKernel, StateKey
+from darp.adapter.kernel import RDDLKernel, StateKey
 from darp.adapter.loader import load_rddl
 from darp.ilp.gurobi import GurobiILPSolver
 from darp.ilp.model import ILPLinearConstraint, ILPModelSpec, ILPVariable
@@ -101,29 +100,27 @@ MANHATTAN = UtilityHeuristic(
 )
 
 
-def initial_belief(kernel: ExactRDDLKernel) -> Mapping[StateKey, Fraction]:
+def initial_belief(kernel: RDDLKernel) -> Mapping[StateKey, float]:
     """Return the original deterministic position with pre-sampled move noise.
 
     RDDL evaluates different stochastic CPFs independently.  The domain keeps
     row/column motion correlated by storing one hidden categorical ``noise``
     state that is re-sampled for the following action.  This explicit root
     belief gives the first action the same .85/.075/.075 distribution.
-    Marginalising ``noise`` yields exactly the paper's position process.
+    Marginalising ``noise`` yields the paper's position process.
     """
 
     declared = kernel.initial_belief_from_model()
     if len(declared) != 1:
         raise ValueError("The paper Grid requires one declared initial RDDL state.")
     state_key, probability = next(iter(declared.items()))
-    if Fraction.from_float(float(probability)) != 1:
+    if not isclose(probability, 1.0, rel_tol=0.0, abs_tol=1e-12):
         raise ValueError("The declared Grid initial state must have probability one.")
     base = kernel.state_from_key(state_key)
     if base.pop("noise", None) != 0:
         raise ValueError("The RDDL Grid initial noise placeholder must be zero.")
-    intended = Fraction.from_float(
-        float(kernel.non_fluents["transition_accuracy"])
-    )
-    slip = (Fraction(1) - intended) / 2
+    intended = float(kernel.non_fluents["transition_accuracy"])
+    slip = (1.0 - intended) / 2.0
     return {
         kernel.state_key({**base, "noise": noise}): probability
         for noise, probability in ((0, intended), (1, slip), (2, slip))
@@ -185,9 +182,9 @@ def assert_reference_parity(
     Manhattan callbacks.  A mismatch aborts before either planner is timed.
     """
 
-    kernel = interface.exact_kernel
+    kernel = interface.kernel
     if kernel is None:
-        raise ValueError("DARP vs RAO* parity requires DARP's exact kernel.")
+        raise ValueError("DARP vs RAO* parity requires DARP's RDDL kernel.")
     labels = tuple(choice.label for choice in interface.actions)
     if labels != tuple(ACTION_TO_REFERENCE):
         raise ValueError(
@@ -196,8 +193,8 @@ def assert_reference_parity(
     choices = {choice.label: choice.assignment for choice in interface.actions}
 
     root = initial_belief(kernel)
-    root_positions: dict[tuple[int, int], Fraction] = defaultdict(Fraction)
-    root_noise: dict[int, Fraction] = defaultdict(Fraction)
+    root_positions: dict[tuple[int, int], float] = defaultdict(float)
+    root_noise: dict[int, float] = defaultdict(float)
     for state, probability in root.items():
         root_positions[_position(state)] += probability
         root_noise[int(dict(state)["noise"])] += probability
@@ -208,7 +205,7 @@ def assert_reference_parity(
         tuple(reference.start_state),
         "b0",
     )
-    intended = Fraction.from_float(float(kernel.non_fluents["transition_accuracy"]))
+    intended = float(kernel.non_fluents["transition_accuracy"])
     _assert_distribution(
         "initial-noise",
         root_noise,
@@ -220,25 +217,23 @@ def assert_reference_parity(
     positions = _reachable_positions(reference, horizon)
     noise_weights = {
         0: intended,
-        1: (Fraction(1) - intended) / 2,
-        2: (Fraction(1) - intended) / 2,
+        1: (1.0 - intended) / 2.0,
+        2: (1.0 - intended) / 2.0,
     }
     for position in positions:
         for label, reference_action in ACTION_TO_REFERENCE.items():
             action = choices[label]
-            actual_transition: dict[tuple[int, int], Fraction] = defaultdict(Fraction)
+            actual_transition: dict[tuple[int, int], float] = defaultdict(float)
             for noise, noise_probability in noise_weights.items():
                 source = _state(position, noise)
-                for target, probability in kernel.transition_fraction_distribution(
+                for target, probability in kernel.transition_distribution(
                     dict(source), action
                 ).items():
                     target_position = _position(target)
                     actual_transition[target_position] += noise_probability * probability
                     expected_risk = float(reference.risk_model(target_position, reference_action))
-                    actual_risk = float(
-                        kernel.transition_failure_fraction(
-                            kernel.state_key(source), target, action
-                        )
+                    actual_risk = kernel.transition_failure(
+                        kernel.state_key(source), target, action
                     )
                     _assert_close("risk", actual_risk, expected_risk, position, label)
 
@@ -252,9 +247,7 @@ def assert_reference_parity(
             )
 
             source_key = kernel.state_key(_state(position, 0))
-            utility, _, _ = kernel.utility_coefficient_for_mass(
-                {source_key: Fraction(1)}, action
-            )
+            utility = kernel.utility_coefficient_for_mass({source_key: 1.0}, action)
             _assert_close(
                 "reward",
                 utility,
@@ -284,12 +277,17 @@ def assert_reference_parity(
                     target_position, reference_action
                 )
                 actual_observation = {
-                    observation: kernel.observation_fraction_probability(
+                    observation: kernel.observation_probability(
                         (("obs", observation),), target, action
                     )
                     for observation in expected_observation
                 }
-                if sum(actual_observation.values(), start=Fraction(0)) != 1:
+                if not isclose(
+                    sum(actual_observation.values()),
+                    1.0,
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                ):
                     raise ValueError("RDDL observation support does not sum to one.")
                 _assert_distribution(
                     "observation",
@@ -303,7 +301,7 @@ def assert_reference_parity(
 
 
 def _assert_goal_parity(
-    kernel: ExactRDDLKernel,
+    kernel: RDDLKernel,
     choices: Mapping[str, Mapping[str, Any]],
     reference: Any,
 ) -> None:
@@ -313,11 +311,11 @@ def _assert_goal_parity(
     for noise in (0, 1, 2):
         state = _state(goal, noise)
         state_key = kernel.state_key(state)
-        if not kernel.belief_is_terminal({state_key: Fraction(1)}):
+        if not kernel.belief_is_terminal({state_key: 1.0}):
             raise ValueError(f"RDDL goal is not terminal: {goal}")
         for label, action in choices.items():
-            actual: dict[tuple[int, int], Fraction] = defaultdict(Fraction)
-            for target, probability in kernel.transition_fraction_distribution(
+            actual: dict[tuple[int, int], float] = defaultdict(float)
+            for target, probability in kernel.transition_distribution(
                 state, action
             ).items():
                 actual[_position(target)] += probability
@@ -328,9 +326,7 @@ def _assert_goal_parity(
                 goal,
                 label,
             )
-            utility, _, _ = kernel.utility_coefficient_for_mass(
-                {state_key: Fraction(1)}, action
-            )
+            utility = kernel.utility_coefficient_for_mass({state_key: 1.0}, action)
             _assert_close("goal-reward", utility, 0.0, goal, label)
             heuristic = MANHATTAN.evaluate(
                 HeuristicInput(
@@ -378,7 +374,7 @@ def _position(state: StateKey) -> tuple[int, int]:
 
 def _assert_distribution(
     name: str,
-    actual: Mapping[Any, float | Fraction],
+    actual: Mapping[Any, float],
     expected: Mapping[Any, float],
     state: tuple[int, int],
     action: str,
@@ -448,13 +444,7 @@ def run_darp(
     )
     decision = result.decision
     timing = decision.timing
-    complete = bool(
-        decision.policy.duration_complete
-        and decision.policy.solver_status == "optimal"
-        and not timing.get("solver_time_limit_hit", 0.0)
-        and timing.get("frontier_refinement_exhausted", 0.0)
-    )
-    if not complete or decision.policy.feasible is not True:
+    if not decision.complete or decision.policy.feasible is not True:
         raise RuntimeError(
             "DARP-HILP did not return a complete feasible policy: "
             f"status={decision.policy.solver_status}"
@@ -462,7 +452,7 @@ def run_darp(
     utility = decision.policy.achieved_utility
     risk = decision.policy.active_constraint_value
     if utility is None or risk is None:
-        raise RuntimeError("DARP policy is missing exact objective or risk metrics.")
+        raise RuntimeError("DARP policy is missing objective or risk metrics.")
     return {
         "objective": -float(utility),
         "risk": float(risk),
@@ -470,7 +460,6 @@ def run_darp(
         "n": int(timing["expanded_nodes"] + timing["frontier_nodes"]),
         "iterations": int(timing["partial_ilp_solves"]),
         "complete": True,
-        "certified": bool(decision.complete),
     }
 
 
@@ -480,7 +469,7 @@ def warm_up() -> None:
     variable = ILPVariable(var_id="warmup")
     result = GurobiILPSolver().solve(
         ILPModelSpec(
-            name="darp_vs_raostar_warmup",
+            name="darp_vs_raostar_grid_warmup",
             variables=(variable,),
             objective={variable.var_id: 1.0},
             constraints=(

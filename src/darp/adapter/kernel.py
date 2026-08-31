@@ -1,27 +1,26 @@
-"""Exact finite-kernel view over pyRDDLGym grounded expressions."""
+"""Sparse floating-point kernel over pyRDDLGym grounded expressions."""
 
 from __future__ import annotations
 
 from collections.abc import Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from fractions import Fraction
 from itertools import product
-from math import isfinite, nextafter, prod
+from math import isfinite, prod
 from typing import Any, Literal
 
 StateKey = tuple[tuple[str, Hashable], ...]
 ObservationKey = tuple[tuple[str, Hashable], ...]
-Distribution = dict[Hashable, float | Fraction]
+Distribution = dict[Hashable, float]
 ActionKey = tuple[tuple[str, Hashable], ...]
 RiskConstraintType = Literal["chance", "expected"]
 
 
 @dataclass(frozen=True, slots=True)
 class SparseTransitionRow:
-    """Store one exact cached sparse row of $$T_a$$."""
+    """Store one cached sparse row of $$T_a$$."""
 
     next_state_ids: tuple[int, ...]
-    probabilities: tuple[Fraction, ...]
+    probabilities: tuple[float, ...]
 
 
 @dataclass(slots=True)
@@ -46,8 +45,8 @@ class _LazyStateIndex:
         return self.id_to_key[state_id]
 
 
-class ExactKernelError(ValueError):
-    """Raised when exact finite-kernel compilation is unsupported. / exact finite-kernel 编译不支持时抛出。"""
+class KernelError(ValueError):
+    """Raised when finite-kernel evaluation is unsupported. / 有限内核求值不支持时抛出。"""
 
 
 @dataclass(frozen=True)
@@ -109,39 +108,38 @@ class RiskConstraintSpec:
             raise ValueError(f"Constraint fluent values must be {expected}: {invalid!r}")
 
 
-def risk_constraint_type_for_kernel(exact_kernel: object) -> RiskConstraintType:
+def risk_constraint_type_for_kernel(kernel: object) -> RiskConstraintType:
     """Return the kernel's explicitly declared paper constraint semantics."""
-    risk_spec = getattr(exact_kernel, "risk", None)
+    risk_spec = getattr(kernel, "risk", None)
     constraint_type = getattr(risk_spec, "constraint_type", None)
     if constraint_type not in ("chance", "expected"):
-        raise ExactKernelError(
-            "Exact kernel must expose risk.constraint_type as 'chance' or 'expected'."
+        raise KernelError(
+            "Kernel must expose risk.constraint_type as 'chance' or 'expected'."
         )
     return constraint_type
 
 
 @dataclass(frozen=True)
-class ExactConstraintMassOutcome:
-    """One observation branch of an unnormalized exact constraint flow."""
+class ConstraintMassOutcome:
+    """One observation branch of an unnormalized constraint flow."""
 
     observation: ObservationKey
     label: str
-    state_mass: Mapping[StateKey, Fraction]
+    state_mass: Mapping[StateKey, float]
 
 
 @dataclass(frozen=True)
-class ExactConstraintMassExpansion:
-    """Exact represented-float mass propagation for one constraint action."""
+class ConstraintMassExpansion:
+    """Sparse float mass propagation for one constraint action."""
 
     coefficient: float
-    post_action_mass: Mapping[StateKey, Fraction]
-    observations: tuple[ExactConstraintMassOutcome, ...]
-    coefficient_exact: Fraction | None = None
+    post_action_mass: Mapping[StateKey, float]
+    observations: tuple[ConstraintMassOutcome, ...]
 
 
 @dataclass(frozen=True)
-class ExactRDDLKernel:
-    """Lazily compile reached grounded states into exact sparse kernels. / 将触达的 grounded 状态按需编译为精确稀疏内核。"""
+class RDDLKernel:
+    """Lazily compile reached grounded states into sparse float kernels. / 将触达的 grounded 状态按需编译为稀疏浮点内核。"""
 
     grounded_model: Any
     risk: RiskConstraintSpec = field(default_factory=RiskConstraintSpec)
@@ -156,13 +154,16 @@ class ExactRDDLKernel:
     _transition_rows: dict[tuple[int, int], SparseTransitionRow] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
-    _reward_fraction_cache: dict[tuple[int, int], Fraction] = field(
+    _reward_cache: dict[tuple[int, int], float] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
-    _transition_failure_cache: dict[tuple[int, int, int], Fraction] = field(
+    _transition_failure_cache: dict[tuple[int, int, int], float] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
-    _observation_cache: dict[tuple[int, int], Mapping[ObservationKey, Fraction]] = field(
+    _transition_risk_rows: dict[tuple[int, int], float] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _observation_cache: dict[tuple[int, int], Mapping[ObservationKey, float]] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
     def __post_init__(self) -> None:
@@ -198,8 +199,8 @@ class ExactRDDLKernel:
         grounded_model: Any,
         *,
         risk: RiskConstraintSpec | None = None,
-    ) -> ExactRDDLKernel:
-        """Build an exact kernel from a pyRDDLGym grounded model. / 从 pyRDDLGym grounded model 构建 exact kernel。"""
+    ) -> RDDLKernel:
+        """Build a sparse kernel from a pyRDDLGym grounded model. / 从 pyRDDLGym grounded model 构建稀疏内核。"""
         kernel = cls(grounded_model=grounded_model, risk=risk or RiskConstraintSpec())
         kernel._validate_supported()
         return kernel
@@ -238,9 +239,9 @@ class ExactRDDLKernel:
     def initial_constraint_mass(
         self,
         belief: Mapping[StateKey, float],
-    ) -> Mapping[StateKey, Fraction]:
-        """Return an exact normalized mass view of represented belief floats."""
-        mass = _normalized_fraction_mass(belief)
+    ) -> Mapping[StateKey, float]:
+        """Return a normalized sparse mass for the initial belief."""
+        mass = _normalized_mass(belief)
         for state in mass:
             self._state_index.register(state)
         return mass
@@ -248,23 +249,22 @@ class ExactRDDLKernel:
     def initial_safe_mass(
         self,
         belief: Mapping[StateKey, float],
-    ) -> Mapping[StateKey, Fraction]:
+    ) -> Mapping[StateKey, float]:
         """Return unnormalized root mass that has survived initial failure."""
         ordinary = self.initial_constraint_mass(belief)
-        safe: dict[StateKey, Fraction] = {}
+        safe: dict[StateKey, float] = {}
         for state, probability in ordinary.items():
-            failure = self.state_failure_fraction(state)
-            surviving = probability * (Fraction(1) - failure)
+            surviving = probability * (1.0 - self.state_failure(state))
             if surviving > 0:
                 safe[state] = surviving
         return safe
 
     @staticmethod
     def constraint_mass_belief(
-        mass: Mapping[StateKey, Fraction],
+        mass: Mapping[StateKey, float],
     ) -> Mapping[StateKey, float]:
-        """Return a float conditional belief for diagnostics/dynamics only."""
-        return _fraction_mass_belief(mass)
+        """Normalize an unnormalized mass into a conditional belief."""
+        return _mass_belief(mass)
 
     def initial_belief_from_model(self) -> Mapping[StateKey, float]:
         """Return the declared deterministic RDDL initial belief.
@@ -279,10 +279,10 @@ class ExactRDDLKernel:
         """
         declared = getattr(self.grounded_model, "state_fluents", None)
         if not isinstance(declared, Mapping):
-            raise ExactKernelError("Grounded model does not expose a declared initial state.")
+            raise KernelError("Grounded model does not expose a declared initial state.")
         return self.initial_belief_from_state(declared)
 
-    def belief_is_terminal(self, belief: Mapping[StateKey, float | Fraction]) -> bool:
+    def belief_is_terminal(self, belief: Mapping[StateKey, float]) -> bool:
         """Match RDDL termination semantics for every positive-support state."""
         if not self._terminations_cache:
             return False
@@ -294,7 +294,7 @@ class ExactRDDLKernel:
         for expression in self._terminations_cache:
             distribution = self.expression_distribution(expression, context)
             if len(distribution) != 1:
-                raise ExactKernelError("RDDL termination expressions must be deterministic.")
+                raise KernelError("RDDL termination expressions must be deterministic.")
             if bool(next(iter(distribution))):
                 return True
         return False
@@ -319,67 +319,68 @@ class ExactRDDLKernel:
 
     def expand_expected_constraint_mass(
         self,
-        state_mass: Mapping[StateKey, Fraction],
+        state_mass: Mapping[StateKey, float],
         action: Mapping[str, Any],
-    ) -> ExactConstraintMassExpansion:
-        """Propagate Lemma 3.2's unnormalized ordinary cost mass exactly."""
+        *,
+        include_observations: bool = True,
+    ) -> ConstraintMassExpansion:
+        """Propagate Lemma 3.2's unnormalized expected-cost mass.
+
+        A HILP frontier only needs the coefficient until it is selected for
+        expansion. ``include_observations=False`` postpones the observation
+        split while retaining the transition and cost calculation.
+        """
         action_id = self._action_id(action)
-        current_cost = Fraction(0)
-        for state, mass in state_mass.items():
-            cost = (
-                self._state_cost_fraction(
+        current_cost = sum(
+            mass
+            * (
+                self._state_cost(
                     self.state_from_key(state),
                     self.risk.state_fluent_costs,
                 )
-                + self._state_action_cost_fraction(
+                + self._state_action_cost(
                     state,
                     action,
                     self.risk.state_action_costs,
                 )
             )
-            current_cost += mass * cost
-
-        post_action_mass = self._transition_fraction_mass(state_mass, action_id, action)
-        next_cost = Fraction(0)
-        for state, mass in post_action_mass.items():
-            cost = (
-                self._state_cost_fraction(
+            for state, mass in state_mass.items()
+        )
+        post_action_mass = self._transition_mass(state_mass, action_id, action)
+        next_cost = sum(
+            mass
+            * (
+                self._state_cost(
                     self.state_from_key(state),
                     self.risk.next_state_fluent_costs,
                 )
-                + self._state_action_cost_fraction(
+                + self._state_action_cost(
                     state,
                     action,
                     self.risk.next_state_action_costs,
                 )
             )
-            next_cost += mass * cost
-        coefficient_exact = current_cost + next_cost
-        coefficient = _upper_non_negative_fraction(coefficient_exact)
-        return ExactConstraintMassExpansion(
-            coefficient=coefficient,
+            for state, mass in post_action_mass.items()
+        )
+        return ConstraintMassExpansion(
+            coefficient=_non_negative(current_cost + next_cost),
             post_action_mass=post_action_mass,
-            observations=self._constraint_mass_observations(post_action_mass, action),
-            coefficient_exact=coefficient_exact,
+            observations=(
+                self._constraint_mass_observations(post_action_mass, action)
+                if include_observations
+                else ()
+            ),
         )
 
     def expand_ordinary_mass(
         self,
-        state_mass: Mapping[StateKey, Fraction],
+        state_mass: Mapping[StateKey, float],
         action: Mapping[str, Any],
-    ) -> ExactConstraintMassExpansion:
-        """Propagate ordinary history mass without a floating-point product.
-
-        The returned ``coefficient`` is intentionally zero.  This flow exists
-        to preserve mathematical support and observation histories even when
-        a product such as ``1e-200 * 1e-200`` is below binary64's range.
-        Utility coefficients remain the represented binary64 objective used by
-        the MILP; feasibility and tree completeness must not depend on that
-        diagnostic/objective scalar.
-        """
+    ) -> ConstraintMassExpansion:
+        """Propagate ordinary history mass through sparse transition rows."""
         action_id = self._action_id(action)
-        post_action_mass = self._transition_fraction_mass(state_mass, action_id, action)
-        return ExactConstraintMassExpansion(
+        post_action_mass = self._transition_mass(state_mass, action_id, action)
+        return ConstraintMassExpansion(
             coefficient=0.0,
             post_action_mass=post_action_mass,
             observations=self._constraint_mass_observations(post_action_mass, action),
@@ -387,52 +388,79 @@ class ExactRDDLKernel:
 
     def expand_safe_constraint_mass(
         self,
-        safe_mass: Mapping[StateKey, Fraction],
+        safe_mass: Mapping[StateKey, float],
         action: Mapping[str, Any],
-    ) -> ExactConstraintMassExpansion:
-        """Propagate Lemma 3.3 unnormalized safe mass without float posteriors."""
+    ) -> ConstraintMassExpansion:
+        """Propagate Lemma 3.3 unnormalized safe-prefix mass."""
         action_id = self._action_id(action)
-        post_action_mass: dict[StateKey, Fraction] = {}
-        failure_mass = Fraction(0)
-        for source, target, transition_mass in self._transition_fraction_branches(
+        post_action_mass: dict[StateKey, float] = {}
+        for source, target, transition_mass in self._transition_branches(
             safe_mass, action_id, action
         ):
-            failure = self.transition_failure_fraction(source, target, action)
-            failure_mass += transition_mass * failure
-            surviving = transition_mass * (Fraction(1) - failure)
+            failure = self.transition_failure(source, target, action)
+            if failure <= 0.0:
+                surviving = transition_mass
+            elif failure >= 1.0:
+                continue
+            else:
+                surviving = transition_mass * (1.0 - failure)
             if surviving > 0:
-                post_action_mass[target] = (
-                    post_action_mass.get(target, Fraction(0)) + surviving
-                )
-        return ExactConstraintMassExpansion(
-            coefficient=_upper_probability_fraction(failure_mass),
+                post_action_mass[target] = post_action_mass.get(target, 0.0) + surviving
+        return ConstraintMassExpansion(
+            coefficient=self.safe_constraint_coefficient_for_mass(safe_mass, action),
             post_action_mass=post_action_mass,
             observations=self._constraint_mass_observations(post_action_mass, action),
-            coefficient_exact=failure_mass,
         )
 
-    def _transition_fraction_mass(
+    def safe_constraint_coefficient_for_mass(
         self,
-        state_mass: Mapping[StateKey, Fraction],
+        safe_mass: Mapping[StateKey, float],
+        action: Mapping[str, Any],
+    ) -> float:
+        """Return Lemma 3.3's first-entry risk without materializing children.
+
+        An unselected HILP frontier needs :math:`r_q` in the global risk row,
+        but does not yet need surviving post-action mass. Cached state-action
+        risk rows avoid rescanning the same transition branches at every
+        frontier history.
+        """
+        action_id = self._action_id(action)
+        return _probability(
+            sum(
+                mass
+                * self._transition_risk_row(
+                    self._state_index.register(state),
+                    action_id,
+                    action,
+                )
+                for state, mass in safe_mass.items()
+            )
+        )
+
+    def _transition_mass(
+        self,
+        state_mass: Mapping[StateKey, float],
         action_id: int,
         action: Mapping[str, Any],
-    ) -> Mapping[StateKey, Fraction]:
-        """Apply normalized represented transition rows to exact state mass."""
-        result: dict[StateKey, Fraction] = {}
-        for _, target, transition_mass in self._transition_fraction_branches(
+    ) -> Mapping[StateKey, float]:
+        """Apply cached transition rows to sparse state mass."""
+        result: dict[StateKey, float] = {}
+        for _, target, transition_mass in self._transition_branches(
             state_mass, action_id, action
         ):
-            result[target] = result.get(target, Fraction(0)) + transition_mass
+            result[target] = result.get(target, 0.0) + transition_mass
         return result
 
-    def _transition_fraction_branches(
+    def _transition_branches(
         self,
-        state_mass: Mapping[StateKey, Fraction],
+        state_mass: Mapping[StateKey, float],
         action_id: int,
         action: Mapping[str, Any],
-    ) -> Iterable[tuple[StateKey, StateKey, Fraction]]:
-        """Yield positive exact transition mass while reusing cached rows."""
+    ) -> Iterable[tuple[StateKey, StateKey, float]]:
+        """Yield positive transition mass while reusing cached rows."""
         for source, source_mass in state_mass.items():
+            if source_mass <= 0.0:
+                continue
             row = self._transition_row(
                 self._state_index.register(source),
                 action_id,
@@ -451,13 +479,13 @@ class ExactRDDLKernel:
 
     def _constraint_mass_observations(
         self,
-        post_action_mass: Mapping[StateKey, Fraction],
+        post_action_mass: Mapping[StateKey, float],
         action: Mapping[str, Any],
-    ) -> tuple[ExactConstraintMassOutcome, ...]:
-        """Split unnormalized state mass by exact represented observation rows."""
+    ) -> tuple[ConstraintMassOutcome, ...]:
+        """Split unnormalized state mass by cached observation rows."""
         if not self.observation_names:
             return tuple(
-                ExactConstraintMassOutcome(
+                ConstraintMassOutcome(
                     observation=(("__state__", state),),
                     label=self.state_label(state),
                     state_mass={state: mass},
@@ -466,16 +494,16 @@ class ExactRDDLKernel:
                 if mass > 0
             )
 
-        buckets: dict[ObservationKey, dict[StateKey, Fraction]] = {}
+        buckets: dict[ObservationKey, dict[StateKey, float]] = {}
         for state, mass in post_action_mass.items():
             distribution = self._observation_distribution_for_state(state, action)
             for observation, probability in distribution.items():
                 if probability <= 0:
                     continue
                 bucket = buckets.setdefault(observation, {})
-                bucket[state] = bucket.get(state, Fraction(0)) + mass * probability
+                bucket[state] = bucket.get(state, 0.0) + mass * probability
         return tuple(
-            ExactConstraintMassOutcome(
+            ConstraintMassOutcome(
                 observation=observation,
                 label=_observation_label(observation),
                 state_mass=state_weights,
@@ -486,37 +514,35 @@ class ExactRDDLKernel:
             )
         )
 
-    def belief_state_risk_fraction(
+    def belief_state_risk(
         self,
-        belief: Mapping[StateKey, float | Fraction],
-    ) -> Fraction:
-        """Return exact initial/root state risk for represented inputs."""
-        mass = _normalized_fraction_mass(belief)
-        return sum(
-            (
-                probability * self.state_failure_fraction(state)
+        belief: Mapping[StateKey, float],
+    ) -> float:
+        """Return initial/root state risk."""
+        mass = _normalized_mass(belief)
+        return _probability(
+            sum(
+                probability * self.state_failure(state)
                 for state, probability in mass.items()
-            ),
-            start=Fraction(0),
+            )
         )
 
-    def state_failure_fraction(self, state: StateKey) -> Fraction:
-        """Return current-state failure as an exact represented probability."""
-        return min(
-            Fraction(1),
-            self._state_cost_fraction(
+    def state_failure(self, state: StateKey) -> float:
+        """Return current-state failure probability."""
+        return _probability(
+            self._state_cost(
                 self.state_from_key(state),
                 self.risk.state_fluent_costs,
-            ),
+            )
         )
 
-    def transition_failure_fraction(
+    def transition_failure(
         self,
         source: StateKey,
         target: StateKey,
         action: Mapping[str, Any],
-    ) -> Fraction:
-        """Return the exact first-entry failure probability for a transition."""
+    ) -> float:
+        """Return first-entry failure probability for a transition."""
         cache_key = (
             self._state_index.register(source),
             self._state_index.register(target),
@@ -526,25 +552,22 @@ class ExactRDDLKernel:
         if cached is not None:
             return cached
         failures = (
-            min(
-                Fraction(1),
-                self._state_action_cost_fraction(
+            _probability(
+                self._state_action_cost(
                     source,
                     action,
                     self.risk.state_action_costs,
                 ),
             ),
-            self.state_failure_fraction(target),
-            min(
-                Fraction(1),
-                self._state_cost_fraction(
+            self.state_failure(target),
+            _probability(
+                self._state_cost(
                     self.state_from_key(target),
                     self.risk.next_state_fluent_costs,
                 ),
             ),
-            min(
-                Fraction(1),
-                self._state_action_cost_fraction(
+            _probability(
+                self._state_action_cost(
                     target,
                     action,
                     self.risk.next_state_action_costs,
@@ -552,19 +575,50 @@ class ExactRDDLKernel:
             ),
         )
         if any(probability >= 1 for probability in failures):
-            failure = Fraction(1)
+            failure = 1.0
         else:
-            survival = prod(Fraction(1) - probability for probability in failures)
-            failure = Fraction(1) - survival
+            failure = _probability(
+                1.0 - prod(1.0 - probability for probability in failures)
+            )
         self._transition_failure_cache[cache_key] = failure
         return failure
 
-    def transition_fraction_distribution(
+    def _transition_risk_row(
+        self,
+        source_id: int,
+        action_id: int,
+        action: Mapping[str, Any],
+    ) -> float:
+        """Return cached expected first-entry risk for one state-action row."""
+        cache_key = (source_id, action_id)
+        cached = self._transition_risk_rows.get(cache_key)
+        if cached is not None:
+            return cached
+        source = self._state_index.key(source_id)
+        row = self._transition_row(source_id, action_id, action)
+        risk = _probability(
+            sum(
+                probability
+                * self.transition_failure(
+                    source,
+                    self._state_index.key(int(target_id)),
+                    action,
+                )
+                for target_id, probability in zip(
+                    row.next_state_ids,
+                    row.probabilities,
+                )
+            )
+        )
+        self._transition_risk_rows[cache_key] = risk
+        return risk
+
+    def transition_distribution(
         self,
         state: Mapping[str, Any],
         action: Mapping[str, Any],
-    ) -> Mapping[StateKey, Fraction]:
-        """Return an exact represented-float transition row."""
+    ) -> Mapping[StateKey, float]:
+        """Return one sparse transition row."""
         source_id = self._state_index.register(self.state_key(state))
         row = self._transition_row(source_id, self._action_id(action), action)
         return {
@@ -586,24 +640,24 @@ class ExactRDDLKernel:
             return cached
         state = self.state_from_key(self._state_index.key(source_id))
         context = self._context(state, action)
-        partials: dict[StateKey, Fraction] = {(): Fraction(1)}
+        partials: dict[StateKey, float] = {(): 1.0}
         for state_name in self.state_names:
             expr = self._state_cpf_expression(state_name)
             # Synchronous CPFs read the same current context, so evaluate each
             # value distribution once per CPF. / 同步 CPF 共享当前上下文，每个 CPF 只求值一次。
             value_dist = self.expression_distribution(expr, context)
-            value_weights = _normalize_fraction_distribution(value_dist)
-            updated: dict[StateKey, Fraction] = {}
+            value_weights = _normalize_distribution(value_dist)
+            updated: dict[StateKey, float] = {}
             for partial_key, partial_prob in partials.items():
                 partial_state = dict(partial_key)
                 for value, value_prob in value_weights.items():
                     next_partial = tuple(sorted({**partial_state, state_name: _plain_value(value)}.items()))
                     updated[next_partial] = (
-                        updated.get(next_partial, Fraction(0))
+                        updated.get(next_partial, 0.0)
                         + partial_prob * value_prob
                     )
             partials = updated
-        distribution = _normalize_fraction_distribution(partials)
+        distribution = _normalize_distribution(partials)
         row = SparseTransitionRow(
             next_state_ids=tuple(
                 self._state_index.register(state_key) for state_key in distribution
@@ -613,82 +667,78 @@ class ExactRDDLKernel:
         self._transition_rows[cache_key] = row
         return row
 
-    def observation_fraction_probability(
+    def observation_probability(
         self,
         observation: ObservationKey,
         state: StateKey,
         action: Mapping[str, Any],
-    ) -> Fraction:
-        """Return one observation likelihood without binary64 underflow."""
+    ) -> float:
+        """Return one observation likelihood."""
         if observation and observation[0][0] == "__state__":
-            return Fraction(1) if observation[0][1] == state else Fraction(0)
-        return Fraction(
-            self._observation_distribution_for_state(state, action).get(
-                observation,
-                Fraction(0),
-            )
+            return 1.0 if observation[0][1] == state else 0.0
+        return float(
+            self._observation_distribution_for_state(state, action).get(observation, 0.0)
         )
 
-    def backward_fraction_message(
+    def backward_message(
         self,
-        current_states: Mapping[StateKey, Fraction],
-        next_message: Mapping[StateKey, Fraction],
+        current_states: Mapping[StateKey, float],
+        next_message: Mapping[StateKey, float],
         action: Mapping[str, Any],
         observation: ObservationKey,
-    ) -> Mapping[StateKey, Fraction]:
-        """Apply Algorithm 2's backward operator in rational arithmetic."""
+    ) -> Mapping[StateKey, float]:
+        """Apply Algorithm 2's backward operator."""
         action_id = self._action_id(action)
-        result: dict[StateKey, Fraction] = {}
+        result: dict[StateKey, float] = {}
         for state in current_states:
             row = self._transition_row(
                 self._state_index.register(state),
                 action_id,
                 action,
             )
-            probability_of_future = Fraction(0)
-            for target_id, transition_probability in zip(
-                row.next_state_ids,
-                row.probabilities,
-            ):
-                target = self._state_index.key(int(target_id))
-                probability_of_future += (
+            probability_of_future = sum(
+                (
                     transition_probability
-                    * self.observation_fraction_probability(
+                    * self.observation_probability(
                         observation,
-                        target,
+                        self._state_index.key(int(target_id)),
                         action,
                     )
-                    * Fraction(next_message.get(target, Fraction(0)))
+                    * next_message.get(self._state_index.key(int(target_id)), 0.0)
                 )
+                for target_id, transition_probability in zip(
+                    row.next_state_ids,
+                    row.probabilities,
+                )
+            )
             result[state] = probability_of_future
         return result
 
     def utility_coefficient_for_mass(
         self,
-        state_mass: Mapping[StateKey, Fraction],
+        state_mass: Mapping[StateKey, float],
         action: Mapping[str, Any],
-    ) -> tuple[float, bool, Fraction]:
-        """Return ``sum_s mass(s) U(s,a)`` and a no-underflow flag."""
+    ) -> float:
+        """Return ``sum_s mass(s) U(s,a)``."""
         action_id = self._action_id(action)
-        exact = Fraction(0)
-        for state, mass in state_mass.items():
-            state_id = self._state_index.register(state)
-            exact += Fraction(mass) * self._reward_fraction_for_ids(
-                state_id, action_id, action
+        value = sum(
+            mass
+            * self._reward_for_ids(
+                self._state_index.register(state),
+                action_id,
+                action,
             )
-        try:
-            rounded = float(exact)
-        except OverflowError as exc:
-            raise ExactKernelError("Utility coefficient overflowed binary64.") from exc
-        if not isfinite(rounded):
-            raise ExactKernelError("Utility coefficient must be finite.")
-        return rounded, Fraction.from_float(rounded) == exact, exact
+            for state, mass in state_mass.items()
+        )
+        if not isfinite(value):
+            raise KernelError("Utility coefficient must be finite.")
+        return value
 
-    def expected_reward_fraction(self, context: Mapping[str, Any]) -> Fraction:
-        """Return the exact expectation of represented finite reward support."""
+    def expected_reward(self, context: Mapping[str, Any]) -> float:
+        """Return the expectation of finite reward support."""
         reward = getattr(self.grounded_model, "reward", None)
         if reward is None:
-            raise ExactKernelError("Grounded model does not expose a reward expression.")
+            raise KernelError("Grounded model does not expose a reward expression.")
         return _expectation(self.expression_distribution(reward, context))
 
     def expression_distribution(self, expr: Any, context: Mapping[str, Any]) -> Distribution:
@@ -702,9 +752,9 @@ class ExactRDDLKernel:
         if etype == "pvar":
             name, params = args
             if params not in (None, []):
-                raise ExactKernelError(f"Exact kernel expected grounded pvar but got {name}{params}.")
+                raise KernelError(f"Kernel expected grounded pvar but got {name}{params}.")
             if name not in context:
-                raise ExactKernelError(f"Expression references unknown grounded pvar: {name}")
+                raise KernelError(f"Expression references unknown grounded pvar: {name}")
             return {_plain_value(context[name]): 1.0}
         if etype == "arithmetic":
             return _combine_distributions([self.expression_distribution(arg, context) for arg in _as_args(args)], _arith(op))
@@ -714,20 +764,20 @@ class ExactRDDLKernel:
             return _combine_distributions([self.expression_distribution(arg, context) for arg in _as_args(args)], _relation(op))
         if etype == "control" and op == "if":
             condition, then_expr, else_expr = args
-            result: dict[Hashable, Fraction] = {}
+            result: dict[Hashable, float] = {}
             for truth, truth_prob in self.expression_distribution(condition, context).items():
                 branch = then_expr if bool(truth) else else_expr
                 for value, value_prob in self.expression_distribution(branch, context).items():
                     result[value] = (
-                        result.get(value, Fraction(0))
-                        + Fraction(truth_prob) * Fraction(value_prob)
+                        result.get(value, 0.0)
+                        + truth_prob * value_prob
                     )
-            return _normalize_fraction_distribution(result)
+            return _normalize_distribution(result)
         if etype == "randomvar":
             return self._random_distribution(op, _as_args(args), context)
         if etype == "aggregation":
-            raise ExactKernelError(f"Grounded exact aggregation is not implemented for operator {op}.")
-        raise ExactKernelError(f"Unsupported exact expression type: {etype}/{op}")
+            raise KernelError(f"Grounded aggregation is not implemented for operator {op}.")
+        raise KernelError(f"Unsupported expression type: {etype}/{op}")
 
     def _random_distribution(
         self,
@@ -742,24 +792,22 @@ class ExactRDDLKernel:
         if name == "Bernoulli":
             _check_arity(args, 1, name)
             p = _expectation(self.expression_distribution(args[0], context))
-            if p < 0 or p > 1:
-                raise ExactKernelError(f"Bernoulli probability out of range: {p}")
-            return _normalize_fraction_distribution(
-                {True: p, False: Fraction(1) - p}
-            )
+            if not isfinite(p) or p < 0 or p > 1:
+                raise KernelError(f"Bernoulli probability out of range: {p}")
+            return _normalize_distribution({True: p, False: 1.0 - p})
         if name == "Discrete":
             if len(args) % 2 != 0:
-                raise ExactKernelError("Exact Discrete expects alternating value/probability arguments.")
-            result: dict[Hashable, Fraction] = {}
+                raise KernelError("Discrete expects alternating value/probability arguments.")
+            result: dict[Hashable, float] = {}
             for value_expr, prob_expr in zip(args[0::2], args[1::2]):
                 value_dist = self.expression_distribution(value_expr, context)
                 if len(value_dist) != 1:
-                    raise ExactKernelError("Exact Discrete values must be deterministic.")
+                    raise KernelError("Discrete values must be deterministic.")
                 value = next(iter(value_dist))
                 prob_value = _expectation(self.expression_distribution(prob_expr, context))
-                result[value] = result.get(value, Fraction(0)) + prob_value
-            return _normalize_fraction_distribution(result)
-        raise ExactKernelError(f"Random distribution {name} is not finite/exact in current DARP.")
+                result[value] = result.get(value, 0.0) + prob_value
+            return _normalize_distribution(result)
+        raise KernelError(f"Random distribution {name} is not finite in current DARP.")
 
     def _context(self, state: Mapping[str, Any], action: Mapping[str, Any]) -> dict[str, Any]:
         """Build expression context from non-fluents, state, and action. / 从 non-fluent、state 和 action 构建表达式上下文。"""
@@ -782,36 +830,45 @@ class ExactRDDLKernel:
             self._action_ids[key] = action_id
         return action_id
 
-    def _reward_fraction_for_ids(
+    def _reward_for_ids(
         self,
         state_id: int,
         action_id: int,
         action: Mapping[str, Any],
-    ) -> Fraction:
-        """Evaluate and cache one exact reward matrix entry."""
+    ) -> float:
+        """Evaluate and cache one reward matrix entry."""
         cache_key = (state_id, action_id)
-        cached = self._reward_fraction_cache.get(cache_key)
+        cached = self._reward_cache.get(cache_key)
         if cached is not None:
             return cached
         state = self.state_from_key(self._state_index.key(state_id))
         context = self._context(state, action)
         row = self._transition_row(state_id, action_id, action)
-        reward_fraction = Fraction(0)
-        for target_id, probability in zip(row.next_state_ids, row.probabilities):
-            target = self.state_from_key(self._state_index.key(int(target_id)))
-            next_context = {
-                **context,
-                **{f"{name}'": target.get(name, False) for name in self.state_names},
-            }
-            reward_fraction += probability * self.expected_reward_fraction(next_context)
-        self._reward_fraction_cache[cache_key] = reward_fraction
-        return reward_fraction
+        reward = sum(
+            probability
+            * self.expected_reward(
+                {
+                    **context,
+                    **{
+                        f"{name}'": self.state_from_key(
+                            self._state_index.key(int(target_id))
+                        ).get(name, False)
+                        for name in self.state_names
+                    },
+                }
+            )
+            for target_id, probability in zip(row.next_state_ids, row.probabilities)
+        )
+        if not isfinite(reward):
+            raise KernelError("Expected reward must be finite.")
+        self._reward_cache[cache_key] = reward
+        return reward
 
     def _observation_distribution_for_state(
         self,
         state: StateKey,
         action: Mapping[str, Any],
-    ) -> Mapping[ObservationKey, Fraction]:
+    ) -> Mapping[ObservationKey, float]:
         r"""Return cached $$O(o\mid s',a)$$ support. / 返回缓存的观测似然支持集。"""
         state_id = self._state_index.register(state)
         action_id = self._action_id(action)
@@ -831,61 +888,58 @@ class ExactRDDLKernel:
         key = f"{state_name}'"
         value = self.cpfs.get(key)
         if value is None:
-            raise ExactKernelError(f"Missing next-state CPF for {state_name}.")
+            raise KernelError(f"Missing next-state CPF for {state_name}.")
         return _cpf_expression(value)
 
-    def _observation_distribution(self, context: Mapping[str, Any]) -> Mapping[ObservationKey, Fraction]:
+    def _observation_distribution(self, context: Mapping[str, Any]) -> Mapping[ObservationKey, float]:
         """Return observation-value distribution from observation CPFs. / 从 observation CPF 返回 observation-value 分布。"""
-        partials: dict[ObservationKey, Fraction] = {(): Fraction(1)}
+        partials: dict[ObservationKey, float] = {(): 1.0}
         for obs_name in self.observation_names:
             if obs_name in self.cpfs:
                 expr = self.cpfs[obs_name]
             elif f"{obs_name}'" in self.cpfs:
                 expr = self.cpfs[f"{obs_name}'"]
             else:
-                raise ExactKernelError(f"Missing observation CPF for {obs_name}.")
-            updated: dict[ObservationKey, Fraction] = {}
+                raise KernelError(f"Missing observation CPF for {obs_name}.")
+            updated: dict[ObservationKey, float] = {}
             for partial_key, partial_prob in partials.items():
                 partial_obs = dict(partial_key)
                 value_dist = self.expression_distribution(_cpf_expression(expr), {**context, **partial_obs})
-                for value, value_prob in _normalize_fraction_distribution(value_dist).items():
+                for value, value_prob in _normalize_distribution(value_dist).items():
                     next_partial = tuple(sorted({**partial_obs, obs_name: _plain_value(value)}.items()))
                     updated[next_partial] = (
-                        updated.get(next_partial, Fraction(0))
+                        updated.get(next_partial, 0.0)
                         + partial_prob * value_prob
                     )
             partials = updated
-        return _normalize_fraction_distribution(partials)
+        return _normalize_distribution(partials)
 
     @staticmethod
-    def _state_cost_fraction(
+    def _state_cost(
         state: Mapping[str, Any],
         costs: Mapping[str, float],
-    ) -> Fraction:
-        """Return an additive state cost before binary64 rounding."""
+    ) -> float:
+        """Return the additive state cost."""
         return sum(
-            (
-                Fraction.from_float(float(cost))
-                for fluent, cost in costs.items()
-                if bool(state.get(fluent, False))
-            ),
-            start=Fraction(0),
+            float(cost)
+            for fluent, cost in costs.items()
+            if bool(state.get(fluent, False))
         )
 
-    def _state_action_cost_fraction(
+    def _state_action_cost(
         self,
         state: StateKey,
         action: Mapping[str, Any],
         costs: Mapping[tuple[Hashable, str], float],
-    ) -> Fraction:
-        """Resolve one state/action table entry as its exact dyadic value."""
+    ) -> float:
+        """Resolve one state/action table entry."""
         if not costs:
-            return Fraction(0)
+            return 0.0
         state_mapping = self.state_from_key(state)
         action_label = _action_label_from_assignment(action, self.action_names)
         direct = costs.get((state, action_label))
         if direct is not None:
-            return Fraction.from_float(float(direct))
+            return float(direct)
         matches: list[tuple[int, str, float]] = []
         for (selector, configured_action), value in costs.items():
             if str(configured_action) != action_label or not isinstance(selector, str):
@@ -894,16 +948,16 @@ class ExactRDDLKernel:
             if specificity is not None:
                 matches.append((specificity, selector, float(value)))
         if not matches:
-            return Fraction(0)
+            return 0.0
         specificity = max(item[0] for item in matches)
         best = [(selector, value) for level, selector, value in matches if level == specificity]
         distinct = {value for _, value in best}
         if len(distinct) > 1:
-            raise ExactKernelError(
+            raise KernelError(
                 "Conflicting equal-specificity risk state-action selectors for "
                 f"action {action_label!r}: {', '.join(sorted(selector for selector, _ in best))}"
             )
-        return Fraction.from_float(best[0][1])
+        return best[0][1]
 
     def _validate_supported(self) -> None:
         """Validate scalar ranges whose reached CPF rows have finite support."""
@@ -914,8 +968,8 @@ class ExactRDDLKernel:
             if str(state_ranges.get(name, "bool")) not in {"bool", "int"}
         ]
         if unsupported:
-            raise ExactKernelError(
-                "Current exact kernel supports bool and finite-horizon int "
+            raise KernelError(
+                "Current kernel supports bool and finite-horizon int "
                 "state fluents only: "
                 + ", ".join(unsupported)
             )
@@ -924,7 +978,7 @@ class ExactRDDLKernel:
         )
         unknown_cost_fluents = sorted(configured_cost_fluents - set(self.state_names))
         if unknown_cost_fluents:
-            raise ExactKernelError(
+            raise KernelError(
                 "Risk constraint references unknown grounded state fluents: "
                 + ", ".join(unknown_cost_fluents)
             )
@@ -963,20 +1017,20 @@ class ExactRDDLKernel:
                 elif _looks_like_state_key(selector):
                     selector_names.update(str(name) for name, _ in selector)
                 else:
-                    raise ExactKernelError(
+                    raise KernelError(
                         "Risk state-action table keys must use a Boolean state "
                         f"selector string or complete StateKey, got {selector!r}."
                     )
         unknown_selector_names = sorted(selector_names - set(self.state_names))
         if unknown_selector_names:
-            raise ExactKernelError(
+            raise KernelError(
                 "Risk state-action selectors reference unknown grounded state fluents: "
                 + ", ".join(unknown_selector_names)
             )
         known_action_labels = {"noop", *self.action_names}
         unknown_actions = sorted(configured_actions - known_action_labels)
         if unknown_actions:
-            raise ExactKernelError(
+            raise KernelError(
                 "Risk state-action table references unknown grounded actions: "
                 + ", ".join(unknown_actions)
             )
@@ -1011,7 +1065,7 @@ def _as_args(value: Any) -> tuple[Any, ...]:
 def _check_arity(args: Sequence[Any], expected: int, name: str) -> None:
     """Check expression arity. / 检查表达式参数个数。"""
     if len(args) != expected:
-        raise ExactKernelError(f"{name} expects {expected} arguments, got {len(args)}.")
+        raise KernelError(f"{name} expects {expected} arguments, got {len(args)}.")
 
 
 def _plain_value(value: Any) -> Hashable:
@@ -1079,12 +1133,12 @@ def _selector_names(selector: str) -> tuple[str, ...]:
         name, separator, raw_value = clause.partition("=")
         name = name.strip()
         if not name:
-            raise ExactKernelError(f"Risk state selector is invalid: {selector!r}")
+            raise KernelError(f"Risk state selector is invalid: {selector!r}")
         if separator:
             try:
                 _selector_literal(raw_value)
             except ValueError as error:
-                raise ExactKernelError(
+                raise KernelError(
                     f"Risk state selector has an invalid value: {selector!r}"
                 ) from error
         names.append(name)
@@ -1134,7 +1188,7 @@ def _canonical_state_action_cost_table(
             )
         key = (normalized_selector, str(action))
         if key in normalized:
-            raise ExactKernelError(
+            raise KernelError(
                 f"Risk {table_name} contains duplicate selectors after StateKey "
                 f"canonicalization: {origins[key]!r} and {selector!r}."
             )
@@ -1149,7 +1203,7 @@ def _canonical_complete_state_selector(
 ) -> StateKey:
     """Validate and order one direct-API selector as a complete StateKey."""
     if not _looks_like_state_key(selector):
-        raise ExactKernelError(
+        raise KernelError(
             "Risk state-action table keys must use a scalar state selector "
             f"string or complete StateKey, got {selector!r}."
         )
@@ -1157,14 +1211,14 @@ def _canonical_complete_state_selector(
     raw_names = [entry[0] for entry in entries]
     non_string_names = [name for name in raw_names if not isinstance(name, str)]
     if non_string_names:
-        raise ExactKernelError(
+        raise KernelError(
             "Risk direct StateKey selector fluent names must be strings: "
             f"{non_string_names!r}."
         )
     names = [str(name) for name in raw_names]
     duplicate_names = sorted({name for name in names if names.count(name) > 1})
     if duplicate_names:
-        raise ExactKernelError(
+        raise KernelError(
             "Risk direct StateKey selector contains duplicate grounded state "
             "fluents: " + ", ".join(duplicate_names)
         )
@@ -1178,7 +1232,7 @@ def _canonical_complete_state_selector(
             details.append("missing " + ", ".join(missing))
         if unknown:
             details.append("unknown " + ", ".join(unknown))
-        raise ExactKernelError(
+        raise KernelError(
             "Risk direct StateKey selector must name every grounded state "
             "fluent exactly once (" + "; ".join(details) + ")."
         )
@@ -1186,7 +1240,7 @@ def _canonical_complete_state_selector(
     for name, raw_value in entries:
         value = _plain_value(raw_value)
         if not isinstance(value, (bool, int)):
-            raise ExactKernelError(
+            raise KernelError(
                 "Risk direct StateKey selector values must be Boolean or integer; "
                 f"{name!r} has {raw_value!r}."
             )
@@ -1194,97 +1248,91 @@ def _canonical_complete_state_selector(
     return tuple((name, values[name]) for name in state_names)
 
 
-def _normalize_fraction_distribution(
-    distribution: Mapping[Hashable, float | Fraction],
-) -> dict[Hashable, Fraction]:
-    """Normalize finite represented support without losing tiny products."""
-    numeric: dict[Hashable, Fraction] = {}
+def _normalize_distribution(
+    distribution: Mapping[Hashable, float],
+) -> dict[Hashable, float]:
+    """Validate and normalize one finite non-negative distribution."""
+    numeric: dict[Hashable, float] = {}
     for key, raw_value in distribution.items():
-        if isinstance(raw_value, Fraction):
-            value = raw_value
-        else:
-            numeric_value = float(raw_value)
-            if not isfinite(numeric_value):
-                raise ExactKernelError(
-                    f"Probability distribution contains non-finite mass: {key!r}"
-                )
-            value = Fraction.from_float(numeric_value)
+        value = float(raw_value)
+        if not isfinite(value):
+            raise KernelError(
+                f"Probability distribution contains non-finite mass: {key!r}"
+            )
         if value < 0:
-            raise ExactKernelError(
+            raise KernelError(
                 f"Probability distribution contains negative mass: {key!r}={value!r}"
             )
         if value > 0:
             numeric[key] = value
-    total = sum(numeric.values(), start=Fraction(0))
+    total = sum(numeric.values())
     if total <= 0:
         return {}
+    if not isfinite(total):
+        raise KernelError("Probability distribution has non-finite total mass.")
     return {key: value / total for key, value in numeric.items()}
 
 
-def _normalized_fraction_mass(
-    distribution: Mapping[StateKey, float | Fraction],
-) -> dict[StateKey, Fraction]:
-    """Normalize represented probability floats exactly as rational masses."""
-    normalized = _normalize_fraction_distribution(distribution)
+def _normalized_mass(
+    distribution: Mapping[StateKey, float],
+) -> dict[StateKey, float]:
+    """Validate and normalize a non-empty state mass."""
+    normalized = _normalize_distribution(distribution)
     if not normalized:
-        raise ExactKernelError("Constraint mass requires positive probability mass.")
+        raise KernelError("Constraint mass requires positive probability mass.")
     return normalized
 
 
-def _fraction_mass_belief(
-    mass: Mapping[StateKey, Fraction],
+def _mass_belief(
+    mass: Mapping[StateKey, float],
 ) -> dict[StateKey, float]:
-    """Convert exact unnormalized state mass to a diagnostic float belief."""
-    return {
-        state: float(probability)
-        for state, probability in _normalize_fraction_distribution(mass).items()
-    }
+    """Normalize an unnormalized state mass, allowing an empty safe flow."""
+    return _normalize_distribution(mass)
 
 
-def _upper_non_negative_fraction(value: Fraction) -> float:
-    """Convert a non-negative exact float-rational expression upward."""
-    if value < 0:
-        raise ExactKernelError(f"Expected a non-negative quantity, got {value!r}.")
-    rounded = float(value)
-    if not isfinite(rounded):
-        raise ExactKernelError("Constraint aggregation overflowed to a non-finite value.")
-    if Fraction.from_float(rounded) < value:
-        rounded = nextafter(rounded, float("inf"))
-    return rounded
+def _non_negative(value: float) -> float:
+    """Validate one finite non-negative coefficient."""
+    value = float(value)
+    if not isfinite(value):
+        raise KernelError("Constraint aggregation produced a non-finite value.")
+    if value < 0.0:
+        raise KernelError(f"Expected a non-negative quantity, got {value!r}.")
+    return value
 
 
-def _upper_probability_fraction(value: Fraction) -> float:
-    """Convert an exact probability expression upward and clamp to one."""
-    if value <= 0:
+def _probability(value: float) -> float:
+    """Validate and clamp a floating-point probability to ``[0, 1]``."""
+    value = _non_negative(value)
+    if value <= 0.0:
         return 0.0
-    if value >= 1:
+    if value >= 1.0:
         return 1.0
-    return _upper_non_negative_fraction(value)
+    return value
 
 
-def _expectation(distribution: Mapping[Hashable, float | Fraction]) -> Fraction:
-    """Return the rational expectation of represented finite support."""
-    return sum(
-        (
-            Fraction.from_float(float(value)) * Fraction(probability)
-            for value, probability in distribution.items()
-        ),
-        start=Fraction(0),
+def _expectation(distribution: Mapping[Hashable, float]) -> float:
+    """Return the expectation of finite numeric support."""
+    value = sum(
+        float(item) * probability
+        for item, probability in distribution.items()
     )
+    if not isfinite(value):
+        raise KernelError("Distribution expectation must be finite.")
+    return value
 
 
 def _combine_distributions(distributions: Sequence[Distribution], fn: Any) -> Distribution:
     """Combine independent finite distributions with one operator. / 用一个算子组合多个有限分布。"""
     if not distributions:
-        return {fn(): Fraction(1)}
-    result: dict[Hashable, Fraction] = {}
+        return {fn(): 1.0}
+    result: dict[Hashable, float] = {}
     keys = [tuple(dist.items()) for dist in distributions]
     for combination in product(*keys):
         values = [item[0] for item in combination]
-        probability = prod(Fraction(item[1]) for item in combination)
+        probability = prod(item[1] for item in combination)
         output = _plain_value(fn(*values))
-        result[output] = result.get(output, Fraction(0)) + probability
-    return _normalize_fraction_distribution(result)
+        result[output] = result.get(output, 0.0) + probability
+    return _normalize_distribution(result)
 
 
 def _arith(op: str) -> Any:
@@ -1297,7 +1345,7 @@ def _arith(op: str) -> Any:
         return lambda *values: prod(values)
     if op == "/":
         return lambda lhs, rhs: lhs / rhs
-    raise ExactKernelError(f"Unsupported arithmetic operator: {op}")
+    raise KernelError(f"Unsupported arithmetic operator: {op}")
 
 
 def _logic(op: str) -> Any:
@@ -1312,7 +1360,7 @@ def _logic(op: str) -> Any:
         return lambda lhs, rhs: (not bool(lhs)) or bool(rhs)
     if op == "<=>":
         return lambda lhs, rhs: bool(lhs) == bool(rhs)
-    raise ExactKernelError(f"Unsupported logical operator: {op}")
+    raise KernelError(f"Unsupported logical operator: {op}")
 
 
 def _relation(op: str) -> Any:
@@ -1329,7 +1377,7 @@ def _relation(op: str) -> Any:
         return lambda lhs, rhs: lhs == rhs
     if op == "~=":
         return lambda lhs, rhs: lhs != rhs
-    raise ExactKernelError(f"Unsupported relational operator: {op}")
+    raise KernelError(f"Unsupported relational operator: {op}")
 
 
 def _observation_label(observation: ObservationKey) -> str:

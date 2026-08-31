@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from fractions import Fraction
 from pathlib import Path
 from time import perf_counter
 from typing import Literal
 
-from darp.adapter.exact import ExactRDDLKernel, StateKey
+from darp.adapter.kernel import RDDLKernel, StateKey
 from darp.adapter.loader import load_rddl
 from darp.adapter.runtime import PyRDDLGymRuntime
 from darp.model.and_or_tree import ANDORSearchInterface
@@ -22,8 +21,8 @@ from darp.planning.hilp import HILPPlanner
 
 PlannerName = Literal["hilp", "full-ilp"]
 RootBeliefFactory = Callable[
-    [ExactRDDLKernel],
-    Mapping[StateKey, float | Fraction],
+    [RDDLKernel],
+    Mapping[StateKey, float],
 ]
 PreSolveCheck = Callable[
     [ANDORSearchInterface, DurationSidecar, HistoryDurationEvaluator, float | None],
@@ -69,16 +68,16 @@ def solve_rddl(
     )
     duration.validate_actions([choice.label for choice in interface.actions])
     duration.validate_state_fluents(
-        getattr(interface.exact_kernel, "state_names", ())
+        getattr(interface.kernel, "state_names", ())
     )
     evaluator = duration.evaluator(horizon=runtime.horizon)
     budget = risk_budget if risk_budget is not None else duration.risk.budget
 
     root_belief = None
     if root_belief_factory is not None:
-        kernel = interface.exact_kernel
+        kernel = interface.kernel
         if kernel is None:
-            raise ValueError("An external root belief requires DARP's exact kernel.")
+            raise ValueError("An external root belief requires DARP's RDDL kernel.")
         root_belief = root_belief_factory(kernel)
         if not isinstance(root_belief, Mapping):
             raise TypeError("A root-belief factory must return a mapping.")

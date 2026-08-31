@@ -5,9 +5,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${VENV_DIR:-${ROOT_DIR}/.venv}"
-OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/output/DARP-vs-RAOstar}"
+OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/output/DARP-vs-RAOstar-grid}"
 
 export PYTHONDONTWRITEBYTECODE=1
+export PYTHONHASHSEED="${PYTHONHASHSEED:-0}"
 cd "${ROOT_DIR}"
 
 if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
@@ -18,8 +19,8 @@ mkdir -p "${OUTPUT_DIR}"
 
 RUN_ARGS=(
   --trials "${TRIALS:-25}"
-  --output "${OUTPUT_DIR}/raw.csv"
-  --summary "${OUTPUT_DIR}/summary.md"
+  --output "${OUTPUT_DIR}/table2-raw.csv"
+  --summary "${OUTPUT_DIR}/table2.md"
   --resume
 )
 
@@ -33,4 +34,4 @@ if [[ -n "${BASELINE_CACHE:-}" ]]; then
   RUN_ARGS+=(--baseline-cache "${BASELINE_CACHE}")
 fi
 
-"${VENV_DIR}/bin/python" -m experiments.DARP-vs-RAOstar.run "${RUN_ARGS[@]}"
+"${VENV_DIR}/bin/python" -m experiments.DARP-vs-RAOstar-grid.run "${RUN_ARGS[@]}"

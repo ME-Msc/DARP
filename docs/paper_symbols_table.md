@@ -192,6 +192,6 @@ $$V_0(s)=H_{tail}(s)\;\text{or}\;0,\qquad V_t(s)=\max_a\left[U(s,a)+\sum_{s'}T(s
 
 $$h_q^u=\rho(q)\sum_s b_q(s)\left[U(s,a_q)+\sum_{s'}T(s,a_q,s')V_{d-1}(s')\right].$$
 
-两种模式都不是未来采样，也不递归展开 observation tree；区别在于 `one-step-greedy` 更快，`reachable-bellman` 会在有限可达状态集合上向后传播未来 reward。需要特别区分论文对 $h_q^u$ 的 admissible 要求与具体实现：`one-step-greedy` 只是排序分数，一般不是未来 utility 的 admissible bound，所以只要仍有未展开备选 subtree，结果必须标记 `complete=False`。`reachable-bellman` 只有覆盖所有未展开备选的全部剩余 depth，且没有额外 terminal tail 时，才可以参与 exact certificate。
+当前核心不内置特定领域的 heuristic。用户通过 `UtilityHeuristic` 提供 $h(s,a)$，核心计算 $h_q^u=\sum_s\rho(q)b_q(s)h(s,a_q)$。只有回调确实是最大化 utility 的 admissible upper bound 时，才应设置 `upper_bound=True`；否则仍可用于搜索，但不能据此声称未展开 subtree 已被最优性界排除。
 
 风险启发式 $h_q^r$ 当前保持为一步 safe-belief 风险 $r_q$，作为未来风险的可采纳下界；更强的风险启发式留给后续 benchmark 优化。

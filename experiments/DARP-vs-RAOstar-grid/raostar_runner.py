@@ -99,7 +99,6 @@ class RAOStarRunner:
             "n": int(metrics.n),
             "iterations": int(metrics.iterations),
             "complete": True,
-            "certified": False,
         }
 
 

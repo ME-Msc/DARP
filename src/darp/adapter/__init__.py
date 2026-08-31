@@ -1,1 +1,1 @@
-"""RDDL and exact-kernel adapters."""
+"""RDDL and sparse-kernel adapters."""

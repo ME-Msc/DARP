@@ -4,31 +4,30 @@ from __future__ import annotations
 
 from collections.abc import Hashable, Iterable, Mapping
 from dataclasses import dataclass
-from fractions import Fraction
-from math import erfc, isfinite, nextafter, sqrt
+from math import ceil, erfc, isfinite, sqrt
 from typing import Any
 
 ActionName = str
 StateKey = Hashable
 Belief = Mapping[StateKey, float]
-AugmentedStateKey = tuple[StateKey, Fraction]
-AugmentedBelief = Mapping[AugmentedStateKey, Fraction]
+AugmentedStateKey = tuple[StateKey, float]
+AugmentedBelief = Mapping[AugmentedStateKey, float]
 
 
 @dataclass(frozen=True)
 class DurationEstimate:
     """Store one action-duration estimate. / 保存一次动作时长估计。"""
 
-    mean: Fraction
-    variance: Fraction = Fraction(0)
+    mean: float
+    variance: float = 0.0
 
 
 @dataclass(frozen=True)
 class DurationProgress:
     """Track accumulated duration along a history. / 跟踪一条 history 上累计的动作时长。"""
 
-    mean: Fraction = Fraction(0)
-    variance: Fraction = Fraction(0)
+    mean: float = 0.0
+    variance: float = 0.0
     augmented_belief: AugmentedBelief | None = None
 
     def add(self, estimate: DurationEstimate) -> DurationProgress:
@@ -119,7 +118,7 @@ class HistoryDurationEvaluator:
             # product.  Although its real-arithmetic value is bounded below by
             # the smallest configured duration, normalization and summation
             # can undershoot that value by more than one ULP.  Do not turn the
-            # configuration minimum into a false finite-depth certificate;
+            # configuration minimum into a false finite-depth bound;
             # branch-local tau checks still terminate the actual expansion.
             return None
         if isinstance(self.model, ChanceConstrainedDurationModel):
@@ -137,9 +136,8 @@ class HistoryDurationEvaluator:
         if isinstance(self.model, GaussianDurationModel):
             # Both Gaussian moments are belief-weighted floating-point sums.
             # Without interval arithmetic there is no machine-checkable
-            # uniform lower/upper moment bound strong enough to certify a
-            # strict tau boundary.  Exhaust branches using their exact stored
-            # progress instead of claiming a derived action-depth proof.
+            # uniform lower/upper moment bound strong enough to prove a strict
+            # tau boundary. Exhaust branches using their stored progress.
             return None
         return None
 
@@ -160,20 +158,15 @@ class FixedDurationModel(DurationModel):
     def estimate(self, belief: Belief, action: ActionName) -> DurationEstimate:
         """Return the configured fixed duration. / 返回配置中的固定动作时长。"""
         mean = float(self.durations.get(action, self.default))
-        return DurationEstimate(mean=Fraction.from_float(mean))
+        return DurationEstimate(mean=mean)
 
     def tau(self, progress: DurationProgress, horizon: float) -> float:
         """Return remaining time after accumulated duration. / 返回累计时长后的剩余时间。"""
-        return _diagnostic_float(
-            Fraction.from_float(float(horizon)) - progress.mean
-        )
+        return float(horizon) - progress.mean
 
     def should_continue(self, progress: DurationProgress, horizon: float, zeta: float) -> bool:
-        """Evaluate the paper's strict remaining-time test exactly."""
-        return (
-            Fraction.from_float(float(horizon)) - progress.mean
-            > Fraction.from_float(float(zeta))
-        )
+        """Evaluate the paper's strict remaining-time test."""
+        return float(horizon) - progress.mean > float(zeta)
 
 
 @dataclass(frozen=True)
@@ -191,14 +184,11 @@ class StateDependentDurationModel(DurationModel):
 
     def estimate(self, belief: Belief, action: ActionName) -> DurationEstimate:
         """Return belief-weighted expected duration. / 返回 belief 加权的期望时长。"""
-        mean_exact = sum(
-            (
-                probability * Fraction.from_float(self.duration_for_state(state, action))
-                for state, probability in _normalized_belief_fraction_items(belief)
-            ),
-            start=Fraction(0),
+        mean = sum(
+            probability * self.duration_for_state(state, action)
+            for state, probability in _normalized_belief_items(belief)
         )
-        return DurationEstimate(mean=mean_exact)
+        return DurationEstimate(mean=mean)
 
     def duration_for_state(self, state: StateKey, action: ActionName) -> float:
         """Return :math:`D(s,a)` for one complete state."""
@@ -206,26 +196,22 @@ class StateDependentDurationModel(DurationModel):
 
     def tau(self, progress: DurationProgress, horizon: float) -> float:
         """Return remaining time after expected duration. / 返回期望累计时长后的剩余时间。"""
-        return _diagnostic_float(
-            Fraction.from_float(float(horizon)) - progress.mean
-        )
+        return float(horizon) - progress.mean
 
     def should_continue(self, progress: DurationProgress, horizon: float, zeta: float) -> bool:
-        """Evaluate the strict expected-duration boundary as rationals."""
-        return (
-            Fraction.from_float(float(horizon)) - progress.mean
-            > Fraction.from_float(float(zeta))
-        )
+        """Evaluate the strict expected-duration boundary."""
+        return float(horizon) - progress.mean > float(zeta)
 
 
 @dataclass(frozen=True)
 class ChanceConstrainedDurationModel(DurationModel):
-    r"""Deterministic :math:`D(s,a)` with an exact augmented-state chance bound.
+    r"""Deterministic :math:`D(s,a)` with an augmented-state chance bound.
 
     The sufficient statistic for a history is the posterior over
     :math:`(S_q,G_q)`, where :math:`G_q` is accumulated duration.  Algorithm 2
     updates that distribution jointly with each transition and observation;
-    retaining only the marginal state belief or expected duration is not exact.
+    retaining only the marginal state belief or expected duration loses the
+    correlation required by the paper.
 
     / 为确定性状态依赖时长保留论文中的增广状态
     ``(state, accumulated duration)`` 后验分布。
@@ -247,15 +233,12 @@ class ChanceConstrainedDurationModel(DurationModel):
     def tau(self, progress: DurationProgress, horizon: float) -> float:
         r"""Return :math:`Pr(G_q < h \mid q)` from the augmented belief."""
         probability, total = _chance_duration_mass(progress, horizon)
-        return _upward_probability_fraction(probability / total) if total > 0 else 0.0
+        return probability / total if total > 0.0 else 0.0
 
     def should_continue(self, progress: DurationProgress, horizon: float, zeta: float) -> bool:
-        """Compare the exact augmented safe-duration mass with zeta."""
+        """Compare augmented safe-duration mass with zeta."""
         numerator, denominator = _chance_duration_mass(progress, horizon)
-        return (
-            denominator > 0
-            and numerator > Fraction.from_float(float(zeta)) * denominator
-        )
+        return denominator > 0.0 and numerator > float(zeta) * denominator
 
 
 @dataclass(frozen=True)
@@ -278,14 +261,14 @@ class GaussianDurationModel(DurationModel):
 
     def estimate(self, belief: Belief, action: ActionName) -> DurationEstimate:
         """Return belief-weighted Gaussian mean and variance. / 返回 belief 加权的 Gaussian 均值与方差。"""
-        mean_exact = Fraction(0)
-        variance_exact = Fraction(0)
-        for state, probability in _normalized_belief_fraction_items(belief):
+        mean_terms: list[float] = []
+        variance_terms: list[float] = []
+        for state, probability in _normalized_belief_items(belief):
             state_mean, state_variance = self.moments_for_state(state, action)
-            mean_exact += probability * Fraction.from_float(state_mean)
+            mean_terms.append(probability * state_mean)
             # Paper Sec. 3: sigma_q^2 = sum_i sum_s b_i(s)^2 sigma^2_{s,a_i}.
-            variance_exact += probability**2 * Fraction.from_float(state_variance)
-        return DurationEstimate(mean=mean_exact, variance=variance_exact)
+            variance_terms.append(probability**2 * state_variance)
+        return DurationEstimate(mean=sum(mean_terms), variance=sum(variance_terms))
 
     def moments_for_state(self, state: StateKey, action: ActionName) -> tuple[float, float]:
         """Return the configured Gaussian moments for one complete state."""
@@ -297,23 +280,17 @@ class GaussianDurationModel(DurationModel):
     def tau(self, progress: DurationProgress, horizon: float) -> float:
         r"""Return the numerical Gaussian probability :math:`Pr(G<h)`.
 
-        The paper permits standard numerical evaluation of the Gaussian CDF.
-        ``erfc`` avoids the cancellation in ``1 - erf``.  The standardized
-        squared distance is formed from the represented rational moments before
-        conversion to binary64, so a sub-ULP difference between the mean and
-        horizon is not discarded prematurely.
+        The paper permits standard numerical evaluation of the Gaussian CDF;
+        ``erfc`` avoids cancellation in ``1 - erf``.
         """
         variance = progress.variance
-        centered = progress.mean - Fraction.from_float(float(horizon))
-        if variance <= 0:
-            return 1.0 if centered < 0 else 0.0
-        if centered == 0:
+        centered = progress.mean - float(horizon)
+        if variance <= 0.0:
+            return 1.0 if centered < 0.0 else 0.0
+        if centered == 0.0:
             return 0.5
         squared_distance = centered * centered / (2 * variance)
-        try:
-            standardized = sqrt(float(squared_distance))
-        except OverflowError:
-            standardized = float("inf")
+        standardized = sqrt(squared_distance)
         probability = 0.5 * erfc(
             standardized if centered > 0 else -standardized
         )
@@ -327,28 +304,28 @@ class GaussianDurationModel(DurationModel):
     ) -> bool:
         """Apply Algorithm 2's strict continuation test ``tau(q) > zeta``.
 
-        Exact degenerate and symmetry cases avoid unnecessary floating-point
-        work.  The ``zeta == 0`` case is analytic because every non-degenerate
+        Degenerate and symmetry cases avoid unnecessary floating-point work.
+        The ``zeta == 0`` case is analytic because every non-degenerate
         Gaussian has positive mass below any finite horizon, even when that
         tail is too small for binary64 ``erfc`` to represent.
         """
-        threshold = Fraction.from_float(float(zeta))
+        threshold = float(zeta)
         variance = progress.variance
-        centered = progress.mean - Fraction.from_float(float(horizon))
-        if variance <= 0:
-            probability = Fraction(1) if centered < 0 else Fraction(0)
+        centered = progress.mean - float(horizon)
+        if variance <= 0.0:
+            probability = 1.0 if centered < 0.0 else 0.0
             return probability > threshold
-        if threshold <= 0:
+        if threshold <= 0.0:
             # Every non-degenerate Gaussian assigns positive mass below every
             # finite boundary, including tails below binary64's range.
             return True
-        if threshold >= 1:
+        if threshold >= 1.0:
             return False
-        if centered == 0:
-            return Fraction(1, 2) > threshold
-        if centered < 0 and threshold <= Fraction(1, 2):
+        if centered == 0.0:
+            return 0.5 > threshold
+        if centered < 0.0 and threshold <= 0.5:
             return True
-        if centered > 0 and threshold >= Fraction(1, 2):
+        if centered > 0.0 and threshold >= 0.5:
             return False
         return self.tau(progress, horizon) > float(zeta)
 
@@ -378,15 +355,12 @@ def _deterministic_depth_bound(
     target: float,
     minimum_increment: float,
 ) -> int | None:
-    """Bound strict continuation using exact represented-float durations."""
+    """Bound strict continuation using configured durations."""
     if target <= 0.0:
         return 1
     if not isfinite(minimum_increment) or minimum_increment <= 0.0:
         return None
-    target_exact = Fraction.from_float(float(target))
-    increment_exact = Fraction.from_float(float(minimum_increment))
-    ratio = target_exact / increment_exact
-    estimate = max(1, _ceil_fraction(ratio))
+    estimate = max(1, ceil(float(target) / float(minimum_increment)))
     if estimate > 1_000_000:
         return None
     return estimate
@@ -398,94 +372,56 @@ def _fixed_depth_bound(
     zeta: float,
     minimum_increment: float,
 ) -> int | None:
-    """Prove a bound for the exact strict test ``h-elapsed > zeta``."""
+    """Prove a bound for the strict test ``h-elapsed > zeta``."""
     if not isfinite(minimum_increment) or minimum_increment <= 0.0:
         return None
-    target = Fraction.from_float(float(horizon)) - Fraction.from_float(float(zeta))
-    if target <= 0:
+    target = float(horizon) - float(zeta)
+    if target <= 0.0:
         return 1
-    increment = Fraction.from_float(float(minimum_increment))
-    depth = max(1, _ceil_fraction(target / increment))
+    depth = max(1, ceil(target / float(minimum_increment)))
     return depth if depth <= 1_000_000 else None
-
-
-def _ceil_fraction(value: Fraction) -> int:
-    """Return the mathematical ceiling of a rational number."""
-    return -(-value.numerator // value.denominator)
 
 
 def _chance_duration_mass(
     progress: DurationProgress,
     horizon: float,
-) -> tuple[Fraction, Fraction]:
-    """Return exact ``(mass below horizon, total mass)`` for chance duration."""
-    horizon_exact = Fraction.from_float(float(horizon))
+) -> tuple[float, float]:
+    """Return ``(mass below horizon, total mass)`` for chance duration."""
+    horizon_value = float(horizon)
     if progress.augmented_belief is None:
         return (
-            (Fraction(1), Fraction(1))
-            if progress.mean < horizon_exact
-            else (Fraction(0), Fraction(1))
+            (1.0, 1.0)
+            if progress.mean < horizon_value
+            else (0.0, 1.0)
         )
     numerator = sum(
-        (
-            Fraction(probability)
-            for (_, elapsed), probability in progress.augmented_belief.items()
-            if elapsed < horizon_exact
-        ),
-        start=Fraction(0),
+        probability
+        for (_, elapsed), probability in progress.augmented_belief.items()
+        if elapsed < horizon_value
     )
-    denominator = sum(
-        (Fraction(probability) for probability in progress.augmented_belief.values()),
-        start=Fraction(0),
-    )
+    denominator = sum(progress.augmented_belief.values())
     return numerator, denominator
 
 
-def _upward_probability_fraction(value: Fraction) -> float:
-    """Convert a rational probability to binary64 without rounding downward."""
-    if value <= 0:
-        return 0.0
-    if value >= 1:
-        return 1.0
-    rounded = float(value)
-    if Fraction.from_float(rounded) < value:
-        rounded = nextafter(rounded, float("inf"))
-    return rounded
-
-
-def _diagnostic_float(value: Fraction) -> float:
-    """Convert an exact scalar, saturating only its non-authoritative display."""
-    value = Fraction(value)
-    try:
-        return float(value)
-    except OverflowError:
-        return float("inf") if value > 0 else float("-inf")
-
-
-def _normalized_belief_fraction_items(
+def _normalized_belief_items(
     belief: Belief,
-) -> tuple[tuple[StateKey, Fraction], ...]:
-    """Normalize represented belief entries exactly as rational weights."""
-    entries: tuple[tuple[StateKey, Fraction], ...] = tuple(
-        (
-            state,
-            probability
-            if isinstance(probability, Fraction)
-            else Fraction.from_float(float(probability)),
-        )
+) -> tuple[tuple[StateKey, float], ...]:
+    """Normalize positive finite belief entries as floating-point weights."""
+    entries = tuple(
+        (state, float(probability))
         for state, probability in belief.items()
     )
     if not entries:
         raise ValueError("state-dependent duration requires a non-empty joint-state belief")
-    if any(probability < 0 for _, probability in entries):
+    if any(not isfinite(probability) or probability < 0.0 for _, probability in entries):
         raise ValueError("duration belief probabilities must be finite and non-negative")
     positive = tuple(
         (state, probability)
         for state, probability in entries
-        if probability > 0
+        if probability > 0.0
     )
-    total = sum((probability for _, probability in positive), start=Fraction(0))
-    if total <= 0:
+    total = sum(probability for _, probability in positive)
+    if total <= 0.0:
         raise ValueError("duration belief must contain positive probability mass")
     return tuple((state, probability / total) for state, probability in positive)
 
@@ -537,7 +473,7 @@ def _state_action_value(
 
 
 def _state_mapping(state: StateKey) -> Mapping[str, Any] | None:
-    """Return a mapping view for the exact kernel's tuple-of-pairs state key."""
+    """Return a mapping view for the kernel's tuple-of-pairs state key."""
     if isinstance(state, Mapping):
         return {str(name): value for name, value in state.items()}
     if isinstance(state, tuple) and all(isinstance(entry, tuple) and len(entry) == 2 for entry in state):

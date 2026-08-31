@@ -9,7 +9,7 @@ from math import isfinite
 from pathlib import Path
 from typing import Any
 
-from darp.adapter.exact import RiskConstraintSpec, RiskConstraintType
+from darp.adapter.kernel import RiskConstraintSpec, RiskConstraintType
 from darp.model.duration import (
     ActionName,
     ChanceConstrainedDurationModel,
@@ -92,7 +92,9 @@ def build_duration_sidecar(raw: Mapping[str, Any]) -> DurationSidecar:
     kind = _validate_sidecar_schema(raw)
     try:
         model = _build_duration_model(kind, raw)
-        zeta = float(raw.get("zeta", 0.0))
+        # The paper defines fixed duration with varsigma = 0. Other duration
+        # models may supply their percentile threshold explicitly.
+        zeta = 0.0 if kind == "fixed" else float(raw.get("zeta", 0.0))
         if not isfinite(zeta) or zeta < 0.0:
             raise DurationSpecError("Duration sidecar zeta must be finite and non-negative.")
         if isinstance(model, (GaussianDurationModel, ChanceConstrainedDurationModel)) and zeta > 1.0:
@@ -109,7 +111,7 @@ def build_duration_sidecar(raw: Mapping[str, Any]) -> DurationSidecar:
 
 _COMMON_FIELDS = frozenset({"kind", "zeta", "risk"})
 _KIND_FIELDS = {
-    "fixed": _COMMON_FIELDS | {"default", "actions"},
+    "fixed": {"kind", "default", "actions", "risk"},
     "expected": _COMMON_FIELDS | {"default", "state_actions"},
     "chance": _COMMON_FIELDS | {"default", "state_actions"},
     "gaussian": _COMMON_FIELDS
@@ -126,6 +128,8 @@ def _validate_sidecar_schema(raw: Mapping[str, Any]) -> str:
     unknown = sorted(str(key) for key in set(raw) - _KIND_FIELDS[kind])
     if unknown:
         raise DurationSpecError("Unknown duration sidecar fields: " + ", ".join(unknown))
+    if kind == "fixed" and "default" not in raw:
+        raise DurationSpecError("Fixed duration sidecar requires a default duration.")
     return kind
 
 
@@ -133,7 +137,7 @@ def _build_duration_model(kind: str, config: Mapping[str, Any]) -> DurationModel
     if kind == "fixed":
         return FixedDurationModel(
             durations=_number_mapping(config.get("actions", {}), field_name="actions"),
-            default=float(config.get("default", 1.0)),
+            default=float(config["default"]),
         )
     if kind == "expected":
         return StateDependentDurationModel(

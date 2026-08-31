@@ -10,14 +10,18 @@ from dataclasses import dataclass, replace
 from math import isfinite
 from time import perf_counter
 
-from darp.adapter.exact import StateKey
+from darp.adapter.kernel import StateKey
 from darp.adapter.runtime import PyRDDLGymRuntime
 from darp.ilp.gurobi import GurobiILPSession
 from darp.ilp.model import ILPSolveResult
 from darp.model.and_or_tree import ANDORSearchInterface
 from darp.model.duration import HistoryDurationEvaluator
 from darp.planning.decision import ActionDecision
-from darp.planning.expand import expand_frontier_item
+from darp.planning.expand import (
+    ExpandedAction,
+    evaluate_frontier_leaf_metrics,
+    expand_frontier_item,
+)
 from darp.planning.heuristic import (
     UtilityHeuristic,
     history_heuristic_coefficient,
@@ -89,7 +93,7 @@ class HILPPlanner:
           heuristic supplies the objective coefficient of histories in $$F$$.
         - DARP's partial ILP keeps the same Definition 3.1 root/flow rows as
           full-ILP for histories in $$E$$. Histories in $$F$$ are frontier
-          leaves: they have heuristic $$h_q$$ and exact risk $$r_q$$ constants,
+          leaves: they have heuristic $$h_q$$ and risk $$r_q$$ constants,
           but no child-flow rows yet.
         - The CC-POMDP time budget is the domain horizon inside
           `duration_evaluator`; it is consumed by action durations through
@@ -209,13 +213,29 @@ class HILPPlanner:
             expansion_rounds += 1
             for var_id, item in selected:
                 frontier_record = frontier_records[var_id]
-                expanded_item = frontier_record.exact_expanded or frontier_record.expanded
+                if frontier_record.policy_expansion is None:
+                    # The p-ILP selected this lazy leaf. Only now run the full
+                    # Algorithm-2 observation/duration expansion and publish
+                    # its children. / incumbent 选中后才完整生成 observation、
+                    # duration 分支和 children。
+                    frontier_record = _materialized_frontier_leaf_record(
+                        item,
+                        interface,
+                        duration_evaluator,
+                        heuristic=self.frontier_heuristic,
+                        terminal_heuristic=self.terminal_heuristic,
+                    )
+                    frontier_records[var_id] = frontier_record
+                expanded_item = frontier_record.policy_expansion
+                if expanded_item is None:
+                    raise RuntimeError("Selected frontier was not materialized.")
                 del frontier_f[var_id]
                 expanded_e[var_id] = Algorithm1ExpansionRecord(
                     var_id=var_id,
                     item=item,
                     expanded=expanded_item,
                     continues=bool(expanded_item.child_frontier),
+                    policy_expansion=expanded_item,
                 )
                 for child in expanded_item.child_frontier:
                     child_var_id = _action_var_id(child)
@@ -294,9 +314,7 @@ class HILPPlanner:
         )
         policy = extract_conditional_policy(partial_tree, partial_result)
         search_complete = (
-            partial_result.numerically_optimal
-            and partial_tree.objective_coefficients_exact
-            and partial_tree.constraint_coefficients_exact
+            partial_result.status == "optimal"
             and not solver_limit_hit
             and refinement_exhausted
             and certifying_utility_bound
@@ -304,7 +322,7 @@ class HILPPlanner:
             and policy.feasible is not False
         )
         # Executability and global search optimality are separate certificates.
-        # A duration-complete incumbent has an exact achieved utility even while
+        # A duration-complete incumbent has an achieved utility even while
         # unselected alternatives remain unrefined; ``decision.complete`` stays
         # false until the HILP search certificate also closes.
         # 策略可执行性与全局搜索最优性是两种不同的证书：duration-complete
@@ -341,18 +359,6 @@ class HILPPlanner:
                 "frontier_refinement_exhausted": 1.0 if refinement_exhausted else 0.0,
                 "global_expandable_frontier": float(len(globally_expandable)),
                 "certifying_utility_bound": 1.0 if certifying_utility_bound else 0.0,
-                "solver_numerically_optimal": (
-                    1.0 if partial_result.numerically_optimal else 0.0
-                ),
-                "numerical_zero_gap": (
-                    1.0 if partial_result.has_numerical_zero_gap else 0.0
-                ),
-                "objective_coefficients_exact": (
-                    1.0 if partial_tree.objective_coefficients_exact else 0.0
-                ),
-                "constraint_coefficients_exact": (
-                    1.0 if partial_tree.constraint_coefficients_exact else 0.0
-                ),
                 "solver_time_limit_hit": 1.0 if solver_limit_hit else 0.0,
             },
         )
@@ -375,13 +381,14 @@ class HILPPlanner:
     ) -> tuple[PolicyTreeILP, ILPSolveResult]:
         r"""Solve Algorithm 3's current partial-tree p-ILP.
 
-        For every new frontier history $$q\in F$$, DARP calls Algorithm 2 once
-        to obtain exact risk and cache its possible descendants. The partial
-        ILP uses $$h_q$$ to decide both the root action and which frontier
-        leaves carry positive policy mass.
+        For every new frontier history $$q\in F$$, DARP computes the risk
+        coefficient required by the p-ILP. When the configured terminal
+        heuristic makes $$h_q$$ unconditional, observation branches and
+        descendants are materialized only after the incumbent selects $$q$$.
+        Other heuristic modes retain the eager Algorithm-2 path.
 
-        / 求解当前 $$E\cup F$$ partial-tree p-ILP；每个新 frontier 只调用一次
-        Algorithm 2，不会递归枚举完整 horizon。
+        / 求解当前 $$E\cup F$$ partial-tree p-ILP；可无条件使用 $$h_q$$ 时，
+        新 frontier 先只算 risk，被 incumbent 选中后才完整展开。
         """
 
         build_started_at = perf_counter()
@@ -539,16 +546,82 @@ class HILPPlanner:
             (var_id, item)
             for var_id, item in frontier.items()
             if var_id in frontier_ids
-            and bool(
-                (
-                    frontier_records[var_id].exact_expanded
-                    or frontier_records[var_id].expanded
-                ).child_frontier
+            and (
+                frontier_records[var_id].policy_expansion is None
+                or bool(
+                    frontier_records[var_id].policy_expansion.child_frontier
+                )
             )
         )
 
 
 def _frontier_leaf_record(
+    item: FrontierItem,
+    interface: ANDORSearchInterface,
+    duration_evaluator: HistoryDurationEvaluator,
+    *,
+    heuristic: UtilityHeuristic | None,
+    terminal_heuristic: bool,
+) -> Algorithm1ExpansionRecord:
+    """Return a p-ILP leaf, deferring children when its heuristic is unconditional.
+
+    With ``terminal_heuristic=True`` every frontier leaf uses :math:`h_q`, so
+    the p-ILP needs only that objective coefficient and the one-step risk.
+    Full Algorithm-2 materialization is postponed until the incumbent selects
+    the leaf. Other configurations retain the eager path because they must
+    inspect continuation branches before deciding between :math:`h_q` and
+    :math:`u_q`.
+    """
+    if heuristic is not None and terminal_heuristic:
+        return _lazy_frontier_leaf_record(item, interface, heuristic=heuristic)
+    return _materialized_frontier_leaf_record(
+        item,
+        interface,
+        duration_evaluator,
+        heuristic=heuristic,
+        terminal_heuristic=terminal_heuristic,
+    )
+
+
+def _lazy_frontier_leaf_record(
+    item: FrontierItem,
+    interface: ANDORSearchInterface,
+    *,
+    heuristic: UtilityHeuristic,
+) -> Algorithm1ExpansionRecord:
+    """Evaluate frontier coefficients without observations or children."""
+    action = item.node.assignment
+    if action is None:
+        raise ValueError("A frontier action node has no action assignment.")
+    kernel = interface.kernel
+    if kernel is None:
+        raise ValueError("An external HILP heuristic requires a finite kernel.")
+    utility = history_heuristic_coefficient(
+        heuristic,
+        state_mass=item.ordinary_mass,
+        action_label=item.action_label,
+        action=action,
+        non_fluents=kernel.non_fluents,
+    )
+    metrics = evaluate_frontier_leaf_metrics(
+        item,
+        interface,
+        utility=utility,
+    )
+    placeholder = ExpandedAction(
+        child_frontier=(),
+        observation_frontiers=(),
+        metrics=metrics,
+    )
+    return Algorithm1ExpansionRecord(
+        var_id=_action_var_id(item),
+        item=item,
+        expanded=placeholder,
+        continues=False,
+    )
+
+
+def _materialized_frontier_leaf_record(
     item: FrontierItem,
     interface: ANDORSearchInterface,
     duration_evaluator: HistoryDurationEvaluator,
@@ -563,24 +636,24 @@ def _frontier_leaf_record(
 
     $$h_q^u=\sum_s \rho(q)b_q(s)h(s,a_q).$$
 
-    Risk remains Algorithm 2's exact one-step coefficient.  Without a callback,
-    the exact one-step utility is a deliberately simple, non-certifying fallback.
+    Risk remains Algorithm 2's one-step coefficient. Without a callback,
+    the one-step utility is a deliberately simple, non-certifying fallback.
     ``terminal_heuristic`` reproduces the paper Grid experiment's convention of
     using the same heuristic at a leaf. It requires all observation branches of
     one action to stop together; the callback must also return the intended value
     (normally zero) for model-terminal states. Otherwise leaves retain RDDL reward.
     """
     var_id = _action_var_id(item)
-    exact_expanded = expand_frontier_item(item, interface, duration_evaluator)
+    policy_expansion = expand_frontier_item(item, interface, duration_evaluator)
     continuation_flags = tuple(
-        branch.should_expand for branch in exact_expanded.observation_frontiers
+        branch.should_expand for branch in policy_expansion.observation_frontiers
     )
     if terminal_heuristic and any(continuation_flags) and not all(continuation_flags):
         raise ValueError(
             "terminal_heuristic cannot represent an action whose observation "
             "branches mix continuing and terminal duration outcomes"
         )
-    expanded = exact_expanded
+    expanded = policy_expansion
     has_continuation = any(continuation_flags)
     use_heuristic = heuristic is not None and (
         has_continuation or terminal_heuristic
@@ -589,10 +662,10 @@ def _frontier_leaf_record(
         action = item.node.assignment
         if action is None:
             raise ValueError("A frontier action node has no action assignment.")
-        kernel = interface.exact_kernel
+        kernel = interface.kernel
         if kernel is None:
-            raise ValueError("An external HILP heuristic requires an exact kernel.")
-        utility, utility_exact, represented_exactly = history_heuristic_coefficient(
+            raise ValueError("An external HILP heuristic requires a finite kernel.")
+        utility = history_heuristic_coefficient(
             heuristic,
             state_mass=item.ordinary_mass,
             action_label=item.action_label,
@@ -600,12 +673,10 @@ def _frontier_leaf_record(
             non_fluents=kernel.non_fluents,
         )
         expanded = replace(
-            exact_expanded,
+            policy_expansion,
             metrics=replace(
-                exact_expanded.metrics,
+                policy_expansion.metrics,
                 utility=utility,
-                utility_exact=utility_exact,
-                objective_support_preserved=represented_exactly,
             ),
         )
     return Algorithm1ExpansionRecord(
@@ -614,14 +685,10 @@ def _frontier_leaf_record(
         expanded=expanded,
         continues=False,
         # A nonterminal frontier is not an executable policy leaf, so policy
-        # validation must inspect its exact observation branches.  At a duration
+        # validation must inspect its observation branches. At a duration
         # boundary, the optional terminal heuristic is the experiment's actual
         # terminal objective and must therefore be included in achieved utility.
-        exact_expanded=(
-            exact_expanded
-            if use_heuristic and has_continuation
-            else None
-        ),
+        policy_expansion=(policy_expansion if has_continuation else expanded),
     )
 
 

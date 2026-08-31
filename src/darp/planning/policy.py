@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from fractions import Fraction
-from math import isfinite, nextafter
+from math import isclose, isfinite
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -31,7 +30,7 @@ class PolicyRule:
 
 @dataclass(frozen=True)
 class ConditionalPolicy:
-    """A deterministic policy and its essential exact post-checks."""
+    """A deterministic policy and its essential numeric post-checks."""
 
     rules: tuple[PolicyRule, ...]
     solver_status: str
@@ -71,12 +70,11 @@ def extract_conditional_policy(
     tree: PolicyTreeILP,
     result: ILPSolveResult,
 ) -> ConditionalPolicy:
-    """Extract and exactly check the policy encoded by selected :math:`x_q`.
+    """Extract and check the policy encoded by selected :math:`x_q`.
 
-    The ILP already enforces policy flow.  This small post-check protects the
-    public result from a partial HILP frontier, disconnected fake incumbents,
-    and floating-point rounding of the selected policy's utility or active
-    constraint.
+    The ILP already enforces policy flow. This small post-check protects the
+    public result from a partial HILP frontier and disconnected fake
+    incumbents, then sums the selected nodes' utility and constraint values.
     """
 
     selected = _selected_variable_ids(result)
@@ -93,18 +91,14 @@ def extract_conditional_policy(
     }
     rules_by_observations: dict[tuple[str, ...], PolicyRule] = {}
     selected_edges: dict[str, set[str]] = {}
-    utility = Fraction(0)
-    active_constraint = Fraction(0)
-    utility_exact = True
-    constraint_exact = True
+    utility_terms: list[float] = []
+    constraint_terms: list[float] = []
 
     for variable_id in sorted(selected):
         item = tree.variable_items.get(variable_id)
         expansion = tree.variable_expansions.get(variable_id)
-        if item is None or expansion is None:
-            utility_exact = False
-            constraint_exact = False
-            unresolved.append(f"{variable_id}:missing-exact-expansion")
+        if item is None:
+            unresolved.append(f"{variable_id}:missing-frontier-item")
             continue
 
         assignment = item.node.assignment
@@ -131,25 +125,19 @@ def extract_conditional_policy(
                     f"{rule.observations!r}"
                 )
 
+        # Preserve the selected action rule even when a time/round limit stops
+        # on an unmaterialized HILP frontier. The public decision can then
+        # report its incumbent root action while correctly withholding
+        # utility, feasibility and duration-completeness certificates.
+        # 即使搜索停在尚未 materialize 的 frontier，也先保留 incumbent 动作；
+        # 随后将 utility/feasibility/duration 证书明确标记为不完整。
+        if expansion is None:
+            unresolved.append(f"{variable_id}:missing-expansion")
+            continue
+
         metrics = expansion.metrics
-        utility_value = getattr(metrics, "utility_exact", None)
-        constraint_value = getattr(
-            metrics,
-            (
-                "chance_risk_exact"
-                if tree.constraint_type == "chance"
-                else "penalty_exact"
-            ),
-            None,
-        )
-        if utility_value is None:
-            utility_exact = False
-        else:
-            utility += Fraction(utility_value)
-        if constraint_value is None:
-            constraint_exact = False
-        else:
-            active_constraint += Fraction(constraint_value)
+        utility_terms.append(float(metrics.utility))
+        constraint_terms.append(float(metrics.constraint_value))
 
         for branch_index, branch in enumerate(expansion.observation_frontiers):
             if not branch.should_expand:
@@ -193,28 +181,26 @@ def extract_conditional_policy(
         )
 
     duration_complete = not unresolved
-    achieved_utility = (
-        float(utility)
-        if duration_complete and utility_exact
-        else None
-    )
+    achieved_utility = sum(utility_terms) if duration_complete else None
+    if achieved_utility is not None and not isfinite(achieved_utility):
+        raise ValueError("Selected policy utility must be finite.")
+    active_constraint = sum(constraint_terms)
     if tree.constraint_type == "chance":
-        active_constraint += Fraction(tree.initial_chance_risk_exact)
+        active_constraint += tree.initial_chance_risk
 
-    active_constraint_value = (
-        _upper_non_negative_float(active_constraint)
-        if constraint_exact
-        else None
-    )
-    budget = (
-        Fraction.from_float(float(tree.constraint_budget))
-        if tree.constraint_budget is not None
-        else None
-    )
+    if not isfinite(active_constraint) or active_constraint < 0.0:
+        raise ValueError(
+            f"Constraint coefficient sum must be finite and non-negative: "
+            f"{active_constraint!r}"
+        )
+    active_constraint_value = active_constraint if duration_complete else None
+    budget = tree.constraint_budget
     feasible = (
         None
-        if not duration_complete or not constraint_exact
-        else budget is None or active_constraint <= budget
+        if not duration_complete
+        else budget is None
+        or active_constraint <= budget
+        or isclose(active_constraint, budget, rel_tol=1e-9, abs_tol=1e-9)
     )
     rules = tuple(
         sorted(
@@ -236,19 +222,6 @@ def extract_conditional_policy(
         active_constraint_value=active_constraint_value,
         feasible=feasible,
     )
-
-
-def _upper_non_negative_float(value: Fraction) -> float:
-    if value < 0:
-        raise ValueError(
-            f"Constraint coefficient sum must be non-negative: {value!r}"
-        )
-    rounded = float(value)
-    if not isfinite(rounded):
-        raise ValueError("Constraint coefficient sum is non-finite.")
-    if Fraction.from_float(rounded) < value:
-        rounded = nextafter(rounded, float("inf"))
-    return rounded
 
 
 def _selected_variable_ids(result: ILPSolveResult) -> set[str]:

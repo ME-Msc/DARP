@@ -19,24 +19,24 @@
       },
       "args": [
         "--domain",
-        "${workspaceFolder}/experiments/DARP-vs-RAOstar/rddl/domain.rddl",
+        "${workspaceFolder}/experiments/DARP-vs-RAOstar-grid/rddl/domain.rddl",
         "--instance",
-        "${workspaceFolder}/experiments/DARP-vs-RAOstar/rddl/instance_5_h3.rddl",
+        "${workspaceFolder}/experiments/DARP-vs-RAOstar-grid/rddl/instance_5_h3.rddl",
         "--duration",
-        "${workspaceFolder}/experiments/DARP-vs-RAOstar/rddl/duration.json",
+        "${workspaceFolder}/experiments/DARP-vs-RAOstar-grid/rddl/duration.json",
         "--planner",
         "hilp",
         "--heuristic",
-        "experiments.DARP-vs-RAOstar.darp_runner:MANHATTAN",
+        "experiments.DARP-vs-RAOstar-grid.darp_runner:MANHATTAN",
         "--root-belief",
-        "experiments.DARP-vs-RAOstar.darp_runner:initial_belief",
+        "experiments.DARP-vs-RAOstar-grid.darp_runner:initial_belief",
         "--terminal-heuristic",
         "--seed",
         "0",
         "--timeout",
         "86400",
         "--output",
-        "${workspaceFolder}/output/DARP-vs-RAOstar/darp-debug.json"
+        "${workspaceFolder}/output/DARP-vs-RAOstar-grid/darp-debug.json"
       ]
     }
   ]

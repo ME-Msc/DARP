@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from fractions import Fraction
 from importlib import import_module
 from math import isfinite
 from numbers import Real
 from typing import Any
 
-from darp.adapter.exact import StateKey
+from darp.adapter.kernel import StateKey
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,18 +79,18 @@ def load_utility_heuristic(spec: str) -> UtilityHeuristic:
 def history_heuristic_coefficient(
     heuristic: UtilityHeuristic,
     *,
-    state_mass: Mapping[StateKey, Fraction],
+    state_mass: Mapping[StateKey, float],
     action_label: str,
     action: Mapping[str, Any],
     non_fluents: Mapping[str, Any],
-) -> tuple[float, Fraction, bool]:
-    """Return the paper coefficient ``rho(q) E[h(S,a) | q]`` exactly.
+) -> float:
+    """Return the paper coefficient ``rho(q) E[h(S,a) | q]``.
 
     ``state_mass`` is already the unnormalised ordinary history mass, so no
     second probability scale or belief normalisation is applied here.
     """
 
-    exact = Fraction(0)
+    terms: list[float] = []
     for state_key, probability in state_mass.items():
         value = heuristic.evaluate(
             HeuristicInput(
@@ -101,31 +100,22 @@ def history_heuristic_coefficient(
                 non_fluents=non_fluents,
             )
         )
-        exact += Fraction(probability) * _finite_fraction(value)
-    try:
-        rounded = float(exact)
-    except OverflowError as error:
-        raise ValueError(f"Heuristic {heuristic.name!r} overflowed binary64.") from error
-    if not isfinite(rounded):
+        terms.append(float(probability) * _finite_float(value))
+    coefficient = sum(terms)
+    if not isfinite(coefficient):
         raise ValueError(f"Heuristic {heuristic.name!r} returned a non-finite value.")
-    return rounded, exact, Fraction.from_float(rounded) == exact
+    return coefficient
 
 
-def _finite_fraction(value: Real) -> Fraction:
-    """Convert one user value to its represented exact rational value."""
+def _finite_float(value: Real) -> float:
+    """Validate and convert one user heuristic value."""
 
     if isinstance(value, bool) or not isinstance(value, Real):
         raise TypeError("A utility heuristic must return a finite real number.")
-    if isinstance(value, Fraction):
-        exact = value
-    elif isinstance(value, int):
-        exact = Fraction(value)
-    else:
-        numeric = float(value)
-        if not isfinite(numeric):
-            raise ValueError("A utility heuristic must return a finite value.")
-        exact = Fraction.from_float(numeric)
-    return exact
+    numeric = float(value)
+    if not isfinite(numeric):
+        raise ValueError("A utility heuristic must return a finite value.")
+    return numeric
 
 
 __all__ = [

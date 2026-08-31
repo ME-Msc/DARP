@@ -31,7 +31,7 @@ TRIALS = 25
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CACHE = PROJECT_ROOT / ".cache" / "baselines"
-DEFAULT_OUTPUT = PROJECT_ROOT / "output" / "DARP-vs-RAOstar" / "raw.csv"
+DEFAULT_OUTPUT = PROJECT_ROOT / "output" / "DARP-vs-RAOstar-grid" / "raw.csv"
 
 FIELDS = (
     "size",
@@ -45,7 +45,6 @@ FIELDS = (
     "n",
     "iterations",
     "complete",
-    "certified",
     "constrained_pomdp_commit",
     "raostar_commit",
 )
@@ -150,7 +149,12 @@ def main(argv: list[str] | None = None) -> int:
                     _save(writer, handle, existing, scenario, trial, "RAO*", metrics)
 
     summary = args.summary or args.output.with_suffix(".md")
-    _write_summary(args.output, summary)
+    _write_summary(
+        args.output,
+        summary,
+        expected_scenarios=tuple(case.scenario for case in cases),
+        expected_trials=args.trials,
+    )
     print(f"summary: {summary}")
     return 0
 
@@ -238,33 +242,110 @@ def _load_existing(
     return rows
 
 
-def _write_summary(csv_path: Path, output: Path) -> None:
-    groups: dict[tuple[Scenario, str], list[dict[str, str]]] = defaultdict(list)
+def _write_summary(
+    csv_path: Path,
+    output: Path,
+    *,
+    expected_scenarios: tuple[Scenario, ...],
+    expected_trials: int,
+) -> None:
+    groups: dict[Scenario, dict[str, list[dict[str, str]]]] = defaultdict(dict)
     with csv_path.open(newline="", encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
+        reader = csv.DictReader(handle)
+        if tuple(reader.fieldnames or ()) != FIELDS:
+            raise ValueError(f"Cannot summarize CSV with a different schema: {csv_path}")
+        seen: set[tuple[Scenario, str, int]] = set()
+        for row in reader:
             scenario = Scenario(int(row["size"]), int(row["horizon"]), float(row["delta"]))
-            groups[(scenario, row["algorithm"])].append(row)
-    order = {name: index for index, name in enumerate(ALGORITHMS)}
-    lines = [
-        "| Problem | h | delta | Algorithm | Trials | Native objective | "
-        "Risk | Time (s) | n | Iterations |",
-        "|---|---:|---:|---|---:|---:|---:|---:|---:|---:|",
-    ]
-    for (scenario, algorithm), rows in sorted(
-        groups.items(), key=lambda item: (item[0][0], order[item[0][1]])
-    ):
-        def mean(field: str) -> float:
-            return statistics.fmean(float(row[field]) for row in rows)
+            algorithm = row["algorithm"]
+            trial = int(row["trial"])
+            key = scenario, algorithm, trial
+            if key in seen:
+                raise ValueError(f"Duplicate summary row: {key}")
+            seen.add(key)
+            if algorithm not in ALGORITHMS:
+                raise ValueError(f"Unexpected algorithm in {csv_path}: {algorithm}")
+            if row["complete"].lower() != "true":
+                raise ValueError(f"Incomplete result in {csv_path}: {key}")
+            if row["constrained_pomdp_commit"] != CONSTRAINED_POMDP_COMMIT:
+                raise ValueError("Summary CSV uses a different Constrained-POMDP commit")
+            if row["raostar_commit"] != RAOSTAR_COMMIT:
+                raise ValueError("Summary CSV uses a different RAOStar commit")
+            if float(row["risk"]) > scenario.delta + 1e-9:
+                raise ValueError(f"Infeasible risk in {csv_path}: {key}")
+            groups[scenario].setdefault(algorithm, []).append(row)
 
+    expected = set(expected_scenarios)
+    if set(groups) != expected:
+        raise ValueError(
+            "Summary scenario set is incomplete: "
+            f"missing={sorted(expected - set(groups))}, "
+            f"unexpected={sorted(set(groups) - expected)}"
+        )
+    required_trials = set(range(1, expected_trials + 1))
+    for scenario in expected_scenarios:
+        rows_by_algorithm = groups[scenario]
+        if set(rows_by_algorithm) != set(ALGORITHMS):
+            raise ValueError(f"Missing paired algorithms for {scenario}")
+        for algorithm in ALGORITHMS:
+            trial_ids = {int(row["trial"]) for row in rows_by_algorithm[algorithm]}
+            if trial_ids != required_trials:
+                raise ValueError(
+                    f"Incomplete trials for {scenario} {algorithm}: "
+                    f"missing={sorted(required_trials - trial_ids)}, "
+                    f"unexpected={sorted(trial_ids - required_trials)}"
+                )
+
+    lines = [
+        "# Table 2: Simulation results with heuristics",
+        "",
+        f"Arithmetic means over {expected_trials} completed trials; time is planner wall-clock seconds.",
+        "Objective values are solver-native.",
+        "",
+        "| Problem | h | Δ | DARP-HILP Obj. | DARP-HILP Time (s) | "
+        "DARP-HILP n | DARP-HILP Iter. | RAO* Obj. | RAO* Time (s) | "
+        "RAO* n | RAO* Iter. |",
+        "|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|",
+    ]
+    for scenario in sorted(expected):
+        rows_by_algorithm = groups[scenario]
+        darp = rows_by_algorithm["DARP-HILP"]
+        raostar = rows_by_algorithm["RAO*"]
         lines.append(
-            f"| {scenario.size}x{scenario.size} | {scenario.horizon} | "
-            f"{scenario.delta:.1f} | {algorithm} | {len(rows)} | "
-            f"{mean('objective'):.6f} | {mean('risk'):.6f} | "
-            f"{mean('time_s'):.3f} | {mean('n'):.1f} | "
-            f"{mean('iterations'):.1f} |"
+            f"| {scenario.size}×{scenario.size} | {scenario.horizon} | "
+            f"{scenario.delta:.1f} | {_mean(darp, 'objective'):.2f} | "
+            f"{_mean(darp, 'time_s'):.2f} | {_mean(darp, 'n'):.0f} | "
+            f"{_mean(darp, 'iterations'):.0f} | "
+            f"{_mean(raostar, 'objective'):.2f} | "
+            f"{_mean(raostar, 'time_s'):.2f} | {_mean(raostar, 'n'):.0f} | "
+            f"{_mean(raostar, 'iterations'):.0f} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Supplementary risk diagnostics",
+            "",
+            "This diagnostic table is not part of the original Table 2.",
+            "",
+            "| Problem | h | Δ | DARP-HILP Risk | RAO* Risk |",
+            "|:--|--:|--:|--:|--:|",
+        ]
+    )
+    for scenario in sorted(expected):
+        rows_by_algorithm = groups[scenario]
+        darp = rows_by_algorithm["DARP-HILP"]
+        raostar = rows_by_algorithm["RAO*"]
+        lines.append(
+            f"| {scenario.size}×{scenario.size} | {scenario.horizon} | "
+            f"{scenario.delta:.1f} | {_mean(darp, 'risk'):.6f} | "
+            f"{_mean(raostar, 'risk'):.6f} |"
         )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _mean(rows: list[dict[str, str]], field: str) -> float:
+    return statistics.fmean(float(row[field]) for row in rows)
 
 
 def _validate_args(args: argparse.Namespace) -> None:

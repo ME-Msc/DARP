@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from math import isfinite
 from typing import Literal
 
 ConstraintSense = Literal["==", "<=", ">="]
@@ -59,31 +58,3 @@ class ILPSolveResult:
     variable_values: Mapping[str, float]
     selected_variables: tuple[str, ...]
     runtime_ms: float
-    mip_gap: float | None = None
-    objective_bound: float | None = None
-
-    @property
-    def numerically_optimal(self) -> bool:
-        """Return whether Gurobi closed its floating-point objective gap."""
-        return self.status == "optimal" and self.has_numerical_zero_gap
-
-    @property
-    def has_numerical_zero_gap(self) -> bool:
-        """Return whether the reported floating-point incumbent and bound coincide."""
-        absolute_gap = self.absolute_gap
-        if absolute_gap is None or self.mip_gap is None:
-            return False
-        relative_gap = float(self.mip_gap)
-        return (
-            isfinite(relative_gap)
-            and relative_gap == 0.0
-            and isfinite(absolute_gap)
-            and absolute_gap == 0.0
-        )
-
-    @property
-    def absolute_gap(self) -> float | None:
-        """Return the incumbent-to-bound display gap in original objective units."""
-        if self.objective_value is None or self.objective_bound is None:
-            return None
-        return abs(float(self.objective_bound) - float(self.objective_value))
