@@ -16,7 +16,7 @@ bash tools/install.sh
 .venv/bin/python -m darp --help
 ```
 
-## Heuristic 与 duration
+## Heuristic、duration 与 risk
 
 HILP 可通过 `--heuristic package.module:OBJECT` 加载外部 `UtilityHeuristic`。回调返回 utility-to-go；若计算的是 cost-to-go，应返回其负值。history probability 由核心统一加权：
 
@@ -24,7 +24,7 @@ $$
 h_q=\sum_s \rho(q)b_q(s)h(s,a_q).
 $$
 
-Duration 不写入 RDDL，必须通过 `--duration` 指定 JSON sidecar。支持 fixed、state-dependent、chance 和 Gaussian duration。fixed duration 使用以下格式：
+Duration 和 risk 不写入 RDDL，分别通过 `--duration` 与 `--risk` 指定 JSON sidecar。Duration 支持 fixed、state-dependent、chance 和 Gaussian；fixed 使用以下格式：
 
 ```json
 {
@@ -36,15 +36,30 @@ Duration 不写入 RDDL，必须通过 `--duration` 指定 JSON sidecar。支持
 }
 ```
 
-`default` 是所有动作的有限正时长；可选的 `actions` 按 grounded action label 覆盖个别动作，统一时长时直接省略。horizon 由 instance RDDL 提供。论文规定 fixed duration 的 $\varsigma=0$，因此该格式不接受 `zeta`。
+`default` 是所有动作的有限正时长；可选的 `actions` 按 grounded action label 覆盖个别动作，统一时长时可写成空对象。horizon 由 instance RDDL 提供。论文规定 fixed duration 的 $\varsigma=0$，因此该格式不接受 `zeta`。
 
-单独运行或调试 DARP 时，必须同时指定 domain、instance 和 duration：
+Risk 使用独立 JSON sidecar，直接定义 CC-POMDP 的预算 $\Delta$ 和风险状态集合 $R$。例如：
+
+```json
+{
+  "budget": 0.1,
+  "risky_states": [
+    {"unsafe": true},
+    {"phase": 2, "blocked": true}
+  ]
+}
+```
+
+`budget` 是 `[0,1]` 内的概率；`risky_states` 中每个对象是一个部分状态 selector：对象内的 fluent 等式同时满足（AND）即匹配，任一对象匹配（OR）即属于 $R$。selector 支持当前有限 kernel 使用的 Boolean 和 integer fluent，因此既可表达 `{"unsafe": true}`，也可表达 Grid 位置、阶段或模式组合。初始状态属于 $R$ 的质量会先从预算扣除，之后只统计首次进入 $R$ 的概率。若危险由动作或转移触发，应由 RDDL CPF 更新 `unsafe` 等状态 fluent，再由 `risky_states` 引用；risk sidecar 不重复定义转移逻辑。`--risk-budget` 可覆盖文件预算，但不会改变风险集合。
+
+单独运行或调试 DARP 时，必须同时指定 domain、instance、duration 和 risk：
 
 ```bash
 .venv/bin/python -m darp \
   --domain experiments/DARP-vs-RAOstar-grid/rddl/domain.rddl \
   --instance experiments/DARP-vs-RAOstar-grid/rddl/instance_5_h3.rddl \
   --duration experiments/DARP-vs-RAOstar-grid/rddl/duration.json \
+  --risk experiments/DARP-vs-RAOstar-grid/rddl/risk.json \
   --heuristic experiments.DARP-vs-RAOstar-grid.darp_runner:MANHATTAN \
   --root-belief experiments.DARP-vs-RAOstar-grid.darp_runner:initial_belief \
   --terminal-heuristic \
@@ -71,7 +86,7 @@ Duration 不写入 RDDL，必须通过 `--duration` 指定 JSON sidecar。支持
   --output output/DARP-vs-RAOstar-grid/smoke.csv
 ```
 
-单实例模式从 RDDL 读取网格大小与 horizon，并从 `rddl/duration.json` 读取默认 risk budget；命令行只保留 trial、timeout、seed 和输出等执行选项。批量 Table 2 实验中的 `size/horizon/delta` 列表仍是实验矩阵筛选器，每个被选实例的实际模型参数都会再次从 RDDL 校验。
+单实例模式从 RDDL 读取网格大小与 horizon，并从 `rddl/risk.json` 读取默认 risk budget；命令行只保留 trial、timeout、seed 和输出等执行选项。批量 Table 2 实验中的 `size/horizon/delta` 列表仍是实验矩阵筛选器，每个被选实例的实际模型参数都会再次从 RDDL 校验。
 
 正式实验会运行完整参数矩阵、逐 trial 保存并支持断点续跑：
 
@@ -79,14 +94,14 @@ Duration 不写入 RDDL，必须通过 `--duration` 指定 JSON sidecar。支持
 bash tools/run_repro.sh
 ```
 
-结果写入被 Git 忽略的 `output/DARP-vs-RAOstar-grid/`。已有本地 checkout 或离线运行时，可选设置 `CONSTRAINED_POMDP_REPO`、`RAOSTAR_CHECKOUT` 和 `BASELINE_CACHE`；本地 checkout 必须处在固定 commit 且 worktree clean。外部实现的 provenance、指标定义和计时边界见 [实验协议](docs/EXPERIMENT_PROTOCOL.md)。算法公式与代码对应见 [算法映射](docs/ALGORITHM_MAPPING.md)。
+结果写入并由 Git 记录在 `output/DARP-vs-RAOstar-grid/`。已有本地 checkout 或离线运行时，可选设置 `CONSTRAINED_POMDP_REPO`、`RAOSTAR_CHECKOUT` 和 `BASELINE_CACHE`；本地 checkout 必须处在固定 commit 且 worktree clean。外部实现的 provenance、指标定义和计时边界见 [实验协议](docs/EXPERIMENT_PROTOCOL.md)。算法公式与代码对应见 [算法映射](docs/ALGORITHM_MAPPING.md)。
 
 新增 RDDL 对比场景时可以复用同一 RAO* 缓存，但仍需在新的实验目录中提供该场景到 RAO* model API 的薄适配和等价性检查；不需要修改 DARP 的解析器、HILP、ILP 或 Gurobi 实现。
 
 ## 核心代码
 
 ```text
-RDDL + duration/risk sidecar
+RDDL + duration.json + risk.json
   -> adapter       # 按需构建的稀疏浮点有限模型
   -> preprocess    # Algorithm 1
   -> expand        # Algorithm 2
@@ -136,6 +151,7 @@ MY_HEURISTIC = UtilityHeuristic(
   --domain path/to/domain.rddl \
   --instance path/to/instance.rddl \
   --duration path/to/duration.json \
+  --risk path/to/risk.json \
   --planner hilp \
   --heuristic my_heuristic:MY_HEURISTIC \
   --output output/result.json
@@ -151,6 +167,7 @@ result = solve_rddl(
     "path/to/domain.rddl",
     "path/to/instance.rddl",
     "path/to/duration.json",
+    risk_path="path/to/risk.json",
     planner="hilp",
     heuristic=MY_HEURISTIC,
 )

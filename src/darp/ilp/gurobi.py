@@ -183,7 +183,7 @@ class GurobiILPSession:
             model.update()
 
         # 约束按稳定原始名称匹配：旧 root/flow 保留，新 flow 追加；全局
-        # risk/expected-cost 行通过同一个 handle 原位更新。
+        # risk 行通过同一个 handle 原位更新。
         rows = _constraints_by_name(spec.constraints)
         removed_rows = set(self._constraints) - set(rows)
         if removed_rows:

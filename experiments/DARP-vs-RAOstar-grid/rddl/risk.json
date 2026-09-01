@@ -1,0 +1,10 @@
+{
+  "budget": 0.1,
+  "risky_states": [
+    {"row_mod5": 0, "col_mod5": 0},
+    {"row_mod5": 3, "col_mod5": 0},
+    {"row_mod5": 3, "col_mod5": 1},
+    {"row_mod5": 1, "col_mod5": 3},
+    {"row_mod5": 1, "col_mod5": 4}
+  ]
+}

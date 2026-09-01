@@ -14,6 +14,7 @@ from darp.adapter.runtime import PyRDDLGymRuntime
 from darp.model.and_or_tree import ANDORSearchInterface
 from darp.model.duration import HistoryDurationEvaluator
 from darp.model.duration_sidecar import DurationSidecar, load_duration_sidecar
+from darp.model.risk_sidecar import load_risk_sidecar
 from darp.planning.decision import ActionDecision
 from darp.planning.full_ilp import FullILPPlanner
 from darp.planning.heuristic import UtilityHeuristic
@@ -44,6 +45,7 @@ def solve_rddl(
     instance: str | Path,
     duration_path: str | Path,
     *,
+    risk_path: str | Path,
     planner: PlannerName = "hilp",
     seed: int = 0,
     risk_budget: float | None = None,
@@ -62,16 +64,17 @@ def solve_rddl(
     runtime = PyRDDLGymRuntime(problem.env)
     runtime.reset(seed=seed)
     duration = load_duration_sidecar(duration_path)
+    constraint = load_risk_sidecar(risk_path)
     interface = problem.build_grounded_view().build_and_or_interface(
         runtime,
-        risk=duration.risk,
+        risk=constraint,
     )
     duration.validate_actions([choice.label for choice in interface.actions])
     duration.validate_state_fluents(
         getattr(interface.kernel, "state_names", ())
     )
     evaluator = duration.evaluator(horizon=runtime.horizon)
-    budget = risk_budget if risk_budget is not None else duration.risk.budget
+    budget = risk_budget if risk_budget is not None else constraint.budget
 
     root_belief = None
     if root_belief_factory is not None:

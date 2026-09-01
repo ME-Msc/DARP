@@ -26,7 +26,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--duration",
         required=True,
-        help="JSON duration/risk sidecar (duration is intentionally outside RDDL)",
+        help="JSON duration sidecar (duration is intentionally outside RDDL)",
+    )
+    parser.add_argument(
+        "--risk",
+        required=True,
+        help="JSON CC-POMDP risk sidecar (budget + risky_states)",
     )
     parser.add_argument(
         "--planner",
@@ -71,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
         args.domain,
         args.instance,
         args.duration,
+        risk_path=args.risk,
         planner=cast(PlannerName, args.planner),
         seed=args.seed,
         risk_budget=args.risk_budget,

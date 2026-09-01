@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Hashable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from itertools import product
 from math import isfinite, prod
-from typing import Any, Literal
+from typing import Any
 
 StateKey = tuple[tuple[str, Hashable], ...]
+StateSelector = tuple[tuple[str, bool | int], ...]
 ObservationKey = tuple[tuple[str, Hashable], ...]
 Distribution = dict[Hashable, float]
 ActionKey = tuple[tuple[str, Hashable], ...]
-RiskConstraintType = Literal["chance", "expected"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,74 +49,18 @@ class KernelError(ValueError):
     """Raised when finite-kernel evaluation is unsupported. / 有限内核求值不支持时抛出。"""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RiskConstraintSpec:
-    r"""Describe one paper constraint without conflating its semantics.
+    r"""Describe the paper CC-POMDP tuple :math:`\langle R,\Delta\rangle`.
 
-    ``constraint_type="expected"`` implements Lemma 3.2: the configured
-    fluent values are one-stage penalties and ``budget`` is the cumulative
-    expected-cost bound :math:`C\in\mathbb R`.
-
-    ``constraint_type="chance"`` implements Lemma 3.3: configured values are
-    failure probabilities and ``budget`` is :math:`\Delta\in[0,1]`.
-
-    / 显式区分 Lemma 3.2 的累计期望 penalty 与 Lemma 3.3 的
-    first-entry execution risk。
+    Each partial selector is a conjunction of grounded fluent equalities; the
+    selectors form their union.  A state is risky when it matches any selector.
+    / 每个部分状态 selector 内部为 AND，多个 selector 之间为 OR，共同定义风险集
+    :math:`R`。
     """
 
     budget: float | None = None
-    state_fluent_costs: Mapping[str, float] = field(default_factory=dict)
-    next_state_fluent_costs: Mapping[str, float] = field(default_factory=dict)
-    state_action_costs: Mapping[tuple[Hashable, str], float] = field(default_factory=dict)
-    next_state_action_costs: Mapping[tuple[Hashable, str], float] = field(default_factory=dict)
-    constraint_type: RiskConstraintType = "chance"
-
-    def __post_init__(self) -> None:
-        """Reject ambiguous direct API values. / 拒绝含糊的直接 API 参数。"""
-        if self.constraint_type not in ("chance", "expected"):
-            raise ValueError(
-                "constraint_type must be 'chance' (CC-POMDP) or 'expected' (C-POMDP)."
-            )
-        entries = {
-            **{str(name): float(value) for name, value in self.state_fluent_costs.items()},
-            **{
-                f"next:{name}": float(value)
-                for name, value in self.next_state_fluent_costs.items()
-            },
-            **{
-                f"state-action:{state!r}:{action}": float(value)
-                for (state, action), value in self.state_action_costs.items()
-            },
-            **{
-                f"next-state-action:{state!r}:{action}": float(value)
-                for (state, action), value in self.next_state_action_costs.items()
-            },
-        }
-        invalid = {
-            name: value
-            for name, value in entries.items()
-            if not isfinite(value)
-            or value < 0.0
-            or (self.constraint_type == "chance" and value > 1.0)
-        }
-        if invalid:
-            expected = (
-                "finite probabilities in [0, 1]"
-                if self.constraint_type == "chance"
-                else "finite non-negative costs"
-            )
-            raise ValueError(f"Constraint fluent values must be {expected}: {invalid!r}")
-
-
-def risk_constraint_type_for_kernel(kernel: object) -> RiskConstraintType:
-    """Return the kernel's explicitly declared paper constraint semantics."""
-    risk_spec = getattr(kernel, "risk", None)
-    constraint_type = getattr(risk_spec, "constraint_type", None)
-    if constraint_type not in ("chance", "expected"):
-        raise KernelError(
-            "Kernel must expose risk.constraint_type as 'chance' or 'expected'."
-        )
-    return constraint_type
+    risky_states: tuple[StateSelector, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -157,7 +101,7 @@ class RDDLKernel:
     _reward_cache: dict[tuple[int, int], float] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
-    _transition_failure_cache: dict[tuple[int, int, int], float] = field(
+    _state_failure_cache: dict[int, float] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
     _transition_risk_rows: dict[tuple[int, int], float] = field(
@@ -317,61 +261,6 @@ class RDDLKernel:
             return "(empty)"
         return repr(state)
 
-    def expand_expected_constraint_mass(
-        self,
-        state_mass: Mapping[StateKey, float],
-        action: Mapping[str, Any],
-        *,
-        include_observations: bool = True,
-    ) -> ConstraintMassExpansion:
-        """Propagate Lemma 3.2's unnormalized expected-cost mass.
-
-        A HILP frontier only needs the coefficient until it is selected for
-        expansion. ``include_observations=False`` postpones the observation
-        split while retaining the transition and cost calculation.
-        """
-        action_id = self._action_id(action)
-        current_cost = sum(
-            mass
-            * (
-                self._state_cost(
-                    self.state_from_key(state),
-                    self.risk.state_fluent_costs,
-                )
-                + self._state_action_cost(
-                    state,
-                    action,
-                    self.risk.state_action_costs,
-                )
-            )
-            for state, mass in state_mass.items()
-        )
-        post_action_mass = self._transition_mass(state_mass, action_id, action)
-        next_cost = sum(
-            mass
-            * (
-                self._state_cost(
-                    self.state_from_key(state),
-                    self.risk.next_state_fluent_costs,
-                )
-                + self._state_action_cost(
-                    state,
-                    action,
-                    self.risk.next_state_action_costs,
-                )
-            )
-            for state, mass in post_action_mass.items()
-        )
-        return ConstraintMassExpansion(
-            coefficient=_non_negative(current_cost + next_cost),
-            post_action_mass=post_action_mass,
-            observations=(
-                self._constraint_mass_observations(post_action_mass, action)
-                if include_observations
-                else ()
-            ),
-        )
-
     def expand_ordinary_mass(
         self,
         state_mass: Mapping[StateKey, float],
@@ -528,13 +417,20 @@ class RDDLKernel:
         )
 
     def state_failure(self, state: StateKey) -> float:
-        """Return current-state failure probability."""
-        return _probability(
-            self._state_cost(
-                self.state_from_key(state),
-                self.risk.state_fluent_costs,
+        """Return the indicator that ``state`` belongs to the risky set."""
+        state_id = self._state_index.register(state)
+        cached = self._state_failure_cache.get(state_id)
+        if cached is not None:
+            return cached
+        state_mapping = self.state_from_key(state)
+        failure = float(
+            any(
+                _state_matches_selector(state_mapping, selector)
+                for selector in self.risk.risky_states
             )
         )
+        self._state_failure_cache[state_id] = failure
+        return failure
 
     def transition_failure(
         self,
@@ -542,46 +438,9 @@ class RDDLKernel:
         target: StateKey,
         action: Mapping[str, Any],
     ) -> float:
-        """Return first-entry failure probability for a transition."""
-        cache_key = (
-            self._state_index.register(source),
-            self._state_index.register(target),
-            self._action_id(action),
-        )
-        cached = self._transition_failure_cache.get(cache_key)
-        if cached is not None:
-            return cached
-        failures = (
-            _probability(
-                self._state_action_cost(
-                    source,
-                    action,
-                    self.risk.state_action_costs,
-                ),
-            ),
-            self.state_failure(target),
-            _probability(
-                self._state_cost(
-                    self.state_from_key(target),
-                    self.risk.next_state_fluent_costs,
-                ),
-            ),
-            _probability(
-                self._state_action_cost(
-                    target,
-                    action,
-                    self.risk.next_state_action_costs,
-                ),
-            ),
-        )
-        if any(probability >= 1 for probability in failures):
-            failure = 1.0
-        else:
-            failure = _probability(
-                1.0 - prod(1.0 - probability for probability in failures)
-            )
-        self._transition_failure_cache[cache_key] = failure
-        return failure
+        """Return whether the transition enters the paper's risky-state set."""
+        del source, action
+        return self.state_failure(target)
 
     def _transition_risk_row(
         self,
@@ -914,53 +773,8 @@ class RDDLKernel:
             partials = updated
         return _normalize_distribution(partials)
 
-    @staticmethod
-    def _state_cost(
-        state: Mapping[str, Any],
-        costs: Mapping[str, float],
-    ) -> float:
-        """Return the additive state cost."""
-        return sum(
-            float(cost)
-            for fluent, cost in costs.items()
-            if bool(state.get(fluent, False))
-        )
-
-    def _state_action_cost(
-        self,
-        state: StateKey,
-        action: Mapping[str, Any],
-        costs: Mapping[tuple[Hashable, str], float],
-    ) -> float:
-        """Resolve one state/action table entry."""
-        if not costs:
-            return 0.0
-        state_mapping = self.state_from_key(state)
-        action_label = _action_label_from_assignment(action, self.action_names)
-        direct = costs.get((state, action_label))
-        if direct is not None:
-            return float(direct)
-        matches: list[tuple[int, str, float]] = []
-        for (selector, configured_action), value in costs.items():
-            if str(configured_action) != action_label or not isinstance(selector, str):
-                continue
-            specificity = _selector_specificity(selector, state_mapping)
-            if specificity is not None:
-                matches.append((specificity, selector, float(value)))
-        if not matches:
-            return 0.0
-        specificity = max(item[0] for item in matches)
-        best = [(selector, value) for level, selector, value in matches if level == specificity]
-        distinct = {value for _, value in best}
-        if len(distinct) > 1:
-            raise KernelError(
-                "Conflicting equal-specificity risk state-action selectors for "
-                f"action {action_label!r}: {', '.join(sorted(selector for selector, _ in best))}"
-            )
-        return best[0][1]
-
     def _validate_supported(self) -> None:
-        """Validate scalar ranges whose reached CPF rows have finite support."""
+        """Validate finite state ranges and CC-POMDP risky-state selectors."""
         state_ranges = getattr(self.grounded_model, "state_ranges", {}) or {}
         unsupported = [
             name
@@ -973,67 +787,26 @@ class RDDLKernel:
                 "state fluents only: "
                 + ", ".join(unsupported)
             )
-        configured_cost_fluents = set(self.risk.state_fluent_costs) | set(
-            self.risk.next_state_fluent_costs
-        )
-        unknown_cost_fluents = sorted(configured_cost_fluents - set(self.state_names))
-        if unknown_cost_fluents:
+        selector_names = {
+            name
+            for selector in self.risk.risky_states
+            for name, _ in selector
+        }
+        unknown_names = sorted(selector_names - set(self.state_names))
+        if unknown_names:
             raise KernelError(
-                "Risk constraint references unknown grounded state fluents: "
-                + ", ".join(unknown_cost_fluents)
+                "Risky-state selectors reference unknown grounded state fluents: "
+                + ", ".join(unknown_names)
             )
-        # Programmatic StateKey selectors are mappings encoded as tuples.  A
-        # caller is not required to know the kernel's internal tuple order,
-        # but every grounded fluent must occur exactly once.  Canonicalizing
-        # here makes a complete reversed key match while malformed partial or
-        # duplicate keys fail before planning instead of silently costing 0.
-        state_action_costs = _canonical_state_action_cost_table(
-            self.risk.state_action_costs,
-            self.state_names,
-            table_name="state_action_costs",
-        )
-        next_state_action_costs = _canonical_state_action_cost_table(
-            self.risk.next_state_action_costs,
-            self.state_names,
-            table_name="next_state_action_costs",
-        )
-        object.__setattr__(
-            self,
-            "risk",
-            replace(
-                self.risk,
-                state_action_costs=state_action_costs,
-                next_state_action_costs=next_state_action_costs,
-            ),
-        )
-        state_action_tables = (state_action_costs, next_state_action_costs)
-        selector_names: set[str] = set()
-        configured_actions: set[str] = set()
-        for table in state_action_tables:
-            for selector, action in table:
-                configured_actions.add(str(action))
-                if isinstance(selector, str):
-                    selector_names.update(_selector_names(selector))
-                elif _looks_like_state_key(selector):
-                    selector_names.update(str(name) for name, _ in selector)
-                else:
+        for selector in self.risk.risky_states:
+            for name, expected in selector:
+                state_range = str(state_ranges.get(name, "bool"))
+                expected_type = bool if state_range == "bool" else int
+                if type(expected) is not expected_type:
                     raise KernelError(
-                        "Risk state-action table keys must use a Boolean state "
-                        f"selector string or complete StateKey, got {selector!r}."
+                        f"Risky-state selector {name!r} must use a "
+                        f"{state_range} value, got {expected!r}."
                     )
-        unknown_selector_names = sorted(selector_names - set(self.state_names))
-        if unknown_selector_names:
-            raise KernelError(
-                "Risk state-action selectors reference unknown grounded state fluents: "
-                + ", ".join(unknown_selector_names)
-            )
-        known_action_labels = {"noop", *self.action_names}
-        unknown_actions = sorted(configured_actions - known_action_labels)
-        if unknown_actions:
-            raise KernelError(
-                "Risk state-action table references unknown grounded actions: "
-                + ", ".join(unknown_actions)
-            )
 
 
 def _cpf_expression(value: Any) -> Any:
@@ -1079,173 +852,18 @@ def _plain_value(value: Any) -> Hashable:
     return value
 
 
-def _action_label_from_assignment(
-    action: Mapping[str, Any],
-    action_names: Sequence[str],
-) -> str:
-    """Match ``GroundedRDDLView`` action labels for sidecar table lookup."""
-    active: list[str] = []
-    for name in sorted(action_names):
-        value = _plain_value(action.get(name, False))
-        if value is True:
-            active.append(str(name))
-        elif value not in (False, 0, None):
-            active.append(f"{name}={value}")
-    return "+".join(active) if active else "noop"
-
-
-def _selector_specificity(
-    selector: str,
+def _state_matches_selector(
     state: Mapping[str, Any],
-) -> int | None:
-    """Return matched equality-clause count, with ``*`` matching every state."""
-    if selector.strip() == "*":
-        return 0
-    clauses = selector.split("&")
-    parsed: list[tuple[str, Hashable]] = []
-    for clause in clauses:
-        name, separator, raw_value = clause.partition("=")
-        name = name.strip()
-        if not name:
-            return None
-        if not separator:
-            expected = True
-        else:
-            try:
-                expected = _selector_literal(raw_value)
-            except ValueError:
-                return None
-        parsed.append((name, expected))
-    if all(
-        name in state and _plain_value(state[name]) == expected
-        for name, expected in parsed
-    ):
-        return len(parsed)
-    return None
-
-
-def _selector_names(selector: str) -> tuple[str, ...]:
-    """Validate a sidecar equality selector and return its fluent names."""
-    if selector.strip() == "*":
-        return ()
-    names: list[str] = []
-    for clause in selector.split("&"):
-        name, separator, raw_value = clause.partition("=")
-        name = name.strip()
-        if not name:
-            raise KernelError(f"Risk state selector is invalid: {selector!r}")
-        if separator:
-            try:
-                _selector_literal(raw_value)
-            except ValueError as error:
-                raise KernelError(
-                    f"Risk state selector has an invalid value: {selector!r}"
-                ) from error
-        names.append(name)
-    return tuple(names)
-
-
-def _selector_literal(raw_value: str) -> bool | int:
-    """Parse the Boolean/integer syntax used by JSON sidecar selectors."""
-    value = raw_value.strip()
-    if not value:
-        raise ValueError("empty selector value")
-    normalized = value.lower()
-    if normalized == "true":
-        return True
-    if normalized == "false":
-        return False
-    try:
-        return int(value)
-    except ValueError as error:
-        raise ValueError("selector value must be Boolean or integer") from error
-
-
-def _looks_like_state_key(value: object) -> bool:
-    """Return whether a programmatic selector is a tuple-of-pairs StateKey."""
-    return isinstance(value, tuple) and all(
-        isinstance(entry, tuple) and len(entry) == 2
-        for entry in value
-    )
-
-
-def _canonical_state_action_cost_table(
-    costs: Mapping[tuple[Hashable, str], float],
-    state_names: Sequence[str],
-    *,
-    table_name: str,
-) -> dict[tuple[Hashable, str], float]:
-    """Canonicalize complete direct StateKeys while preserving string selectors."""
-    normalized: dict[tuple[Hashable, str], float] = {}
-    origins: dict[tuple[Hashable, str], Hashable] = {}
-    for (selector, action), value in costs.items():
-        if isinstance(selector, str):
-            normalized_selector: Hashable = selector
-        else:
-            normalized_selector = _canonical_complete_state_selector(
-                selector,
-                state_names,
-            )
-        key = (normalized_selector, str(action))
-        if key in normalized:
-            raise KernelError(
-                f"Risk {table_name} contains duplicate selectors after StateKey "
-                f"canonicalization: {origins[key]!r} and {selector!r}."
-            )
-        normalized[key] = float(value)
-        origins[key] = selector
-    return normalized
-
-
-def _canonical_complete_state_selector(
-    selector: object,
-    state_names: Sequence[str],
-) -> StateKey:
-    """Validate and order one direct-API selector as a complete StateKey."""
-    if not _looks_like_state_key(selector):
-        raise KernelError(
-            "Risk state-action table keys must use a scalar state selector "
-            f"string or complete StateKey, got {selector!r}."
-        )
-    entries = tuple(selector)
-    raw_names = [entry[0] for entry in entries]
-    non_string_names = [name for name in raw_names if not isinstance(name, str)]
-    if non_string_names:
-        raise KernelError(
-            "Risk direct StateKey selector fluent names must be strings: "
-            f"{non_string_names!r}."
-        )
-    names = [str(name) for name in raw_names]
-    duplicate_names = sorted({name for name in names if names.count(name) > 1})
-    if duplicate_names:
-        raise KernelError(
-            "Risk direct StateKey selector contains duplicate grounded state "
-            "fluents: " + ", ".join(duplicate_names)
-        )
-    expected = set(state_names)
-    actual = set(names)
-    missing = sorted(expected - actual)
-    unknown = sorted(actual - expected)
-    if missing or unknown:
-        details: list[str] = []
-        if missing:
-            details.append("missing " + ", ".join(missing))
-        if unknown:
-            details.append("unknown " + ", ".join(unknown))
-        raise KernelError(
-            "Risk direct StateKey selector must name every grounded state "
-            "fluent exactly once (" + "; ".join(details) + ")."
-        )
-    values: dict[str, Hashable] = {}
-    for name, raw_value in entries:
-        value = _plain_value(raw_value)
-        if not isinstance(value, (bool, int)):
-            raise KernelError(
-                "Risk direct StateKey selector values must be Boolean or integer; "
-                f"{name!r} has {raw_value!r}."
-            )
-        values[str(name)] = value
-    return tuple((name, values[name]) for name in state_names)
+    selector: StateSelector,
+) -> bool:
+    """Return whether a state satisfies every equality in one selector."""
+    for name, expected in selector:
+        if name not in state:
+            return False
+        actual = _plain_value(state[name])
+        if type(actual) is not type(expected) or actual != expected:
+            return False
+    return True
 
 
 def _normalize_distribution(

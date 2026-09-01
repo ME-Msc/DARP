@@ -23,7 +23,7 @@ heuristic             Manhattan distance to goal
 
 5×5 风险模板为 `(0,0),(3,0),(3,1),(1,3),(1,4)`，100×100 按 `(row mod 5,col mod 5)` 平铺。risk 是执行中首次进入危险状态的概率。
 
-DARP 从 `rddl/duration.json` 读取 duration，并以 instance RDDL 的 horizon 作为 duration 阈值。RAO* 只有 action-depth horizon，因此比较前强制检查 `FixedDurationModel`、所有动作时长为 1、`zeta=0`、chance constraint，以及两端 horizon 相等；其他 duration 配置直接拒绝比较。
+DARP 从纯 `rddl/duration.json` 读取 duration，从 `rddl/risk.json` 的 `budget + risky_states` 读取 CC-POMDP 风险约束，并以 instance RDDL 的 horizon 作为 duration 阈值。RAO* 只有 action-depth horizon，因此比较前强制检查 `FixedDurationModel`、所有动作时长为 1、`zeta=0`、两端有限时域可达状态的 risk 语义以及 horizon 相等；其他 duration 配置直接拒绝比较。
 
 DARP 的 terminal action node 使用论文 HILP 的 Manhattan replacement，RAO* 保持其原生的 step-cost 加 depth-`h` child Manhattan backup。两端执行相同动作数并共享 T/O/risk/duration，但 native objective 的边界定义不同，因此表中 objective 不能直接解释为共同 policy-quality 指标。
 
@@ -43,7 +43,7 @@ run.py             参数矩阵、配对执行、CSV 和 Markdown 汇总
 - action 顺序与 codec；
 - 所有有限时域可达状态的 transition、observation、reward、risk 和 Manhattan；
 - goal 的 terminal、自环、零 reward 与零 heuristic；
-- duration、constraint type 和 horizon。
+- duration、有限时域可达状态的 risk、risk budget 和 horizon。
 
 外部仓库必须位于固定 commit、worktree clean 且包含必要文件。自动缓存只做首次 detached checkout，已有目录不会被 pull 或 reset。DARP 不复制或修改 baseline 算法；RAO* 始终由外部 `raostar_adapter.run_raostar()` 执行。
 
@@ -64,7 +64,7 @@ run.py             参数矩阵、配对执行、CSV 和 Markdown 汇总
 bash tools/run_repro.sh
 ```
 
-`run.py` 同时生成 long-form CSV 和 Markdown 均值表。默认路径位于被 Git 忽略的 `output/DARP-vs-RAOstar-grid/`。离线运行可指定 `--constrained-pomdp-repo`、`--raostar-checkout` 和 `--baseline-cache`。
+`run.py` 同时生成 long-form CSV 和 Markdown 均值表。默认结果由 Git 记录在 `output/DARP-vs-RAOstar-grid/`。离线运行可指定 `--constrained-pomdp-repo`、`--raostar-checkout` 和 `--baseline-cache`。
 
 正式 completion-time 实验不设置 timeout；调试时的 `--timeout` 同时传给 DARP 和 RAO*。模型加载、parity、外部 import 和 Gurobi warm-up 都不计入 planner time。
 

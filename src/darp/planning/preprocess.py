@@ -6,11 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from math import isfinite
 
-from darp.adapter.kernel import (
-    ObservationKey,
-    StateKey,
-    risk_constraint_type_for_kernel,
-)
+from darp.adapter.kernel import ObservationKey, StateKey
 from darp.adapter.runtime import PyRDDLGymRuntime
 from darp.model.and_or_tree import ANDORNode, ANDORSearchInterface
 from darp.model.duration import DurationProgress
@@ -68,11 +64,7 @@ def initialize_root_frontier(
 
     # Unnormalised mass directly stores the history occurrence probability.
     root_ordinary_mass = kernel.initial_constraint_mass(root_belief)
-    constraint_type = risk_constraint_type_for_kernel(kernel)
-    if constraint_type == "chance":
-        root_constraint_mass = kernel.initial_safe_mass(root_belief)
-    else:
-        root_constraint_mass = root_ordinary_mass
+    root_constraint_mass = kernel.initial_safe_mass(root_belief)
 
     # Algorithm 1 lines 3-6: pop q=root from N and create qa for every action.
     # 论文第 3-6 行：从 N 取出 root observation history，并为每个 action 创建 qa。

@@ -10,6 +10,5 @@ dist/
 .agents/
 .codex
 
-# Generated results under this repository root (not the system root).
-/output/
+# Temporary experiment files.
 *.tmp

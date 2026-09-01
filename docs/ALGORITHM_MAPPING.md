@@ -12,10 +12,7 @@ $$
 
 其中 $T(s,a,s')=P(s'\mid s,a)$，$O(o,s',a)=P(o\mid s',a)$。历史 $q=\langle(a^1,o^1),\ldots,(a^k,o^k)\rangle$，确定性条件策略把每个可达的 observation history 映射到一个 action。
 
-约束有两类：
-
-- C-POMDP：期望累计 cost 不超过 $C$；
-- CC-POMDP：执行中首次进入风险集合的概率不超过 $\Delta$。
+DARP 只实现论文实验使用的 CC-POMDP：执行中首次进入风险集合的概率不超过 $\Delta$。论文理论部分讨论的 expected-cost C-POMDP 不属于当前求解器范围。
 
 RDDL 经 `adapter/grounded.py` 解析成模型回调；`adapter/kernel.py` 只枚举从根 belief 在有限 history 内实际触达的状态、转移和观测，并以稀疏 `float` 保存概率质量。每个触达的 CPF row 必须具有可有限枚举的 support；具体状态编码由 domain 决定，核心求解器不包含 Grid 或 Manhattan 特例。
 
@@ -62,13 +59,7 @@ $$
 
 因此 unsafe successor 仍保留在普通流和 utility 中，只从后续 safe flow 中移除；它的首次失败质量只计一次。根 belief 已有风险从总预算中扣除。`planning/expand.py` 实现上述双流、backward message 和 smoothed belief；`planning/policy.py` 汇总选中节点的浮点 constraint 与 achieved utility。
 
-期望 cost 约束使用普通概率流：
-
-$$
-r_q=\rho(q)\sum_s\tilde b_{q-1}(s)P(s,a_q).
-$$
-
-state/action-conditioned failure 与 expected-cost callback 必须显式声明约束语义；未知约束字段或超出合法范围的数值会直接报错。
+独立 `risk.json` 只包含 `budget` 和 `risky_states`。每个 risky-state selector 是 grounded Boolean/integer fluent 等式的合取，selector 列表取并集，从而直接定义论文中的 $R\subseteq S$；未知 fluent、类型不匹配、重复 selector 或非法预算会在规划前报错。风险只由状态是否属于 $R$ 决定，不在动作、转移前后和 expected cost 之间增加额外配置分支。
 
 ## 4. Duration continuation
 
@@ -120,7 +111,7 @@ $$
 \text{s.t. }\sum_q r_qx_q\le R.
 $$
 
-`planning/ilp_tree.py` 生成 root、flow、observation-closure 和风险/成本行；`ilp/gurobi.py` 直接求解 binary64 系数的二元模型。与论文参考代码相同，Gurobi 使用 `MIPGap=1e-4` 和默认线程设置；返回 `OPTIMAL` 表示在该数值容差内完成搜索。实现不再进行 zero-gap 求解、有理数 incumbent 复核或 no-good 重求解，策略风险由浮点传播以统一容差判断。
+`planning/ilp_tree.py` 生成 root、flow、observation-closure 和风险行；`ilp/gurobi.py` 直接求解 binary64 系数的二元模型。与论文参考代码相同，Gurobi 使用 `MIPGap=1e-4` 和默认线程设置；返回 `OPTIMAL` 表示在该数值容差内完成搜索。实现不再进行 zero-gap 求解、有理数 incumbent 复核或 no-good 重求解，策略风险由浮点传播以统一容差判断。
 
 ## 6. Algorithm 3：HILP
 

@@ -14,13 +14,15 @@ from darp.ilp.gurobi import GurobiILPSolver
 from darp.ilp.model import ILPLinearConstraint, ILPModelSpec, ILPVariable
 from darp.model.and_or_tree import ANDORSearchInterface
 from darp.model.duration import FixedDurationModel
-from darp.model.duration_sidecar import DurationSidecar, load_duration_sidecar
+from darp.model.duration_sidecar import DurationSidecar
+from darp.model.risk_sidecar import load_risk_sidecar
 from darp.planning.heuristic import HeuristicInput, UtilityHeuristic
 from darp.solve import solve_rddl
 
 RDDL_DIR = Path(__file__).with_name("rddl")
 DOMAIN = RDDL_DIR / "domain.rddl"
 DURATION = RDDL_DIR / "duration.json"
+RISK = RDDL_DIR / "risk.json"
 
 # DARP's all-false Boolean action is the paper implementation's action 0 (L).
 ACTION_TO_REFERENCE = {
@@ -75,9 +77,9 @@ def read_instance(instance: Path) -> tuple[int, int]:
 
 
 def default_risk_budget() -> float:
-    budget = load_duration_sidecar(DURATION).risk.budget
+    budget = load_risk_sidecar(RISK).budget
     if budget is None:
-        raise ValueError("duration.json must define the single-instance risk budget.")
+        raise ValueError("risk.json must define the single-instance risk budget.")
     return float(budget)
 
 
@@ -156,17 +158,6 @@ def assert_duration_parity(
             "Unit-duration continuation does not produce the external action horizon: "
             f"{depth_bound} != {reference.horizon}"
         )
-    risk = duration.risk
-    if risk.constraint_type != "chance":
-        raise ValueError("The Grid comparison requires a chance constraint.")
-    if (
-        risk.state_fluent_costs
-        or risk.next_state_fluent_costs
-        or risk.state_action_costs
-    ):
-        raise ValueError(
-            "The Grid comparison requires first-entry risk on the next state only."
-        )
 
 
 def assert_reference_parity(
@@ -185,6 +176,8 @@ def assert_reference_parity(
     kernel = interface.kernel
     if kernel is None:
         raise ValueError("DARP vs RAO* parity requires DARP's RDDL kernel.")
+    if kernel.risk != load_risk_sidecar(RISK):
+        raise ValueError("DARP does not use the Grid experiment's risk specification.")
     labels = tuple(choice.label for choice in interface.actions)
     if labels != tuple(ACTION_TO_REFERENCE):
         raise ValueError(
@@ -433,6 +426,7 @@ def run_darp(
         DOMAIN,
         instance,
         DURATION,
+        risk_path=RISK,
         planner="hilp",
         seed=seed,
         risk_budget=delta,
@@ -492,6 +486,7 @@ __all__ = [
     "DOMAIN",
     "DURATION",
     "MANHATTAN",
+    "RISK",
     "default_risk_budget",
     "initial_belief",
     "instance_path",

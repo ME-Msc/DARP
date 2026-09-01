@@ -6,13 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from darp.adapter.kernel import (
-    ObservationKey,
-    RDDLKernel,
-    RiskConstraintType,
-    StateKey,
-    risk_constraint_type_for_kernel,
-)
+from darp.adapter.kernel import ObservationKey, RDDLKernel, StateKey
 from darp.model.and_or_tree import ANDORNode, ANDORSearchInterface
 from darp.model.duration import (
     ChanceConstrainedDurationModel,
@@ -25,26 +19,14 @@ from darp.planning.preprocess import FrontierItem
 
 @dataclass(frozen=True)
 class ExpansionMetrics:
-    r"""Store Algorithm 2 constants with unambiguous constraint semantics.
+    r"""Store Algorithm 2 utility and CC-POMDP risk constants.
 
-    ``penalty`` is Lemma 3.2's ordinary-flow coefficient
-    :math:`\rho(q)E[P(S,a)]`; ``chance_risk`` is Lemma 3.3's safe-flow
-    first-entry coefficient. ``constraint_value`` selects the coefficient
-    used by the active constraint.
-
-    / ``penalty`` 和 ``chance_risk`` 分别对应 Lemma 3.2/3.3；
-    ``constraint_value`` 返回当前约束实际使用的系数。
+    ``chance_risk`` is Lemma 3.3's safe-flow first-entry coefficient.
+    / ``chance_risk`` 是 Lemma 3.3 的安全概率流首次进入风险集系数。
     """
 
     utility: float
-    penalty: float
     chance_risk: float
-    constraint_type: RiskConstraintType
-
-    @property
-    def constraint_value(self) -> float:
-        """Return the ILP coefficient selected by the model. / 返回当前模型的 ILP 系数。"""
-        return self.chance_risk if self.constraint_type == "chance" else self.penalty
 
 
 @dataclass(frozen=True)
@@ -78,7 +60,7 @@ def evaluate_frontier_leaf_metrics(
     actions are deliberately postponed until the incumbent selects the leaf.
 
     / 调用方提供 frontier utility（通常为 :math:`h_q`）；这里只计算
-    risk/penalty，observation、duration、一步 utility 和 children 均延迟。
+    risk，observation、duration、一步 utility 和 children 均延迟。
     """
     kernel = interface.kernel
     if kernel is None:
@@ -87,29 +69,14 @@ def evaluate_frontier_leaf_metrics(
     if action is None:
         raise ValueError("AND-OR action node has no action assignment.")
 
-    constraint_type = risk_constraint_type_for_kernel(kernel)
-    if constraint_type == "expected":
-        if dict(item.constraint_mass) != dict(item.ordinary_mass):
-            raise ValueError("Expected-cost constraint mass must equal ordinary mass.")
-        constraint = kernel.expand_expected_constraint_mass(
-            item.constraint_mass,
-            action,
-            include_observations=False,
-        )
-        penalty = constraint.coefficient
-        chance_risk = 0.0
-    else:
-        chance_risk = kernel.safe_constraint_coefficient_for_mass(
-            item.constraint_mass,
-            action,
-        )
-        penalty = 0.0
+    chance_risk = kernel.safe_constraint_coefficient_for_mass(
+        item.constraint_mass,
+        action,
+    )
 
     return ExpansionMetrics(
         utility=utility,
-        penalty=penalty,
         chance_risk=chance_risk,
-        constraint_type=constraint_type,
     )
 
 
@@ -166,29 +133,12 @@ def expand_frontier_item(
     a_q = item.node.assignment
     if a_q is None:
         raise ValueError("AND-OR action node has no action assignment.")
-    constraint_type = risk_constraint_type_for_kernel(kernel)
     u_qa = kernel.utility_coefficient_for_mass(ordinary_mass_q, a_q)
-
-    # Expected-cost mass is exactly the ordinary mass, so its expansion is
-    # also the ordinary T/O expansion.  This avoids evaluating identical
-    # transition and observation rows twice.  Chance constraints necessarily
-    # retain distinct ordinary and survival-conditioned flows.
-    if constraint_type == "expected":
-        if dict(constraint_mass_q) != dict(ordinary_mass_q):
-            raise ValueError("Expected-cost constraint mass must equal ordinary mass.")
-        constraint_qa = kernel.expand_expected_constraint_mass(
-            constraint_mass_q, a_q
-        )
-        ordinary_mass_qa = constraint_qa
-        p_qa = constraint_qa.coefficient
-        r_qa = 0.0
-    else:
-        ordinary_mass_qa = kernel.expand_ordinary_mass(ordinary_mass_q, a_q)
-        constraint_qa = kernel.expand_safe_constraint_mass(
-            constraint_mass_q, a_q
-        )
-        p_qa = 0.0
-        r_qa = constraint_qa.coefficient
+    ordinary_mass_qa = kernel.expand_ordinary_mass(ordinary_mass_q, a_q)
+    constraint_qa = kernel.expand_safe_constraint_mass(
+        constraint_mass_q, a_q
+    )
+    r_qa = constraint_qa.coefficient
 
     constraint_outcomes = {
         outcome.observation: outcome for outcome in constraint_qa.observations
@@ -203,16 +153,9 @@ def expand_frontier_item(
         ordinary_mass_qao = ordinary_outcome.state_mass
         b_qao = kernel.constraint_mass_belief(ordinary_mass_qao)
         constraint_outcome = constraint_outcomes.get(observation)
-        if constraint_type == "chance":
-            constraint_mass_qao = (
-                constraint_outcome.state_mass if constraint_outcome is not None else {}
-            )
-        else:
-            if constraint_outcome is None:
-                raise ValueError(
-                    "Expected-cost expansion omitted an ordinary observation branch."
-                )
-            constraint_mass_qao = constraint_outcome.state_mass
+        constraint_mass_qao = (
+            constraint_outcome.state_mass if constraint_outcome is not None else {}
+        )
         observation_keys_qao = item.observation_keys + (
             observation,
         )  # 完整观测序列 o_1..o_k。
@@ -300,9 +243,7 @@ def expand_frontier_item(
 
     metrics = ExpansionMetrics(
         utility=u_qa,
-        penalty=p_qa,
         chance_risk=r_qa,
-        constraint_type=constraint_type,
     )
     return ExpandedAction(
         child_frontier=tuple(next_frontier),

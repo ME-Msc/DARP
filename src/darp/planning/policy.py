@@ -137,7 +137,7 @@ def extract_conditional_policy(
 
         metrics = expansion.metrics
         utility_terms.append(float(metrics.utility))
-        constraint_terms.append(float(metrics.constraint_value))
+        constraint_terms.append(float(metrics.chance_risk))
 
         for branch_index, branch in enumerate(expansion.observation_frontiers):
             if not branch.should_expand:
@@ -184,9 +184,7 @@ def extract_conditional_policy(
     achieved_utility = sum(utility_terms) if duration_complete else None
     if achieved_utility is not None and not isfinite(achieved_utility):
         raise ValueError("Selected policy utility must be finite.")
-    active_constraint = sum(constraint_terms)
-    if tree.constraint_type == "chance":
-        active_constraint += tree.initial_chance_risk
+    active_constraint = tree.initial_chance_risk + sum(constraint_terms)
 
     if not isfinite(active_constraint) or active_constraint < 0.0:
         raise ValueError(

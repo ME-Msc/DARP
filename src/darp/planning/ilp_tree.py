@@ -10,11 +10,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from math import isfinite
 
-from darp.adapter.kernel import (
-    RiskConstraintType,
-    StateKey,
-    risk_constraint_type_for_kernel,
-)
+from darp.adapter.kernel import StateKey
 from darp.adapter.runtime import PyRDDLGymRuntime
 from darp.ilp.model import ILPLinearConstraint, ILPModelSpec, ILPVariable
 from darp.model.and_or_tree import ANDORSearchInterface
@@ -35,7 +31,6 @@ class PolicyTreeILP:
     variable_items: Mapping[str, FrontierItem]
     root_variable_ids: tuple[str, ...]
     frontier_variable_ids: tuple[str, ...] = ()
-    constraint_type: RiskConstraintType = "chance"
     # Keep the concrete Algorithm-2 expansion behind every materialized variable.
     # A lazy frontier is intentionally absent until selected; policy extraction
     # then treats an early-stopped incumbent as incomplete. The p-ILP objective
@@ -70,10 +65,9 @@ class Algorithm1ExpansionRecord:
 class _ConstraintEncodingContext:
     """Values shared by full- and partial-tree constraint encoders.
 
-    / 保存两类编码器共享的约束类型、原始预算和有效 RHS。
+    / 保存两类编码器共享的原始预算和有效 RHS。
     """
 
-    constraint_type: RiskConstraintType
     original_budget: float | None
     effective_rhs: float | None
     initial_chance_risk: float
@@ -136,7 +130,6 @@ def build_full_tree_ilp(
     return _encode_algorithm1_records_as_full_ilp(
         records,
         risk_budget=constraint.effective_rhs,
-        constraint_type=constraint.constraint_type,
         original_constraint_budget=constraint.original_budget,
         initial_chance_risk=constraint.initial_chance_risk,
         model_name="darp_full_tree",
@@ -173,7 +166,6 @@ def build_partial_tree_ilp(
     return _encode_algorithm1_records_as_full_ilp(
         records,
         risk_budget=constraint.effective_rhs,
-        constraint_type=constraint.constraint_type,
         original_constraint_budget=constraint.original_budget,
         initial_chance_risk=constraint.initial_chance_risk,
         model_name="darp_hilp_partial_tree",
@@ -247,32 +239,12 @@ def paper_preprocess(
     return tuple(records)
 
 
-def _constraint_type(interface: ANDORSearchInterface) -> RiskConstraintType:
-    """Return the paper constraint selected by the kernel. / 返回 kernel 选定的论文约束。"""
-    if interface.kernel is None:
-        return "chance"
-    return risk_constraint_type_for_kernel(interface.kernel)
-
-
-def validate_constraint_budget(
-    interface: ANDORSearchInterface,
-    risk_budget: float | None,
-) -> None:
-    r"""Validate :math:`\Delta` for CC or :math:`C` for expected-cost C-POMDP.
-
-    A chance budget is a probability in ``[0, 1]``.  Lemma 3.2 permits a
-    general finite real expected-cost bound, so it must not inherit that
-    probability restriction.
-
-    / chance 预算是概率；expected-cost 预算是任意有限实数。
-    """
+def validate_risk_budget(risk_budget: float | None) -> None:
+    r"""Validate the CC-POMDP chance budget :math:`\Delta`."""
     if risk_budget is None:
         return
     numeric = float(risk_budget)
-    constraint_type = _constraint_type(interface)
-    if not isfinite(numeric):
-        raise ValueError("risk_budget must be finite.")
-    if constraint_type == "chance" and not 0.0 <= numeric <= 1.0:
+    if not isfinite(numeric) or not 0.0 <= numeric <= 1.0:
         raise ValueError(
             "risk_budget must be a finite probability in [0, 1] for a chance constraint."
         )
@@ -284,22 +256,19 @@ def _constraint_encoding_context(
     risk_budget: float | None,
     root_belief: Mapping[StateKey, float] | None,
 ) -> _ConstraintEncodingContext:
-    r"""Resolve the shared Lemma 3.2/3.3 encoding constants once.
+    r"""Resolve the shared Lemma 3.3 encoding constants once.
 
-    Lemma 3.2 keeps the cumulative expected-cost bound unchanged, ``R=C``.
     Lemma 3.3 rewrites the chance constraint as:
 
     $$
        \sum_q r_q x_q \le R,\qquad R=\Delta-r(b_0).
     $$
 
-    / Lemma 3.2 直接使用 ``C``；Lemma 3.3 先从 $$\Delta$$
-    扣除初始 belief 的 unsafe 概率 $$r(b_0)$$。
+    / Lemma 3.3 先从 $$\Delta$$ 扣除初始 belief 的风险概率 $$r(b_0)$$。
     """
-    constraint_type = _constraint_type(interface)
-    validate_constraint_budget(interface, risk_budget)
+    validate_risk_budget(risk_budget)
     initial_risk = 0.0
-    if constraint_type == "chance" and interface.kernel is not None:
+    if interface.kernel is not None:
         resolved_belief = resolve_root_belief(runtime, interface, root_belief)
         if resolved_belief is not None:
             belief_risk = getattr(
@@ -314,11 +283,10 @@ def _constraint_encoding_context(
             initial_risk = float(belief_risk(resolved_belief))
 
     effective_rhs = None if risk_budget is None else float(risk_budget)
-    if effective_rhs is not None and constraint_type == "chance":
+    if effective_rhs is not None:
         effective_rhs -= initial_risk
 
     return _ConstraintEncodingContext(
-        constraint_type=constraint_type,
         original_budget=risk_budget,
         effective_rhs=effective_rhs,
         initial_chance_risk=initial_risk,
@@ -329,7 +297,6 @@ def _encode_algorithm1_records_as_full_ilp(
     records: Sequence[Algorithm1ExpansionRecord],
     *,
     risk_budget: float | None,
-    constraint_type: RiskConstraintType,
     original_constraint_budget: float | None,
     initial_chance_risk: float = 0.0,
     model_name: str = "darp_full_tree",
@@ -415,17 +382,15 @@ def _encode_algorithm1_records_as_full_ilp(
         ),
     )
     if risk_budget is not None:
-        # Lemma 3.2 uses ordinary-flow penalty coefficients and R=C;
         # Lemma 3.3 uses safe-flow first-entry coefficients and
-        # R=Delta-r(b0). / 两种约束必须选用各自的概率流。
-        row_name = "risk_budget" if constraint_type == "chance" else "expected_cost_budget"
+        # R=Delta-r(b0). / 使用安全概率流的首次进入风险系数。
         constraints.append(
             ILPLinearConstraint(
-                name=row_name,
+                name="risk_budget",
                 coefficients={
-                    var_id: metrics.constraint_value
+                    var_id: metrics.chance_risk
                     for var_id, metrics in variable_metrics.items()
-                    if metrics.constraint_value != 0.0
+                    if metrics.chance_risk != 0.0
                 },
                 sense="<=",
                 rhs=float(risk_budget),
@@ -442,7 +407,6 @@ def _encode_algorithm1_records_as_full_ilp(
         variable_items=variable_items,
         root_variable_ids=tuple(root_ids),
         frontier_variable_ids=frontier_variable_ids,
-        constraint_type=constraint_type,
         variable_expansions=variable_expansions,
         variable_continues=variable_continues,
         constraint_budget=original_constraint_budget,

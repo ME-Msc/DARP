@@ -1,4 +1,4 @@
-"""Load canonical JSON duration and constraint sidecars."""
+"""Load canonical JSON duration sidecars."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from math import isfinite
 from pathlib import Path
 from typing import Any
 
-from darp.adapter.kernel import RiskConstraintSpec, RiskConstraintType
 from darp.model.duration import (
     ActionName,
     ChanceConstrainedDurationModel,
@@ -27,11 +26,10 @@ class DurationSpecError(ValueError):
 
 @dataclass(frozen=True)
 class DurationSidecar:
-    """Parsed duration model, stopping threshold, and paper constraint."""
+    """Parsed duration model and stopping threshold."""
 
     model: DurationModel
     zeta: float
-    risk: RiskConstraintSpec
 
     def evaluator(self, horizon: float) -> HistoryDurationEvaluator:
         return HistoryDurationEvaluator(
@@ -94,24 +92,23 @@ def build_duration_sidecar(raw: Mapping[str, Any]) -> DurationSidecar:
         model = _build_duration_model(kind, raw)
         # The paper defines fixed duration with varsigma = 0. Other duration
         # models may supply their percentile threshold explicitly.
-        zeta = 0.0 if kind == "fixed" else float(raw.get("zeta", 0.0))
+        zeta = 0.0 if kind == "fixed" else _number(raw.get("zeta", 0.0), "zeta")
         if not isfinite(zeta) or zeta < 0.0:
             raise DurationSpecError("Duration sidecar zeta must be finite and non-negative.")
         if isinstance(model, (GaussianDurationModel, ChanceConstrainedDurationModel)) and zeta > 1.0:
             raise DurationSpecError(
                 "Probabilistic duration sidecar zeta must be in [0, 1]."
             )
-        risk = _build_risk_spec(raw.get("risk"))
     except DurationSpecError:
         raise
     except (TypeError, ValueError) as error:
         raise DurationSpecError(str(error)) from error
-    return DurationSidecar(model=model, zeta=zeta, risk=risk)
+    return DurationSidecar(model=model, zeta=zeta)
 
 
-_COMMON_FIELDS = frozenset({"kind", "zeta", "risk"})
+_COMMON_FIELDS = frozenset({"kind", "zeta"})
 _KIND_FIELDS = {
-    "fixed": {"kind", "default", "actions", "risk"},
+    "fixed": {"kind", "default", "actions"},
     "expected": _COMMON_FIELDS | {"default", "state_actions"},
     "chance": _COMMON_FIELDS | {"default", "state_actions"},
     "gaussian": _COMMON_FIELDS
@@ -137,85 +134,27 @@ def _build_duration_model(kind: str, config: Mapping[str, Any]) -> DurationModel
     if kind == "fixed":
         return FixedDurationModel(
             durations=_number_mapping(config.get("actions", {}), field_name="actions"),
-            default=float(config["default"]),
+            default=_number(config["default"], "default"),
         )
     if kind == "expected":
         return StateDependentDurationModel(
             durations=_state_action_numbers(config.get("state_actions", {})),
-            default=float(config.get("default", 1.0)),
+            default=_number(config.get("default", 1.0), "default"),
         )
     if kind == "chance":
         return ChanceConstrainedDurationModel(
             durations=_state_action_numbers(config.get("state_actions", {})),
-            default=float(config.get("default", 1.0)),
+            default=_number(config.get("default", 1.0), "default"),
         )
     means, variances = _state_action_gaussians(config.get("state_actions", {}))
     return GaussianDurationModel(
         means=means,
         variances=variances,
-        default_mean=float(config.get("default_mean", 1.0)),
-        default_variance=float(config.get("default_variance", 0.0)),
-    )
-
-
-_RISK_FIELDS = frozenset(
-    {
-        "budget",
-        "constraint_type",
-        "state_fluents",
-        "next_state_fluents",
-        "state_actions",
-        "next_state_actions",
-    }
-)
-
-
-def _build_risk_spec(value: Any) -> RiskConstraintSpec:
-    if value is None:
-        return RiskConstraintSpec()
-    if not isinstance(value, Mapping):
-        raise DurationSpecError("risk must be an object when present.")
-    unknown = sorted(str(key) for key in set(value) - _RISK_FIELDS)
-    if unknown:
-        raise DurationSpecError("Unknown risk sidecar fields: " + ", ".join(unknown))
-    if "constraint_type" not in value:
-        raise DurationSpecError(
-            "risk.constraint_type is required and must be 'chance' or 'expected'."
-        )
-    return RiskConstraintSpec(
-        budget=(
-            float(value["budget"])
-            if "budget" in value and value["budget"] is not None
-            else None
+        default_mean=_number(config.get("default_mean", 1.0), "default_mean"),
+        default_variance=_number(
+            config.get("default_variance", 0.0),
+            "default_variance",
         ),
-        state_fluent_costs=_number_mapping(
-            value.get("state_fluents", {}),
-            field_name="risk.state_fluents",
-        ),
-        next_state_fluent_costs=_number_mapping(
-            value.get("next_state_fluents", {}),
-            field_name="risk.next_state_fluents",
-        ),
-        state_action_costs=_state_action_numbers(
-            value.get("state_actions", {}),
-            field_name="risk.state_actions",
-        ),
-        next_state_action_costs=_state_action_numbers(
-            value.get("next_state_actions", {}),
-            field_name="risk.next_state_actions",
-        ),
-        constraint_type=_risk_constraint_type(value["constraint_type"]),
-    )
-
-
-def _risk_constraint_type(value: Any) -> RiskConstraintType:
-    if value == "chance":
-        return "chance"
-    if value == "expected":
-        return "expected"
-    raise DurationSpecError(
-        "risk.constraint_type must be 'chance' (CC-POMDP) or "
-        "'expected' (C-POMDP)."
     )
 
 
@@ -252,7 +191,10 @@ def _duration_state_selector_names(model: DurationModel) -> set[str]:
 def _number_mapping(value: Any, *, field_name: str) -> dict[str, float]:
     if not isinstance(value, Mapping):
         raise DurationSpecError(f"{field_name} must be an object.")
-    return {str(key): float(item) for key, item in value.items()}
+    return {
+        str(key): _number(item, f"{field_name}.{key}")
+        for key, item in value.items()
+    }
 
 
 def _state_action_numbers(
@@ -267,7 +209,10 @@ def _state_action_numbers(
         if not isinstance(actions, Mapping):
             raise DurationSpecError(f"{field_name}[{state!r}] must be an object.")
         for action, duration in actions.items():
-            result[(str(state), str(action))] = float(duration)
+            result[(str(state), str(action))] = _number(
+                duration,
+                f"{field_name}[{state!r}][{action!r}]",
+            )
     return result
 
 
@@ -299,9 +244,23 @@ def _state_action_gaussians(
                     + ", ".join(missing)
                 )
             key = (str(state), str(action))
-            means[key] = float(entry["mean"])
-            variances[key] = float(entry["variance"])
+            means[key] = _number(
+                entry["mean"],
+                f"state_actions[{state!r}][{action!r}].mean",
+            )
+            variances[key] = _number(
+                entry["variance"],
+                f"state_actions[{state!r}][{action!r}].variance",
+            )
     return means, variances
+
+
+def _number(value: Any, field_name: str) -> float:
+    """Accept JSON numbers, but not booleans or numeric strings."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise DurationSpecError(f"{field_name} must be a JSON number.")
+    return float(value)
 
 
 def _reject_json_constant(value: str) -> None:

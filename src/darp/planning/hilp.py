@@ -31,7 +31,7 @@ from darp.planning.ilp_tree import (
     PolicyTreeILP,
     _action_var_id,
     build_partial_tree_ilp,
-    validate_constraint_budget,
+    validate_risk_budget,
 )
 from darp.planning.policy import extract_conditional_policy
 from darp.planning.preprocess import FrontierItem, initialize_root_frontier
@@ -111,7 +111,7 @@ class HILPPlanner:
             raise ValueError("expansion_rounds must be non-negative when provided.")
         if self.frontier_width is not None and self.frontier_width < 1:
             raise ValueError("frontier_width must be positive when provided.")
-        validate_constraint_budget(interface, self.risk_budget)
+        validate_risk_budget(self.risk_budget)
         if self.solver_time_limit_ms is not None and (
             not isfinite(float(self.solver_time_limit_ms))
             or float(self.solver_time_limit_ms) <= 0.0

@@ -17,7 +17,7 @@ from darp.planning.decision import ActionDecision
 from darp.planning.ilp_tree import (
     PolicyTreeILP,
     build_full_tree_ilp,
-    validate_constraint_budget,
+    validate_risk_budget,
 )
 from darp.planning.policy import extract_conditional_policy
 
@@ -87,7 +87,7 @@ class FullILPPlanner:
         与 ILP encoding 两步；变量和约束名称不同，但数学结构相同。
         """
 
-        validate_constraint_budget(interface, self.risk_budget)
+        validate_risk_budget(self.risk_budget)
         if self.solver_time_limit_ms is not None and (
             not isfinite(float(self.solver_time_limit_ms))
             or float(self.solver_time_limit_ms) <= 0.0
