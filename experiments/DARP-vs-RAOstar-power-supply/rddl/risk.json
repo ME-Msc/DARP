@@ -1,0 +1,6 @@
+{
+  "budget": 0.5,
+  "risky_states": [
+    {"unsafe": true}
+  ]
+}
