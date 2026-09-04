@@ -30,8 +30,6 @@
         "hilp",
         "--heuristic",
         "experiments.DARP-vs-RAOstar-grid.darp_runner:MANHATTAN",
-        "--root-belief",
-        "experiments.DARP-vs-RAOstar-grid.darp_runner:initial_belief",
         "--terminal-heuristic",
         "--seed",
         "0",

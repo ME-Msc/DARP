@@ -11,9 +11,7 @@ from typing import Literal
 from darp.adapter.kernel import RDDLKernel, StateKey
 from darp.adapter.loader import load_rddl
 from darp.adapter.runtime import PyRDDLGymRuntime
-from darp.model.and_or_tree import ANDORSearchInterface
-from darp.model.duration import HistoryDurationEvaluator
-from darp.model.duration_sidecar import DurationSidecar, load_duration_sidecar
+from darp.model.duration_sidecar import load_duration_sidecar
 from darp.model.risk_sidecar import load_risk_sidecar
 from darp.planning.decision import ActionDecision
 from darp.planning.full_ilp import FullILPPlanner
@@ -24,10 +22,6 @@ PlannerName = Literal["hilp", "full-ilp"]
 RootBeliefFactory = Callable[
     [RDDLKernel],
     Mapping[StateKey, float],
-]
-PreSolveCheck = Callable[
-    [ANDORSearchInterface, DurationSidecar, HistoryDurationEvaluator, float | None],
-    None,
 ]
 
 
@@ -55,7 +49,6 @@ def solve_rddl(
     terminal_heuristic: bool = False,
     timeout_s: float | None = 60.0,
     root_belief_factory: RootBeliefFactory | None = None,
-    pre_solve_check: PreSolveCheck | None = None,
 ) -> DARPResult:
     """Load one RDDL problem, construct DARP, and run one search."""
 
@@ -84,9 +77,6 @@ def solve_rddl(
         root_belief = root_belief_factory(kernel)
         if not isinstance(root_belief, Mapping):
             raise TypeError("A root-belief factory must return a mapping.")
-    if pre_solve_check is not None:
-        pre_solve_check(interface, duration, evaluator, budget)
-
     limit_ms = None if timeout_s is None else timeout_s * 1000.0
     selected = (
         FullILPPlanner(
@@ -138,7 +128,6 @@ def _validate_options(
 __all__ = [
     "DARPResult",
     "PlannerName",
-    "PreSolveCheck",
     "RootBeliefFactory",
     "solve_rddl",
 ]

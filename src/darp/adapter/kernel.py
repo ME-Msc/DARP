@@ -90,6 +90,7 @@ class RDDLKernel:
     _state_names_cache: tuple[str, ...] = field(default=(), init=False, repr=False, compare=False)
     _action_names_cache: tuple[str, ...] = field(default=(), init=False, repr=False, compare=False)
     _observation_names_cache: tuple[str, ...] = field(default=(), init=False, repr=False, compare=False)
+    _intermediate_names_cache: tuple[str, ...] = field(default=(), init=False, repr=False, compare=False)
     _non_fluents_cache: Mapping[str, Any] = field(default_factory=dict, init=False, repr=False, compare=False)
     _cpfs_cache: Mapping[str, Any] = field(default_factory=dict, init=False, repr=False, compare=False)
     _terminations_cache: tuple[Any, ...] = field(default=(), init=False, repr=False, compare=False)
@@ -126,6 +127,17 @@ class RDDLKernel:
             self,
             "_observation_names_cache",
             tuple(sorted(_mapping_keys(getattr(self.grounded_model, "observ_fluents", None)))),
+        )
+        levels = getattr(self.grounded_model, "cpf_to_level", {}) or {}
+        object.__setattr__(
+            self,
+            "_intermediate_names_cache",
+            tuple(
+                sorted(
+                    _mapping_keys(getattr(self.grounded_model, "interm_fluents", None)),
+                    key=lambda name: (levels.get(name, 1), name),
+                )
+            ),
         )
         non_fluents = getattr(self.grounded_model, "non_fluents", None)
         cpfs = getattr(self.grounded_model, "cpfs", None)
@@ -498,24 +510,37 @@ class RDDLKernel:
         if cached is not None:
             return cached
         state = self.state_from_key(self._state_index.key(source_id))
-        context = self._context(state, action)
-        partials: dict[StateKey, float] = {(): 1.0}
-        for state_name in self.state_names:
-            expr = self._state_cpf_expression(state_name)
-            # Synchronous CPFs read the same current context, so evaluate each
-            # value distribution once per CPF. / 同步 CPF 共享当前上下文，每个 CPF 只求值一次。
-            value_dist = self.expression_distribution(expr, context)
-            value_weights = _normalize_distribution(value_dist)
-            updated: dict[StateKey, float] = {}
-            for partial_key, partial_prob in partials.items():
-                partial_state = dict(partial_key)
-                for value, value_prob in value_weights.items():
-                    next_partial = tuple(sorted({**partial_state, state_name: _plain_value(value)}.items()))
-                    updated[next_partial] = (
-                        updated.get(next_partial, 0.0)
-                        + partial_prob * value_prob
-                    )
-            partials = updated
+        partials: dict[StateKey, float] = {}
+        for context, context_probability in self._intermediate_contexts(
+            self._context(state, action)
+        ):
+            context_partials: dict[StateKey, float] = {(): context_probability}
+            for state_name in self.state_names:
+                expr = self._state_cpf_expression(state_name)
+                # All next-state CPFs see the same sampled intermediates.
+                # / 所有下一状态 CPF 共享同一次采样得到的中间变量。
+                value_weights = _normalize_distribution(
+                    self.expression_distribution(expr, context)
+                )
+                updated: dict[StateKey, float] = {}
+                for partial_key, partial_prob in context_partials.items():
+                    partial_state = dict(partial_key)
+                    for value, value_prob in value_weights.items():
+                        next_partial = tuple(
+                            sorted(
+                                {
+                                    **partial_state,
+                                    state_name: _plain_value(value),
+                                }.items()
+                            )
+                        )
+                        updated[next_partial] = (
+                            updated.get(next_partial, 0.0)
+                            + partial_prob * value_prob
+                        )
+                context_partials = updated
+            for partial_key, probability in context_partials.items():
+                partials[partial_key] = partials.get(partial_key, 0.0) + probability
         distribution = _normalize_distribution(partials)
         row = SparseTransitionRow(
             next_state_ids=tuple(
@@ -525,6 +550,32 @@ class RDDLKernel:
         )
         self._transition_rows[cache_key] = row
         return row
+
+    def _intermediate_contexts(
+        self,
+        context: Mapping[str, Any],
+    ) -> tuple[tuple[Mapping[str, Any], float], ...]:
+        """Evaluate intermediate CPFs once and share their random values.
+
+        / 对中间 CPF 只求值一次并共享其随机结果。
+        """
+        branches: list[tuple[Mapping[str, Any], float]] = [(context, 1.0)]
+        for name in self._intermediate_names_cache:
+            expression = _cpf_expression(self.cpfs[name])
+            following: list[tuple[Mapping[str, Any], float]] = []
+            for branch, branch_probability in branches:
+                values = _normalize_distribution(
+                    self.expression_distribution(expression, branch)
+                )
+                following.extend(
+                    (
+                        {**branch, name: _plain_value(value)},
+                        branch_probability * probability,
+                    )
+                    for value, probability in values.items()
+                )
+            branches = following
+        return tuple(branches)
 
     def observation_probability(
         self,

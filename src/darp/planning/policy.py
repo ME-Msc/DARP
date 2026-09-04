@@ -198,7 +198,9 @@ def extract_conditional_policy(
         if not duration_complete
         else budget is None
         or active_constraint <= budget
-        or isclose(active_constraint, budget, rel_tol=1e-9, abs_tol=1e-9)
+        # Match Gurobi's default absolute row-feasibility tolerance.
+        # / 与 Gurobi 默认的线性约束绝对可行性容差保持一致。
+        or isclose(active_constraint, budget, rel_tol=0.0, abs_tol=1e-6)
     )
     rules = tuple(
         sorted(

@@ -18,7 +18,6 @@ instance paper_grid_100_h6 {
         grid_col = 0;
         row_mod5 = 4;
         col_mod5 = 0;
-        noise = 0;
     };
     max-nondef-actions = 1;
     horizon = 6;

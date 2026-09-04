@@ -1,8 +1,9 @@
+// The stochastic movement outcome is sampled for the current action and is
+// shared by all next-state CPFs; it is not a persistent belief-state variable.
 domain darp_vs_raostar_grid {
     requirements = { partially-observed };
 
     pvariables {
-        // Square-grid geometry and the probabilities used by this experiment.
         max_row             : { non-fluent, int,  default = 4 };
         max_col             : { non-fluent, int,  default = 4 };
         goal_row            : { non-fluent, int,  default = 0 };
@@ -10,130 +11,123 @@ domain darp_vs_raostar_grid {
         transition_accuracy : { non-fluent, real, default = 0.85 };
         observation_accuracy: { non-fluent, real, default = 0.85 };
 
-        // The physical position is hidden.  noise is sampled one step ahead:
-        // 0 = intended direction, 1 = relative-left slip, 2 = relative-right.
-        // Keeping a single noise fluent makes the row/column update correlated.
         grid_row : { state-fluent, int, default = 0 };
         grid_col : { state-fluent, int, default = 0 };
         row_mod5 : { state-fluent, int, default = 0 };
         col_mod5 : { state-fluent, int, default = 0 };
-        noise    : { state-fluent, int, default = 0 };
 
-        // With max-nondef-actions=1, all false is the paper's Left action.
-        // The reference order/codec is noop=L, move_up=U,
-        // move_right=R, move_down=D.
+        // Sampled once per action and shared by every next-state CPF:
+        // 0 = intended direction, 1/2 = the two perpendicular slips.
+        move_outcome : { interm-fluent, int, level = 1 };
+
+        // With max-nondef-actions=1, all false denotes Left.
         move_up    : { action-fluent, bool, default = false };
         move_right : { action-fluent, bool, default = false };
         move_down  : { action-fluent, bool, default = false };
 
-        // Number of adjacent boundary walls: interior=0, edge=1, corner=2.
+        // Noisy observation of the number of adjacent boundary walls.
         obs : { observ-fluent, int };
     };
 
     cpfs {
+        move_outcome =
+            if ((grid_row == goal_row) & (grid_col == goal_col)) then 0
+            else if (Bernoulli(transition_accuracy)) then 0
+            else if (Bernoulli(0.5)) then 1
+            else 2;
+
         // Rows increase downwards, as in Constrained-POMDP's GridInstance.
         grid_row' =
             if ((grid_row == goal_row) & (grid_col == goal_col)) then grid_row
             else if (move_up) then
-                if (noise == 0) then
+                if (move_outcome == 0) then
                     if (grid_row == 0) then grid_row else grid_row - 1
                 else grid_row
             else if (move_right) then
-                if (noise == 1) then
+                if (move_outcome == 1) then
                     if (grid_row == max_row) then grid_row else grid_row + 1
-                else if (noise == 2) then
+                else if (move_outcome == 2) then
                     if (grid_row == 0) then grid_row else grid_row - 1
                 else grid_row
             else if (move_down) then
-                if (noise == 0) then
+                if (move_outcome == 0) then
                     if (grid_row == max_row) then grid_row else grid_row + 1
                 else grid_row
             else
-                if (noise == 1) then
+                if (move_outcome == 1) then
                     if (grid_row == max_row) then grid_row else grid_row + 1
-                else if (noise == 2) then
+                else if (move_outcome == 2) then
                     if (grid_row == 0) then grid_row else grid_row - 1
                 else grid_row;
 
         grid_col' =
             if ((grid_row == goal_row) & (grid_col == goal_col)) then grid_col
             else if (move_up) then
-                if (noise == 1) then
+                if (move_outcome == 1) then
                     if (grid_col == 0) then grid_col else grid_col - 1
-                else if (noise == 2) then
+                else if (move_outcome == 2) then
                     if (grid_col == max_col) then grid_col else grid_col + 1
                 else grid_col
             else if (move_right) then
-                if (noise == 0) then
+                if (move_outcome == 0) then
                     if (grid_col == max_col) then grid_col else grid_col + 1
                 else grid_col
             else if (move_down) then
-                if (noise == 1) then
+                if (move_outcome == 1) then
                     if (grid_col == 0) then grid_col else grid_col - 1
-                else if (noise == 2) then
+                else if (move_outcome == 2) then
                     if (grid_col == max_col) then grid_col else grid_col + 1
                 else grid_col
             else
-                if (noise == 0) then
+                if (move_outcome == 0) then
                     if (grid_col == 0) then grid_col else grid_col - 1
                 else grid_col;
 
-        // These two CPFs duplicate only the bounded +/-1 update, avoiding a
-        // 2,000-entry risk table for the 100x100 instance.  The sidecar can
-        // identify the five periodically tiled risky coordinates by equality.
         row_mod5' =
             if ((grid_row == goal_row) & (grid_col == goal_col)) then row_mod5
             else if (move_up) then
-                if ((noise == 0) & (grid_row > 0)) then
+                if ((move_outcome == 0) & (grid_row > 0)) then
                     if (row_mod5 == 0) then 4 else row_mod5 - 1
                 else row_mod5
             else if (move_right) then
-                if ((noise == 1) & (grid_row < max_row)) then
+                if ((move_outcome == 1) & (grid_row < max_row)) then
                     if (row_mod5 == 4) then 0 else row_mod5 + 1
-                else if ((noise == 2) & (grid_row > 0)) then
+                else if ((move_outcome == 2) & (grid_row > 0)) then
                     if (row_mod5 == 0) then 4 else row_mod5 - 1
                 else row_mod5
             else if (move_down) then
-                if ((noise == 0) & (grid_row < max_row)) then
+                if ((move_outcome == 0) & (grid_row < max_row)) then
                     if (row_mod5 == 4) then 0 else row_mod5 + 1
                 else row_mod5
             else
-                if ((noise == 1) & (grid_row < max_row)) then
+                if ((move_outcome == 1) & (grid_row < max_row)) then
                     if (row_mod5 == 4) then 0 else row_mod5 + 1
-                else if ((noise == 2) & (grid_row > 0)) then
+                else if ((move_outcome == 2) & (grid_row > 0)) then
                     if (row_mod5 == 0) then 4 else row_mod5 - 1
                 else row_mod5;
 
         col_mod5' =
             if ((grid_row == goal_row) & (grid_col == goal_col)) then col_mod5
             else if (move_up) then
-                if ((noise == 1) & (grid_col > 0)) then
+                if ((move_outcome == 1) & (grid_col > 0)) then
                     if (col_mod5 == 0) then 4 else col_mod5 - 1
-                else if ((noise == 2) & (grid_col < max_col)) then
+                else if ((move_outcome == 2) & (grid_col < max_col)) then
                     if (col_mod5 == 4) then 0 else col_mod5 + 1
                 else col_mod5
             else if (move_right) then
-                if ((noise == 0) & (grid_col < max_col)) then
+                if ((move_outcome == 0) & (grid_col < max_col)) then
                     if (col_mod5 == 4) then 0 else col_mod5 + 1
                 else col_mod5
             else if (move_down) then
-                if ((noise == 1) & (grid_col > 0)) then
+                if ((move_outcome == 1) & (grid_col > 0)) then
                     if (col_mod5 == 0) then 4 else col_mod5 - 1
-                else if ((noise == 2) & (grid_col < max_col)) then
+                else if ((move_outcome == 2) & (grid_col < max_col)) then
                     if (col_mod5 == 4) then 0 else col_mod5 + 1
                 else col_mod5
             else
-                if ((noise == 0) & (grid_col > 0)) then
+                if ((move_outcome == 0) & (grid_col > 0)) then
                     if (col_mod5 == 0) then 4 else col_mod5 - 1
                 else col_mod5;
-
-        // Nested Bernoulli gives exactly p, (1-p)/2, (1-p)/2 using the
-        // represented transition_accuracy value.
-        noise' =
-            if ((grid_row == goal_row) & (grid_col == goal_col)) then noise
-            else if (Bernoulli(transition_accuracy)) then 0
-            else if (Bernoulli(0.5)) then 1
-            else 2;
 
         obs =
             if (((grid_row' == 0) | (grid_row' == max_row)) &
@@ -149,8 +143,6 @@ domain darp_vs_raostar_grid {
                 else if (Bernoulli(0.5)) then 2 else 1;
     };
 
-    // GridInstance charges one unit at every non-goal state.  DARP maximizes
-    // utility, so its RDDL reward is the direct negative of that cost.
     reward = if ((grid_row == goal_row) & (grid_col == goal_col)) then 0 else -1;
 
     termination {

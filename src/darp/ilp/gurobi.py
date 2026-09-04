@@ -10,7 +10,7 @@ from typing import Any, Self
 
 from darp.ilp.model import ILPLinearConstraint, ILPModelSpec, ILPSolveResult
 
-DEFAULT_MIP_GAP = 1e-4
+DEFAULT_MIP_GAP = 1e-6
 
 
 class GurobiUnavailableError(RuntimeError):
@@ -265,10 +265,10 @@ class GurobiILPSession:
         self._model_name = name
         self._model = self._gp.Model(name)
         _set_param(self._model, "OutputFlag", 0)
-        # Match the reference implementation's standard Gurobi tolerance.
-        # Threads and the absolute gap keep their Gurobi defaults.
-        # 采用参考实现的标准 Gurobi 数值设置；线程数和绝对 gap
-        # 使用 Gurobi 默认值。
+        # Use a tighter relative gap so reported two-decimal objectives remain
+        # stable across Gurobi versions; threads and the absolute gap stay at
+        # their defaults. / 收紧相对 gap 以稳定跨版本结果；线程数和绝对 gap
+        # 仍使用 Gurobi 默认值。
         _set_param(self._model, "MIPGap", DEFAULT_MIP_GAP)
 
     def _update_row(self, name: str, row: ILPLinearConstraint) -> None:

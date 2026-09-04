@@ -90,7 +90,7 @@ class RAOStarRunner:
         if not bool(metrics.complete):
             raise RuntimeError("RAO* did not finish its search.")
         risk = float(metrics.risk)
-        if risk > float(grid.delta) + 1e-9:
+        if risk > float(grid.delta) + 1e-6:
             raise RuntimeError(f"RAO* risk {risk:.17g} exceeds delta={grid.delta}.")
         return {
             "objective": float(metrics.objective),

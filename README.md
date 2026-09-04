@@ -61,7 +61,6 @@ Risk 使用独立 JSON sidecar，直接定义 CC-POMDP 的预算 $\Delta$ 和风
   --duration experiments/DARP-vs-RAOstar-grid/rddl/duration.json \
   --risk experiments/DARP-vs-RAOstar-grid/rddl/risk.json \
   --heuristic experiments.DARP-vs-RAOstar-grid.darp_runner:MANHATTAN \
-  --root-belief experiments.DARP-vs-RAOstar-grid.darp_runner:initial_belief \
   --terminal-heuristic \
   --output output/DARP-vs-RAOstar-grid/darp.json
 ```
@@ -70,26 +69,7 @@ Risk 使用独立 JSON sidecar，直接定义 CC-POMDP 的预算 $\Delta$ 和风
 
 ## DARP vs RAO* 实验
 
-仓库包含三个互相独立的成对实验；每个目录都只有 DARP runner、RAO* runner、配对汇总和 RDDL sidecar，不修改 DARP 核心：
-
-| 目录 | 场景与来源 | 结果 |
-|:---|:---|:---|
-| `DARP-vs-RAOstar-grid` | HILP 论文 Grid | `output/DARP-vs-RAOstar-grid/` |
-| `DARP-vs-RAOstar-science-agent` | 公开 RAO* Science Agent source test | `output/DARP-vs-RAOstar-science-agent/` |
-| `DARP-vs-RAOstar-power-supply` | 基于 Thiébaux/Cordier PSR 的自建三线简化实例 | `output/DARP-vs-RAOstar-power-supply/` |
-
-Science Agent 和 Power Supply 都调用 compatibility fork `ME-Msc/rao-star@f51bfdc1ff8f` 中未改写的 `RAOStar` 算法类；该 fork 为现代 RMPyL 增加兼容层，并为 Science model 增加等价的 duration 名称 alias。首次运行会自动缓存该仓库，也可用 `--raostar-checkout` 指定 clean checkout。两边计时前会检查完整有限可达模型的 transition、observation、reward、risk、heuristic 和 terminal 语义。
-
-```bash
-.venv/bin/python -m experiments.DARP-vs-RAOstar-science-agent.run
-.venv/bin/python -m experiments.DARP-vs-RAOstar-power-supply.run
-```
-
-Science Agent 严格匹配公开代码中的 `perform_scheduling=False` 模式；[Benazera et al. 2005](https://aiweb.cs.washington.edu/ai/planning/papers/mausam-ijcai05.pdf) 是其连续资源 rover 原型，并未给出 RAO* Table 1 的具体参数，因此当前实验不是 PARIS 时间窗复现。
-
-RAO* 论文的 PSR Table 2 使用 semi-rural 网络，但公开 RAO* 仓库缺少该 model、fault instances、sensor placement 和 horizon。Power Supply 实验因此采用 [Bonet & Thiébaux 2003](https://users.cecs.anu.edu.au/~thiebaux/papers/icaps03.pdf) 明确给出的三线例子、动作效果和 finish cost；均匀单故障先验、horizon、sensor subset 与 chance constraint 是本实验公开补充的选择。它只验证基于 [Thiébaux & Cordier 2001](https://users.cecs.anu.edu.au/~thiebaux/papers/ecp01.pdf) 的共享语义，不是原 Table 2 实例或数值复现。原始网络数据与工具索引见[官方 PSR benchmark 页面](https://users.cecs.anu.edu.au/~thiebaux/benchmarks/pds/)。
-
-两个新实验都通过现有外部 utility-heuristic 接口配置，不修改 HILP：Science Agent 使用“所有尚未访问且存在的 discovery utility 之和”；三线 PSR 中论文式理想恢复 penalty 为 0，因此其 admissible utility upper bound 是 0，但搜索引导较弱。风险由 RDDL state 与 `risk.json` 定义，并由 HILP 的 frontier risk coefficient 统一处理，不需要场景专用 risk heuristic。
+仓库只保留 HILP 原论文 Table 2 的 Grid 成对实验及其结果，实验目录为 `experiments/DARP-vs-RAOstar-grid/`，结果目录为 `output/DARP-vs-RAOstar-grid/`。
 
 ### Grid 实验
 
@@ -98,7 +78,7 @@ RAO* 论文的 PSR Table 2 使用 semi-rural 网络，但公开 RAO* 仓库缺�
 - DARP-HILP；
 - 固定提交的外部 RAO* reimplementation。
 
-实验代码只有三个入口：`darp_runner.py` 调用 DARP，`raostar_runner.py` 通过 [Constrained-POMDP](https://github.com/ME-Msc/Constrained-POMDP) 的 adapter 调用固定提交的 [RAOStar](https://github.com/ME-Msc/RAOStar)，`run.py` 配对执行并生成 CSV/Markdown。外部 RAO* 只支持 action-depth horizon，因此仅在 `D(s,a)=1`、`zeta=0` 时允许比较。首次运行会自动下载并校验两个仓库到 `.cache/baselines/`，无需手工部署。
+实验代码只有三个入口：`darp_runner.py` 配置 RDDL、sidecar、Manhattan heuristic 并调用 DARP，`raostar_runner.py` 通过 [Constrained-POMDP](https://github.com/ME-Msc/Constrained-POMDP) 的 adapter 调用固定提交的 [RAOStar](https://github.com/ME-Msc/RAOStar)，`run.py` 配对执行并生成 CSV/Markdown。该实验固定使用 `D(s,a)=1`、`zeta=0`，与外部 RAO* 的 action-depth horizon 对齐。首次运行会自动下载并校验两个仓库到 `.cache/baselines/`，无需手工部署。
 
 单配置检查：
 
@@ -115,6 +95,8 @@ RAO* 论文的 PSR Table 2 使用 semi-rural 网络，但公开 RAO* 仓库缺�
 
 ```bash
 bash tools/run_repro.sh
+# 仅在继续同一版本、同一配置的中断实验时：
+RESUME=1 bash tools/run_repro.sh
 ```
 
 结果写入并由 Git 记录在 `output/DARP-vs-RAOstar-grid/`。已有本地 checkout 或离线运行时，可选设置 `CONSTRAINED_POMDP_REPO`、`RAOSTAR_CHECKOUT` 和 `BASELINE_CACHE`；本地 checkout 必须处在固定 commit 且 worktree clean。外部实现的 provenance、指标定义和计时边界见 [实验协议](docs/EXPERIMENT_PROTOCOL.md)。算法公式与代码对应见 [算法映射](docs/ALGORITHM_MAPPING.md)。

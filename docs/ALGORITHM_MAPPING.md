@@ -111,7 +111,7 @@ $$
 \text{s.t. }\sum_q r_qx_q\le R.
 $$
 
-`planning/ilp_tree.py` 生成 root、flow、observation-closure 和风险行；`ilp/gurobi.py` 直接求解 binary64 系数的二元模型。与论文参考代码相同，Gurobi 使用 `MIPGap=1e-4` 和默认线程设置；返回 `OPTIMAL` 表示在该数值容差内完成搜索。实现不再进行 zero-gap 求解、有理数 incumbent 复核或 no-good 重求解，策略风险由浮点传播以统一容差判断。
+`planning/ilp_tree.py` 生成 root、flow、observation-closure 和风险行；`ilp/gurobi.py` 直接求解 binary64 系数的二元模型。Gurobi 使用 `MIPGap=1e-6`、默认 `FeasibilityTol=1e-6` 和默认线程设置；返回 `OPTIMAL` 表示在该数值容差内完成搜索。较严格的 gap 用于稳定复现论文表格的两位小数，风险结果判定则与 Gurobi 的可行性容差保持一致；二者都不改变 HILP 的数学模型。实现不再进行 zero-gap 求解、有理数 incumbent 复核或 no-good 重求解，策略风险由浮点传播以统一容差判断。
 
 ## 6. Algorithm 3：HILP
 

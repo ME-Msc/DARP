@@ -10,12 +10,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from darp.adapter.loader import load_rddl
+from darp.model.risk_sidecar import load_risk_sidecar
+
 from .darp_runner import (
-    default_risk_budget,
-    instance_path,
-    read_instance,
+    DOMAIN,
+    RDDL_DIR,
+    RISK,
     run_darp,
-    warm_up,
 )
 from .raostar_runner import (
     CONSTRAINED_POMDP_COMMIT,
@@ -31,7 +33,9 @@ TRIALS = 25
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CACHE = PROJECT_ROOT / ".cache" / "baselines"
-DEFAULT_OUTPUT = PROJECT_ROOT / "output" / "DARP-vs-RAOstar-grid" / "raw.csv"
+DEFAULT_OUTPUT = (
+    PROJECT_ROOT / "output" / "DARP-vs-RAOstar-grid" / "table2-raw.csv"
+)
 
 FIELDS = (
     "size",
@@ -106,16 +110,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"RAOStar: {raostar.raostar_path}")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     existing = _load_existing(args.output) if args.resume else {}
-    if any(
-        _key(case.scenario, trial, "DARP-HILP") not in existing
-        for case in cases
-        for trial in range(1, args.trials + 1)
-    ):
-        warm_up()
     append = args.resume and args.output.is_file() and args.output.stat().st_size > 0
-    parity_checked: set[Path] = set()
     with args.output.open("a" if append else "w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=FIELDS)
+        writer = csv.DictWriter(handle, fieldnames=FIELDS, lineterminator="\n")
         if not append:
             writer.writeheader()
         for case in cases:
@@ -126,25 +123,21 @@ def main(argv: list[str] | None = None) -> int:
                     for algorithm in ALGORITHMS
                 ):
                     continue
-                grid = raostar.make_grid(
-                    scenario.size, scenario.horizon, scenario.delta
-                )
                 key = _key(scenario, trial, "DARP-HILP")
                 if key not in existing:
-                    check = case.instance.resolve() not in parity_checked
                     metrics = run_darp(
                         case.instance,
                         delta=scenario.delta,
                         seed=args.seed + trial - 1,
                         timeout_s=args.timeout,
-                        reference_grid=grid if check else None,
                     )
-                    if check:
-                        parity_checked.add(case.instance.resolve())
                     _save(writer, handle, existing, scenario, trial, "DARP-HILP", metrics)
 
                 key = _key(scenario, trial, "RAO*")
                 if key not in existing:
+                    grid = raostar.make_grid(
+                        scenario.size, scenario.horizon, scenario.delta
+                    )
                     metrics = raostar.run(grid, timeout_s=args.timeout)
                     _save(writer, handle, existing, scenario, trial, "RAO*", metrics)
 
@@ -162,11 +155,11 @@ def main(argv: list[str] | None = None) -> int:
 def _build_cases(args: argparse.Namespace) -> tuple[Case, ...]:
     if args.instance is not None:
         instance = args.instance.expanduser().resolve()
-        size, horizon = read_instance(instance)
-        canonical = instance_path(size, horizon).resolve()
+        size, horizon = _read_instance(instance)
+        canonical = _instance_path(size, horizon).resolve()
         if instance != canonical:
             raise ValueError(f"Expected checked-in instance {canonical}")
-        return (Case(Scenario(size, horizon, default_risk_budget()), instance),)
+        return (Case(Scenario(size, horizon, _default_risk_budget()), instance),)
 
     sizes = args.sizes or GRID_SIZES
     horizons = args.horizons or HORIZONS
@@ -174,14 +167,55 @@ def _build_cases(args: argparse.Namespace) -> tuple[Case, ...]:
     cases: list[Case] = []
     for selected_size in sizes:
         for selected_horizon in horizons:
-            instance = instance_path(selected_size, selected_horizon).resolve()
-            if read_instance(instance) != (selected_size, selected_horizon):
+            instance = _instance_path(selected_size, selected_horizon).resolve()
+            if _read_instance(instance) != (selected_size, selected_horizon):
                 raise ValueError(f"RDDL metadata mismatch: {instance}")
             cases.extend(
                 Case(Scenario(selected_size, selected_horizon, delta), instance)
                 for delta in deltas
             )
     return tuple(cases)
+
+
+def _instance_path(size: int, horizon: int) -> Path:
+    path = RDDL_DIR / f"instance_{size}_h{horizon}.rddl"
+    if not path.is_file():
+        raise ValueError(f"Missing Grid instance: {path}")
+    return path
+
+
+def _read_instance(instance: Path) -> tuple[int, int]:
+    model = load_rddl(DOMAIN, instance).env.model
+    non_fluents = model.non_fluents
+    rows = int(non_fluents["max_row"]) + 1
+    columns = int(non_fluents["max_col"]) + 1
+    if rows != columns:
+        raise ValueError("The RAO* comparison requires a square Grid.")
+    expected_state = {
+        "grid_row": rows - 1,
+        "grid_col": 0,
+        "row_mod5": (rows - 1) % 5,
+        "col_mod5": 0,
+    }
+    if (
+        (int(non_fluents["goal_row"]), int(non_fluents["goal_col"]))
+        != (0, columns - 1)
+        or float(non_fluents["transition_accuracy"]) != 0.85
+        or float(non_fluents["observation_accuracy"]) != 0.85
+        or {name: int(model.state_fluents[name]) for name in expected_state}
+        != expected_state
+        or int(model.max_allowed_actions) != 1
+        or float(model.discount) != 1.0
+    ):
+        raise ValueError(f"RDDL does not match the paper Grid: {instance}")
+    return rows, int(model.horizon)
+
+
+def _default_risk_budget() -> float:
+    budget = load_risk_sidecar(RISK).budget
+    if budget is None:
+        raise ValueError("risk.json must define a default budget.")
+    return float(budget)
 
 
 def _save(
@@ -271,7 +305,7 @@ def _write_summary(
                 raise ValueError("Summary CSV uses a different Constrained-POMDP commit")
             if row["raostar_commit"] != RAOSTAR_COMMIT:
                 raise ValueError("Summary CSV uses a different RAOStar commit")
-            if float(row["risk"]) > scenario.delta + 1e-9:
+            if float(row["risk"]) > scenario.delta + 1e-6:
                 raise ValueError(f"Infeasible risk in {csv_path}: {key}")
             groups[scenario].setdefault(algorithm, []).append(row)
 

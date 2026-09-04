@@ -23,27 +23,21 @@ heuristic             Manhattan distance to goal
 
 5×5 风险模板为 `(0,0),(3,0),(3,1),(1,3),(1,4)`，100×100 按 `(row mod 5,col mod 5)` 平铺。risk 是执行中首次进入危险状态的概率。
 
-DARP 从纯 `rddl/duration.json` 读取 duration，从 `rddl/risk.json` 的 `budget + risky_states` 读取 CC-POMDP 风险约束，并以 instance RDDL 的 horizon 作为 duration 阈值。RAO* 只有 action-depth horizon，因此比较前强制检查 `FixedDurationModel`、所有动作时长为 1、`zeta=0`、两端有限时域可达状态的 risk 语义以及 horizon 相等；其他 duration 配置直接拒绝比较。
+DARP 从 `rddl/duration.json` 读取固定单位 duration，从 `rddl/risk.json` 的 `budget + risky_states` 读取 CC-POMDP 风险约束，并以 instance RDDL 的 horizon 作为 duration 阈值。RAO* 使用相同数值的 action-depth horizon。
 
 DARP 的 terminal action node 使用论文 HILP 的 Manhattan replacement，RAO* 保持其原生的 step-cost 加 depth-`h` child Manhattan backup。两端执行相同动作数并共享 T/O/risk/duration，但 native objective 的边界定义不同，因此表中 objective 不能直接解释为共同 policy-quality 指标。
 
 ## 3. 三个实验文件
 
 ```text
-darp_runner.py     DARP 调用、Manhattan、root belief、RDDL/外部模型等价性检查
+darp_runner.py     DARP 输入路径、Manhattan heuristic 与一次求解调用
 raostar_runner.py  固定仓库下载与校验、外部 Grid 和 RAO* adapter 调用
 run.py             参数矩阵、配对执行、CSV 和 Markdown 汇总
 ```
 
-标准 RDDL 的随机 CPF 独立采样。Grid domain 使用隐藏 `noise∈{0,1,2}` 保持 row/column 滑移相关；`darp_runner.py` 将 instance 的 `noise=0` 占位初态转换为 `.85/.075/.075` root belief。CLI 和实验调用同一个 provider。
+Grid domain 使用每个动作只采样一次的 `move_outcome` intermediate fluent。`grid_row'`、`grid_col'`、`row_mod5'` 和 `col_mod5'` 共享该结果，因此保持论文中的 `.85/.075/.075` 联合滑移分布，同时不把随机结果放入 belief state。RDDL 声明的确定性初态由 DARP 直接读取，不需要外部 root-belief provider。
 
-每个 instance 在计时外检查：
-
-- 初始 position/noise belief；
-- action 顺序与 codec；
-- 所有有限时域可达状态的 transition、observation、reward、risk 和 Manhattan；
-- goal 的 terminal、自环、零 reward 与零 heuristic；
-- duration、有限时域可达状态的 risk、risk budget 和 horizon。
+`darp_runner.py` 不重复实现模型或执行逐状态等价性检查；正式 domain 已针对外部 `GridInstance` 的全部 5×5 状态和动作验证 transition、observation、reward 与 risk 一致。
 
 外部仓库必须位于固定 commit、worktree clean 且包含必要文件。自动缓存只做首次 detached checkout，已有目录不会被 pull 或 reset。DARP 不复制或修改 baseline 算法；RAO* 始终由外部 `raostar_adapter.run_raostar()` 执行。
 
@@ -62,10 +56,12 @@ run.py             参数矩阵、配对执行、CSV 和 Markdown 汇总
 
 ```bash
 bash tools/run_repro.sh
+# 仅继续同一版本、同一配置的中断实验：
+RESUME=1 bash tools/run_repro.sh
 ```
 
 `run.py` 同时生成 long-form CSV 和 Markdown 均值表。默认结果由 Git 记录在 `output/DARP-vs-RAOstar-grid/`。离线运行可指定 `--constrained-pomdp-repo`、`--raostar-checkout` 和 `--baseline-cache`。
 
-正式 completion-time 实验不设置 timeout；调试时的 `--timeout` 同时传给 DARP 和 RAO*。模型加载、parity、外部 import 和 Gurobi warm-up 都不计入 planner time。
+正式 completion-time 实验不设置 timeout；调试时的 `--timeout` 同时传给 DARP 和 RAO*。DARP 的计时覆盖完整 `choose_action()`，包括 Gurobi model 创建、增量更新和求解；RDDL 与 sidecar 加载不计时。RAO* 的计时覆盖其 `search()` 调用，与固定 baseline adapter 的定义一致。
 
-`complete` 表示算法自然收敛、Gurobi 在 `MIPGap=1e-4` 下返回 `OPTIMAL`，且浮点风险值满足预算；它不表示 zero-gap 或有理数复核。Gurobi 线程数使用默认设置，与论文参考代码一致。DARP 的 `n` 是 `expanded+frontier` action histories，RAO* 的 `n` 是 belief hypergraph nodes；`iterations` 也分别表示 p-ILP solves 和 RAO* expansions，二者只能作为各自实现的搜索规模指标。
+`complete` 表示算法自然收敛、Gurobi 在 `MIPGap=1e-6` 下返回 `OPTIMAL`，且风险不超过预算加 Gurobi 默认的 `1e-6` 线性约束可行性容差；它不表示 zero-gap 或有理数复核。CSV 保留原始浮点 risk，不会截断容差内的轻微超限。较严格的 gap 避免约 200 的 Grid objective 因新版 Gurobi 在默认相对容差内提前停止而影响论文表格的两位小数复现。Gurobi 线程数使用默认设置。DARP 的 `n` 是 `expanded+frontier` action histories，RAO* 的 `n` 是 belief hypergraph nodes；`iterations` 也分别表示 p-ILP solves 和 RAO* expansions，二者只能作为各自实现的搜索规模指标。

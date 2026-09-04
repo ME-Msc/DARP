@@ -21,9 +21,11 @@ RUN_ARGS=(
   --trials "${TRIALS:-25}"
   --output "${OUTPUT_DIR}/table2-raw.csv"
   --summary "${OUTPUT_DIR}/table2.md"
-  --resume
 )
 
+if [[ "${RESUME:-0}" == "1" ]]; then
+  RUN_ARGS+=(--resume)
+fi
 if [[ -n "${CONSTRAINED_POMDP_REPO:-}" ]]; then
   RUN_ARGS+=(--constrained-pomdp-repo "${CONSTRAINED_POMDP_REPO}")
 fi
