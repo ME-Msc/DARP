@@ -19,6 +19,7 @@ from darp.planning.ilp_tree import (
     build_full_tree_ilp,
     validate_risk_budget,
 )
+from darp.planning.heuristic import UtilityHeuristic
 from darp.planning.policy import extract_conditional_policy
 
 
@@ -29,6 +30,7 @@ class FullILPPlanner:
     risk_budget: float | None = None
     max_tree_nodes: int | None = 100_000
     solver_time_limit_ms: float | None = 60_000.0
+    terminal_heuristic: UtilityHeuristic | None = None
 
     def choose_action(
         self,
@@ -102,6 +104,7 @@ class FullILPPlanner:
             risk_budget=self.risk_budget,
             root_belief=root_belief,
             max_nodes=self.max_tree_nodes,
+            terminal_heuristic=self.terminal_heuristic,
         )
         tree_ilp_build_ms = (perf_counter() - build_started_at) * 1000.0
         ilp_result = GurobiILPSolver().solve(
@@ -129,6 +132,10 @@ class FullILPPlanner:
         # been proved (for example at a solver time limit).
         achieved_utility = policy.achieved_utility
         gurobi_ms = float(ilp_result.runtime_ms)
+        flow_nodes = sum(
+            constraint.name.startswith("flow_")
+            for constraint in ilp_tree.spec.constraints
+        )
         return ActionDecision(
             action=dict(selected_item.node.assignment or {}),
             label=selected_item.action_label,
@@ -150,6 +157,7 @@ class FullILPPlanner:
                 "ilp_variables": float(len(ilp_tree.spec.variables)),
                 "ilp_constraints": float(len(ilp_tree.spec.constraints)),
                 "expanded_nodes": float(len(ilp_tree.variable_items)),
+                "tree_nodes": float(len(ilp_tree.spec.variables) + flow_nodes + 1),
                 "solver_time_limit_hit": (
                     1.0 if ilp_result.status == "time_limit" else 0.0
                 ),

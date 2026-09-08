@@ -23,7 +23,7 @@ heuristic             Manhattan distance to goal
 
 5×5 风险模板为 `(0,0),(3,0),(3,1),(1,3),(1,4)`，100×100 按 `(row mod 5,col mod 5)` 平铺。risk 是执行中首次进入危险状态的概率。
 
-DARP 从 `rddl/duration.json` 读取固定单位 duration，从 `rddl/risk.json` 的 `budget + risky_states` 读取 CC-POMDP 风险约束，并以 instance RDDL 的 horizon 作为 duration 阈值。RAO* 使用相同数值的 action-depth horizon。
+DARP 的 domain duration 表达式在 Table 2 默认 non-fluent 下化简为 `D(s,a)=1.0`，`rddl/risk.json` 的 `budget + risky_states` 给出 CC-POMDP 风险约束，instance RDDL 的 horizon 是 duration 阈值。RAO* 使用相同数值的 action-depth horizon。
 
 DARP 的 terminal action node 使用论文 HILP 的 Manhattan replacement，RAO* 保持其原生的 step-cost 加 depth-`h` child Manhattan backup。两端执行相同动作数并共享 T/O/risk/duration，但 native objective 的边界定义不同，因此表中 objective 不能直接解释为共同 policy-quality 指标。
 
@@ -62,6 +62,6 @@ RESUME=1 bash tools/run_repro.sh
 
 `run.py` 同时生成 long-form CSV 和 Markdown 均值表。默认结果由 Git 记录在 `output/DARP-vs-RAOstar-grid/`。离线运行可指定 `--constrained-pomdp-repo`、`--raostar-checkout` 和 `--baseline-cache`。
 
-正式 completion-time 实验不设置 timeout；调试时的 `--timeout` 同时传给 DARP 和 RAO*。DARP 的计时覆盖完整 `choose_action()`，包括 Gurobi model 创建、增量更新和求解；RDDL 与 sidecar 加载不计时。RAO* 的计时覆盖其 `search()` 调用，与固定 baseline adapter 的定义一致。
+正式 completion-time 实验不设置 timeout；调试时的 `--timeout` 同时传给 DARP 和 RAO*。DARP 的计时覆盖完整 `choose_action()`，包括 Gurobi model 创建、增量更新和求解；RDDL 与 risk JSON 加载不计时。RAO* 的计时覆盖其 `search()` 调用，与固定 baseline adapter 的定义一致。
 
 `complete` 表示算法自然收敛、Gurobi 在 `MIPGap=1e-6` 下返回 `OPTIMAL`，且风险不超过预算加 Gurobi 默认的 `1e-6` 线性约束可行性容差；它不表示 zero-gap 或有理数复核。CSV 保留原始浮点 risk，不会截断容差内的轻微超限。较严格的 gap 避免约 200 的 Grid objective 因新版 Gurobi 在默认相对容差内提前停止而影响论文表格的两位小数复现。Gurobi 线程数使用默认设置。DARP 的 `n` 是 `expanded+frontier` action histories，RAO* 的 `n` 是 belief hypergraph nodes；`iterations` 也分别表示 p-ILP solves 和 RAO* expansions，二者只能作为各自实现的搜索规模指标。

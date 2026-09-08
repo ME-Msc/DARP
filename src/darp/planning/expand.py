@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from darp.adapter.kernel import ObservationKey, RDDLKernel, StateKey
@@ -14,6 +14,7 @@ from darp.model.duration import (
     FixedDurationModel,
     HistoryDurationEvaluator,
 )
+from darp.planning.heuristic import UtilityHeuristic, history_heuristic_coefficient
 from darp.planning.preprocess import FrontierItem
 
 
@@ -42,8 +43,10 @@ class ExpandedAction:
 class ObservationFrontier:
     """Store one qao observation branch and its child actions. / 保存一个 qao observation 分支及其子 action。"""
 
+    observation: ObservationKey
     child_frontier: tuple[FrontierItem, ...]
     should_expand: bool
+    duration_stopped: bool
 
 
 def evaluate_frontier_leaf_metrics(
@@ -77,6 +80,55 @@ def evaluate_frontier_leaf_metrics(
     return ExpansionMetrics(
         utility=utility,
         chance_risk=chance_risk,
+    )
+
+
+def apply_terminal_heuristic(
+    item: FrontierItem,
+    expanded: ExpandedAction,
+    interface: ANDORSearchInterface,
+    heuristic: UtilityHeuristic,
+) -> ExpandedAction:
+    """Replace exact utility only on branches stopped by the duration bound."""
+    terminal = tuple(
+        branch for branch in expanded.observation_frontiers if branch.duration_stopped
+    )
+    if not terminal:
+        return expanded
+    action = item.node.assignment
+    kernel = interface.kernel
+    if action is None or kernel is None:
+        raise ValueError("Terminal heuristic evaluation requires an action and kernel.")
+
+    if len(terminal) == len(expanded.observation_frontiers):
+        utility = history_heuristic_coefficient(
+            heuristic,
+            state_mass=item.ordinary_mass,
+            action_label=item.action_label,
+            action=action,
+            non_fluents=kernel.non_fluents,
+        )
+    else:
+        utility = expanded.metrics.utility
+        for branch in terminal:
+            branch_mass, branch_utility = (
+                kernel.action_start_mass_and_utility_for_observation(
+                    item.ordinary_mass,
+                    action,
+                    branch.observation,
+                )
+            )
+            utility += history_heuristic_coefficient(
+                heuristic,
+                state_mass=branch_mass,
+                action_label=item.action_label,
+                action=action,
+                non_fluents=kernel.non_fluents,
+            )
+            utility -= branch_utility
+    return replace(
+        expanded,
+        metrics=replace(expanded.metrics, utility=utility),
     )
 
 
@@ -216,10 +268,11 @@ def expand_frontier_item(
         )
         # Reuse the normalized posterior for terminal and action callbacks.
         callback_belief_qao: Mapping[Any, Any] = b_qao
+        model_terminal_qao = interface.belief_is_terminal(callback_belief_qao)
         should_expand_qao = (
             expand_qao
             and bool(ordinary_mass_qao)
-            and not interface.belief_is_terminal(callback_belief_qao)
+            and not model_terminal_qao
         )
         child_actions = _child_frontier(
             observation_node=qao_node,
@@ -235,8 +288,12 @@ def expand_frontier_item(
         )
         branches.append(
             ObservationFrontier(
+                observation=observation,
                 child_frontier=child_actions,
                 should_expand=should_expand_qao,
+                # A known model terminal keeps its exact RDDL value even if it
+                # also happens to reach the duration boundary.
+                duration_stopped=not expand_qao and not model_terminal_qao,
             )
         )
         next_frontier.extend(child_actions)
@@ -338,13 +395,12 @@ def _algorithm2_duration_from_smoothed_beliefs(
     r"""Compute fixed/stochastic duration formulas from smoothed beliefs.
 
     The paper's duration formulas use $$\bar b^i_{qao}(s)$$ for each
-    *complete* action-start state.  Sidecar fluent names are state selectors,
-    not independent probability atoms; converting the joint distribution into
-    fluent marginals would lose probability mass for all-false states and
-    double-count states with multiple true fluents.
+    *complete* action-start state. Converting that joint distribution into
+    separate fluent marginals would lose probability mass for all-false states
+    and double-count states with multiple true fluents.
 
-    / 用完整状态的 smoothed belief 计算 expected/Gaussian duration；
-    sidecar 中的 fluent 名是状态选择器，不是独立概率原子。
+    / 用完整状态的 smoothed belief 计算 expected/Gaussian duration，不能把
+    joint state 错当成互相独立的 fluent 边缘概率。
     """
 
     progress = DurationProgress()

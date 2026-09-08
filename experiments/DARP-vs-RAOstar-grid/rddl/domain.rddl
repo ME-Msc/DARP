@@ -10,15 +10,23 @@ domain darp_vs_raostar_grid {
         goal_col            : { non-fluent, int,  default = 4 };
         transition_accuracy : { non-fluent, real, default = 0.85 };
         observation_accuracy: { non-fluent, real, default = 0.85 };
+        normal_duration       : { non-fluent, real, default = 1.0 };
+        muddy_duration        : { non-fluent, real, default = 1.0 };
+        duration_noise_variance: { non-fluent, real, default = 0.0 };
 
         grid_row : { state-fluent, int, default = 0 };
         grid_col : { state-fluent, int, default = 0 };
         row_mod5 : { state-fluent, int, default = 0 };
         col_mod5 : { state-fluent, int, default = 0 };
 
+        // Intended endpoint for the paper's "to or from mud" duration rule.
+        intended_row_mod5 : { interm-fluent, int, level = 1 };
+        intended_col_mod5 : { interm-fluent, int, level = 1 };
+        mud_contact       : { interm-fluent, bool, level = 2 };
+
         // Sampled once per action and shared by every next-state CPF:
         // 0 = intended direction, 1/2 = the two perpendicular slips.
-        move_outcome : { interm-fluent, int, level = 1 };
+        move_outcome : { interm-fluent, int, level = 3 };
 
         // With max-nondef-actions=1, all false denotes Left.
         move_up    : { action-fluent, bool, default = false };
@@ -30,6 +38,34 @@ domain darp_vs_raostar_grid {
     };
 
     cpfs {
+        intended_row_mod5 =
+            if ((grid_row == goal_row) & (grid_col == goal_col)) then row_mod5
+            else if (move_up & (grid_row > 0)) then
+                if (row_mod5 == 0) then 4 else row_mod5 - 1
+            else if (move_down & (grid_row < max_row)) then
+                if (row_mod5 == 4) then 0 else row_mod5 + 1
+            else row_mod5;
+
+        intended_col_mod5 =
+            if ((grid_row == goal_row) & (grid_col == goal_col)) then col_mod5
+            else if (move_right & (grid_col < max_col)) then
+                if (col_mod5 == 4) then 0 else col_mod5 + 1
+            else if ((~move_up) & (~move_right) & (~move_down) & (grid_col > 0)) then
+                if (col_mod5 == 0) then 4 else col_mod5 - 1
+            else col_mod5;
+
+        mud_contact =
+            (((row_mod5 == 0) & (col_mod5 == 3)) |
+             ((row_mod5 == 1) & (col_mod5 == 1)) |
+             ((row_mod5 == 2) & (col_mod5 == 2)) |
+             ((row_mod5 == 3) & (col_mod5 == 4)) |
+             ((row_mod5 == 4) & (col_mod5 == 2))) |
+            (((intended_row_mod5 == 0) & (intended_col_mod5 == 3)) |
+             ((intended_row_mod5 == 1) & (intended_col_mod5 == 1)) |
+             ((intended_row_mod5 == 2) & (intended_col_mod5 == 2)) |
+             ((intended_row_mod5 == 3) & (intended_col_mod5 == 4)) |
+             ((intended_row_mod5 == 4) & (intended_col_mod5 == 2)));
+
         move_outcome =
             if ((grid_row == goal_row) & (grid_col == goal_col)) then 0
             else if (Bernoulli(transition_accuracy)) then 0
@@ -144,6 +180,21 @@ domain darp_vs_raostar_grid {
     };
 
     reward = if ((grid_row == goal_row) & (grid_col == goal_col)) then 0 else -1;
+
+    // D(s,a). F uses equal normal/muddy values, E changes muddy_duration,
+    // and S additionally supplies Gaussian variance in its instance.
+    duration =
+        if (normal_duration == muddy_duration) then
+            if (duration_noise_variance > 0.0)
+            then Normal(normal_duration, duration_noise_variance)
+            else normal_duration
+        else if (mud_contact)
+             then if (duration_noise_variance > 0.0)
+                  then Normal(muddy_duration, duration_noise_variance)
+                  else muddy_duration
+             else if (duration_noise_variance > 0.0)
+                  then Normal(normal_duration, duration_noise_variance)
+                  else normal_duration;
 
     termination {
         (grid_row == goal_row) & (grid_col == goal_col);

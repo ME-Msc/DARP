@@ -90,7 +90,15 @@ def _build_enum_aware_grounded_model(native_ast: Any) -> Any:
                             "red",
                         )
 
-    return EnumAwareRDDLGrounder(native_ast).ground()
+    grounder = EnumAwareRDDLGrounder(native_ast)
+    grounded = grounder.ground()
+    grounded.duration = grounder._scan_expr_tree(native_ast.domain.duration, {})
+    grounded.max_duration_shortfall_probability = getattr(
+        native_ast.instance,
+        "max_duration_shortfall_probability",
+        None,
+    )
+    return grounded
 
 
 def _strip_literal_value(value: Any, planning_model: Any) -> Any:

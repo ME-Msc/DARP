@@ -24,11 +24,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--domain", required=True, help="RDDL domain file")
     parser.add_argument("--instance", required=True, help="RDDL instance file")
     parser.add_argument(
-        "--duration",
-        required=True,
-        help="JSON duration sidecar (duration is intentionally outside RDDL)",
-    )
-    parser.add_argument(
         "--risk",
         required=True,
         help="JSON CC-POMDP risk sidecar (budget + risky_states)",
@@ -60,6 +55,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="use the external heuristic as the duration-boundary value",
     )
     parser.add_argument("--timeout", type=float, default=60.0, help="solver seconds")
+    parser.add_argument(
+        "--full-ilp-max-tree-nodes",
+        type=int,
+        default=100_000,
+        help="full-tree preprocessing cap",
+    )
     parser.add_argument("--output", type=Path, help="JSON destination")
     return parser
 
@@ -75,7 +76,6 @@ def main(argv: list[str] | None = None) -> int:
     result = solve_rddl(
         args.domain,
         args.instance,
-        args.duration,
         risk_path=args.risk,
         planner=cast(PlannerName, args.planner),
         seed=args.seed,
@@ -85,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         heuristic=heuristic,
         terminal_heuristic=args.terminal_heuristic,
         timeout_s=args.timeout,
+        full_ilp_max_tree_nodes=args.full_ilp_max_tree_nodes,
         root_belief_factory=root_belief_factory,
     )
     payload = {

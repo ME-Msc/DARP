@@ -9,7 +9,6 @@ from darp.solve import solve_rddl
 
 RDDL_DIR = Path(__file__).with_name("rddl")
 DOMAIN = RDDL_DIR / "domain.rddl"
-DURATION = RDDL_DIR / "duration.json"
 RISK = RDDL_DIR / "risk.json"
 
 
@@ -39,7 +38,6 @@ def run_darp(
     result = solve_rddl(
         DOMAIN,
         instance,
-        DURATION,
         risk_path=RISK,
         planner="hilp",
         seed=seed,

@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Debug DARP: RDDL + sidecars",
+      "name": "Debug DARP: RDDL + risk",
       "type": "debugpy",
       "request": "launch",
       "module": "darp",
@@ -22,8 +22,6 @@
         "${workspaceFolder}/experiments/DARP-vs-RAOstar-grid/rddl/domain.rddl",
         "--instance",
         "${workspaceFolder}/experiments/DARP-vs-RAOstar-grid/rddl/instance_5_h3.rddl",
-        "--duration",
-        "${workspaceFolder}/experiments/DARP-vs-RAOstar-grid/rddl/duration.json",
         "--risk",
         "${workspaceFolder}/experiments/DARP-vs-RAOstar-grid/rddl/risk.json",
         "--planner",

@@ -19,6 +19,7 @@ from darp.model.duration import HistoryDurationEvaluator
 from darp.planning.decision import ActionDecision
 from darp.planning.expand import (
     ExpandedAction,
+    apply_terminal_heuristic,
     evaluate_frontier_leaf_metrics,
     expand_frontier_item,
 )
@@ -639,25 +640,24 @@ def _materialized_frontier_leaf_record(
     Risk remains Algorithm 2's one-step coefficient. Without a callback,
     the one-step utility is a deliberately simple, non-certifying fallback.
     ``terminal_heuristic`` reproduces the paper Grid experiment's convention of
-    using the same heuristic at a leaf. It requires all observation branches of
-    one action to stop together; the callback must also return the intended value
-    (normally zero) for model-terminal states. Otherwise leaves retain RDDL reward.
+    using the same heuristic at a leaf. For stochastic duration, terminal
+    observation branches are weighted separately when sibling branches continue.
+    The callback must return the intended value (normally zero) for model-terminal
+    states. Otherwise leaves retain RDDL reward.
     """
     var_id = _action_var_id(item)
     policy_expansion = expand_frontier_item(item, interface, duration_evaluator)
     continuation_flags = tuple(
         branch.should_expand for branch in policy_expansion.observation_frontiers
     )
-    if terminal_heuristic and any(continuation_flags) and not all(continuation_flags):
-        raise ValueError(
-            "terminal_heuristic cannot represent an action whose observation "
-            "branches mix continuing and terminal duration outcomes"
-        )
-    expanded = policy_expansion
-    has_continuation = any(continuation_flags)
-    use_heuristic = heuristic is not None and (
-        has_continuation or terminal_heuristic
+    exact_expansion = (
+        apply_terminal_heuristic(item, policy_expansion, interface, heuristic)
+        if terminal_heuristic and heuristic is not None
+        else policy_expansion
     )
+    expanded = exact_expansion
+    has_continuation = any(continuation_flags)
+    use_heuristic = heuristic is not None and has_continuation
     if use_heuristic:
         action = item.node.assignment
         if action is None:
@@ -673,9 +673,9 @@ def _materialized_frontier_leaf_record(
             non_fluents=kernel.non_fluents,
         )
         expanded = replace(
-            policy_expansion,
+            exact_expansion,
             metrics=replace(
-                policy_expansion.metrics,
+                exact_expansion.metrics,
                 utility=utility,
             ),
         )
@@ -688,7 +688,7 @@ def _materialized_frontier_leaf_record(
         # validation must inspect its observation branches. At a duration
         # boundary, the optional terminal heuristic is the experiment's actual
         # terminal objective and must therefore be included in achieved utility.
-        policy_expansion=(policy_expansion if has_continuation else expanded),
+        policy_expansion=(exact_expansion if has_continuation else expanded),
     )
 
 

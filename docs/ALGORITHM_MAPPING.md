@@ -91,7 +91,7 @@ $$
 
 它与论文的 $\tfrac12[1+\operatorname{erf}((h-\mu_q)/(\sigma_q\sqrt2))]$ 代数等价，并减少尾部消减误差。判定仍是严格 `>`，没有固定 ULP 上移或 `>=`；所有 duration 数值与概率流一样使用 binary64。
 
-Duration 参数必须从 RDDL 之外的 JSON sidecar 读入，求解器不会隐式假设单位时长。RDDL 的整数 horizon 只作为 sidecar evaluator 的时间阈值，不会额外截断 duration tree；只有论文的 duration stopping test 决定 action depth。HILP 若因 expansion round 或 solver time 上限停止，结果保持 incomplete。
+Domain 必须用 `duration = <RDDL expression>;` 定义 $D(s,a)$。表达式复用当前有限 kernel 支持的 RDDL 常量、算术、布尔、关系、条件、state/action/non-fluent 和确定性 intermediate fluent；`Normal(mean, variance)` 表示独立 Gaussian duration。若 instance 给出 `max-duration-shortfall-probability = 0.3;`，该数值即 $\varsigma$，求解器使用上述 percentile stopping test；省略时使用 deterministic/expected duration。instance 的整数 horizon 只作为 duration evaluator 的时间阈值，不会额外截断 duration tree；只有论文的 stopping test 决定 action depth。HILP 若因 expansion round 或 solver time 上限停止，结果保持 incomplete。
 
 ## 5. ILP
 

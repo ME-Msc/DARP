@@ -8,10 +8,10 @@ from pathlib import Path
 from time import perf_counter
 from typing import Literal
 
+from darp.adapter.duration import build_duration_evaluator
 from darp.adapter.kernel import RDDLKernel, StateKey
 from darp.adapter.loader import load_rddl
 from darp.adapter.runtime import PyRDDLGymRuntime
-from darp.model.duration_sidecar import load_duration_sidecar
 from darp.model.risk_sidecar import load_risk_sidecar
 from darp.planning.decision import ActionDecision
 from darp.planning.full_ilp import FullILPPlanner
@@ -37,7 +37,6 @@ class DARPResult:
 def solve_rddl(
     domain: str | Path,
     instance: str | Path,
-    duration_path: str | Path,
     *,
     risk_path: str | Path,
     planner: PlannerName = "hilp",
@@ -48,6 +47,7 @@ def solve_rddl(
     heuristic: UtilityHeuristic | None = None,
     terminal_heuristic: bool = False,
     timeout_s: float | None = 60.0,
+    full_ilp_max_tree_nodes: int | None = 100_000,
     root_belief_factory: RootBeliefFactory | None = None,
 ) -> DARPResult:
     """Load one RDDL problem, construct DARP, and run one search."""
@@ -56,24 +56,23 @@ def solve_rddl(
     problem = load_rddl(domain, instance)
     runtime = PyRDDLGymRuntime(problem.env)
     runtime.reset(seed=seed)
-    duration = load_duration_sidecar(duration_path)
     constraint = load_risk_sidecar(risk_path)
     interface = problem.build_grounded_view().build_and_or_interface(
         runtime,
         risk=constraint,
     )
-    duration.validate_actions([choice.label for choice in interface.actions])
-    duration.validate_state_fluents(
-        getattr(interface.kernel, "state_names", ())
+    kernel = interface.kernel
+    if kernel is None:
+        raise ValueError("RDDL duration evaluation requires DARP's RDDL kernel.")
+    evaluator = build_duration_evaluator(
+        kernel,
+        interface.actions,
+        horizon=runtime.horizon,
     )
-    evaluator = duration.evaluator(horizon=runtime.horizon)
     budget = risk_budget if risk_budget is not None else constraint.budget
 
     root_belief = None
     if root_belief_factory is not None:
-        kernel = interface.kernel
-        if kernel is None:
-            raise ValueError("An external root belief requires DARP's RDDL kernel.")
         root_belief = root_belief_factory(kernel)
         if not isinstance(root_belief, Mapping):
             raise TypeError("A root-belief factory must return a mapping.")
@@ -81,7 +80,9 @@ def solve_rddl(
     selected = (
         FullILPPlanner(
             risk_budget=budget,
+            max_tree_nodes=full_ilp_max_tree_nodes,
             solver_time_limit_ms=limit_ms,
+            terminal_heuristic=heuristic if terminal_heuristic else None,
         )
         if planner == "full-ilp"
         else HILPPlanner(
@@ -119,9 +120,9 @@ def _validate_options(
         raise ValueError("timeout_s must be positive when provided")
     if terminal_heuristic and heuristic is None:
         raise ValueError("terminal_heuristic requires an external heuristic")
-    if planner == "full-ilp" and heuristic is not None:
+    if planner == "full-ilp" and heuristic is not None and not terminal_heuristic:
         raise ValueError(
-            "External heuristics apply only to HILP; full-ILP uses the RDDL objective."
+            "Full-ILP accepts an external heuristic only as a terminal value."
         )
 
 

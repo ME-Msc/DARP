@@ -177,6 +177,11 @@ class RDDLKernel:
         return self._observation_names_cache
 
     @property
+    def intermediate_names(self) -> tuple[str, ...]:
+        """Return grounded intermediate fluent names in evaluation order."""
+        return self._intermediate_names_cache
+
+    @property
     def non_fluents(self) -> Mapping[str, Any]:
         """Return grounded non-fluent values. / 返回 grounded non-fluent 值。"""
         return self._non_fluents_cache
@@ -185,6 +190,54 @@ class RDDLKernel:
     def cpfs(self) -> Mapping[str, Any]:
         """Return grounded CPF expressions. / 返回 grounded CPF 表达式。"""
         return self._cpfs_cache
+
+    def cpf_expression(self, name: str) -> Any:
+        """Return one grounded CPF expression by name."""
+        try:
+            return _cpf_expression(self.cpfs[name])
+        except KeyError as error:
+            raise KernelError(f"Unknown grounded CPF: {name!r}.") from error
+
+    def deterministic_value(
+        self,
+        expression: Any,
+        state: Mapping[str, Any],
+        action: Mapping[str, Any],
+    ) -> Any:
+        """Evaluate one deterministic grounded RDDL expression at ``(s, a)``."""
+        context = self._context(state, action)
+        self._resolve_deterministic_intermediates(expression, context, set())
+        distribution = self.expression_distribution(
+            expression,
+            context,
+        )
+        if len(distribution) != 1:
+            raise KernelError("Expected a deterministic RDDL expression.")
+        return next(iter(distribution))
+
+    def _resolve_deterministic_intermediates(
+        self,
+        expression: Any,
+        context: dict[str, Any],
+        resolving: set[str],
+    ) -> None:
+        """Resolve only intermediate CPFs referenced by an external expression."""
+        intermediate_names = set(self._intermediate_names_cache)
+        for name in _expression_pvariables(expression) & intermediate_names:
+            if name in context:
+                continue
+            if name in resolving:
+                raise KernelError(f"Cyclic intermediate dependency at {name!r}.")
+            resolving.add(name)
+            cpf = _cpf_expression(self.cpfs[name])
+            self._resolve_deterministic_intermediates(cpf, context, resolving)
+            distribution = self.expression_distribution(cpf, context)
+            if len(distribution) != 1:
+                raise KernelError(
+                    f"Intermediate dependency {name!r} must be deterministic."
+                )
+            context[name] = _plain_value(next(iter(distribution)))
+            resolving.remove(name)
 
     def initial_belief_from_state(self, state: Mapping[str, Any]) -> Mapping[StateKey, float]:
         """Return a singleton belief from a pyRDDLGym state dict. / 从 pyRDDLGym state dict 返回单点 belief。"""
@@ -624,6 +677,52 @@ class RDDLKernel:
             result[state] = probability_of_future
         return result
 
+    def action_start_mass_and_utility_for_observation(
+        self,
+        state_mass: Mapping[StateKey, float],
+        action: Mapping[str, Any],
+        observation: ObservationKey,
+    ) -> tuple[Mapping[StateKey, float], float]:
+        """Return action-start mass and reward jointly weighted by one observation."""
+        action_id = self._action_id(action)
+        result: dict[StateKey, float] = {}
+        utility = 0.0
+        for state, mass in state_mass.items():
+            row = self._transition_row(
+                self._state_index.register(state),
+                action_id,
+                action,
+            )
+            state_context = self._context(self.state_from_key(state), action)
+            for target_id, probability in zip(
+                row.next_state_ids,
+                row.probabilities,
+            ):
+                target = self._state_index.key(int(target_id))
+                joint = (
+                    float(mass)
+                    * probability
+                    * self.observation_probability(
+                    observation,
+                    target,
+                    action,
+                )
+                )
+                if joint <= 0.0:
+                    continue
+                result[state] = result.get(state, 0.0) + joint
+                target_state = self.state_from_key(target)
+                utility += joint * self.expected_reward(
+                    {
+                        **state_context,
+                        **{
+                            f"{name}'": target_state.get(name, False)
+                            for name in self.state_names
+                        },
+                    }
+                )
+        return result, utility
+
     def utility_coefficient_for_mass(
         self,
         state_mass: Mapping[StateKey, float],
@@ -884,6 +983,18 @@ def _as_args(value: Any) -> tuple[Any, ...]:
     if isinstance(value, list):
         return tuple(value)
     return (value,)
+
+
+def _expression_pvariables(expression: Any) -> set[str]:
+    """Return grounded pvariable names referenced by an expression tree."""
+    if not _is_expression(expression):
+        return set()
+    if expression.etype[0] == "pvar":
+        return {str(expression.args[0])}
+    names: set[str] = set()
+    for argument in _as_args(expression.args):
+        names.update(_expression_pvariables(argument))
+    return names
 
 
 def _check_arity(args: Sequence[Any], expected: int, name: str) -> None:

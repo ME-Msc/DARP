@@ -15,7 +15,13 @@ from darp.adapter.runtime import PyRDDLGymRuntime
 from darp.ilp.model import ILPLinearConstraint, ILPModelSpec, ILPVariable
 from darp.model.and_or_tree import ANDORSearchInterface
 from darp.model.duration import HistoryDurationEvaluator
-from darp.planning.expand import ExpandedAction, ExpansionMetrics, expand_frontier_item
+from darp.planning.expand import (
+    ExpandedAction,
+    ExpansionMetrics,
+    apply_terminal_heuristic,
+    expand_frontier_item,
+)
+from darp.planning.heuristic import UtilityHeuristic
 from darp.planning.preprocess import (
     FrontierItem,
     initialize_root_frontier,
@@ -81,6 +87,7 @@ def build_full_tree_ilp(
     risk_budget: float | None = None,
     root_belief: Mapping[StateKey, float] | None = None,
     max_nodes: int | None = 100_000,
+    terminal_heuristic: UtilityHeuristic | None = None,
 ) -> PolicyTreeILP:
     r"""Encode the AND-OR policy tree as a binary full-ILP model.
 
@@ -120,6 +127,7 @@ def build_full_tree_ilp(
         duration_evaluator=duration_evaluator,
         root_belief=root_belief,
         max_nodes=max_nodes,
+        terminal_heuristic=terminal_heuristic,
     )
     constraint = _constraint_encoding_context(
         runtime,
@@ -180,6 +188,7 @@ def paper_preprocess(
     duration_evaluator: HistoryDurationEvaluator,
     root_belief: Mapping[StateKey, float] | None,
     max_nodes: int | None = 100_000,
+    terminal_heuristic: UtilityHeuristic | None = None,
 ) -> tuple[Algorithm1ExpansionRecord, ...]:
     r"""Run paper Algorithm 1 `Preprocess` and return expanded action records.
 
@@ -220,6 +229,13 @@ def paper_preprocess(
             continue
         seen.add(var_id)
         expanded = expand_frontier_item(item, interface, duration_evaluator)
+        if terminal_heuristic is not None:
+            expanded = apply_terminal_heuristic(
+                item,
+                expanded,
+                interface,
+                terminal_heuristic,
+            )
         # Algorithm 1 lines 7-9: Algorithm 2 Expand creates child frontier entries
         # only for $$qao$$ branches satisfying $$tau(qao) > varsigma$$.
         # 论文第 7-9 行：Algorithm 2 Expand 只为 $$tau(qao)>varsigma$$ 的 $$qao$$ 分支

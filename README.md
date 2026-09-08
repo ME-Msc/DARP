@@ -2,7 +2,7 @@
 
 DARP 是论文 *Heuristic Search in Dual Space for Constrained Fixed-Horizon POMDPs with Durative Actions* 的研究实现。它从 RDDL 按需构建有限可达模型，采用与论文参考实现一致的稀疏浮点概率质量传播 belief/risk，并使用 Gurobi 求解 full-ILP 或增量 HILP。
 
-仓库目前只保留核心求解器和 `DARP vs RAO*` 验证实验。
+仓库目前只保留核心求解器以及 Table 1 duration、`DARP vs RAO*` Grid 验证实验。
 
 ## 安装
 
@@ -24,19 +24,17 @@ $$
 h_q=\sum_s \rho(q)b_q(s)h(s,a_q).
 $$
 
-Duration 和 risk 不写入 RDDL，分别通过 `--duration` 与 `--risk` 指定 JSON sidecar。Duration 支持 fixed、state-dependent、chance 和 Gaussian；fixed 使用以下格式：
+Duration 直接在 domain 中用现有 RDDL 表达式定义 $D(s,a)$。三种写法示例（任选一条）：
 
-```json
-{
-  "kind": "fixed",
-  "default": 1.0,
-  "actions": {
-    "slow_action": 2.0
-  }
-}
+```rddl
+duration = 1.0;                                      // fixed
+duration = if (mud_contact) then 2.0 else 1.0;      // state-dependent expected
+duration = Normal(if (mud_contact) then 2.0 else 1.0, 0.1); // stochastic
 ```
 
-`default` 是所有动作的有限正时长；可选的 `actions` 按 grounded action label 覆盖个别动作，统一时长时可写成空对象。horizon 由 instance RDDL 提供。论文规定 fixed duration 的 $\varsigma=0$，因此该格式不接受 `zeta`。
+扩展语法只有两条：`duration-section ::= "duration" "=" expr ";"`；`duration-threshold ::= "max-duration-shortfall-probability" "=" number ";"`。其中 `expr` 和 `number` 直接复用 RDDL 原有语法。
+
+表达式可使用当前有限 kernel 支持的 RDDL 常量、算术、布尔、关系和 `if`，并引用 state fluent、action fluent、non-fluent 及确定性 intermediate fluent；`Normal` 的第二个参数是方差。需要论文的 percentile stopping criterion 时，在 instance 中可选写 `max-duration-shortfall-probability = 0.3;`；省略时使用 deterministic/expected duration。horizon 仍由 instance RDDL 提供。
 
 Risk 使用独立 JSON sidecar，直接定义 CC-POMDP 的预算 $\Delta$ 和风险状态集合 $R$。例如：
 
@@ -52,13 +50,12 @@ Risk 使用独立 JSON sidecar，直接定义 CC-POMDP 的预算 $\Delta$ 和风
 
 `budget` 是 `[0,1]` 内的概率；`risky_states` 中每个对象是一个部分状态 selector：对象内的 fluent 等式同时满足（AND）即匹配，任一对象匹配（OR）即属于 $R$。selector 支持当前有限 kernel 使用的 Boolean 和 integer fluent，因此既可表达 `{"unsafe": true}`，也可表达 Grid 位置、阶段或模式组合。初始状态属于 $R$ 的质量会先从预算扣除，之后只统计首次进入 $R$ 的概率。若危险由动作或转移触发，应由 RDDL CPF 更新 `unsafe` 等状态 fluent，再由 `risky_states` 引用；risk sidecar 不重复定义转移逻辑。`--risk-budget` 可覆盖文件预算，但不会改变风险集合。
 
-单独运行或调试 DARP 时，必须同时指定 domain、instance、duration 和 risk：
+单独运行或调试 DARP 时指定 domain、instance 和 risk；duration 已包含在 domain：
 
 ```bash
 .venv/bin/python -m darp \
   --domain experiments/DARP-vs-RAOstar-grid/rddl/domain.rddl \
   --instance experiments/DARP-vs-RAOstar-grid/rddl/instance_5_h3.rddl \
-  --duration experiments/DARP-vs-RAOstar-grid/rddl/duration.json \
   --risk experiments/DARP-vs-RAOstar-grid/rddl/risk.json \
   --heuristic experiments.DARP-vs-RAOstar-grid.darp_runner:MANHATTAN \
   --terminal-heuristic \
@@ -78,7 +75,7 @@ Risk 使用独立 JSON sidecar，直接定义 CC-POMDP 的预算 $\Delta$ 和风
 - DARP-HILP；
 - 固定提交的外部 RAO* reimplementation。
 
-实验代码只有三个入口：`darp_runner.py` 配置 RDDL、sidecar、Manhattan heuristic 并调用 DARP，`raostar_runner.py` 通过 [Constrained-POMDP](https://github.com/ME-Msc/Constrained-POMDP) 的 adapter 调用固定提交的 [RAOStar](https://github.com/ME-Msc/RAOStar)，`run.py` 配对执行并生成 CSV/Markdown。该实验固定使用 `D(s,a)=1`、`zeta=0`，与外部 RAO* 的 action-depth horizon 对齐。首次运行会自动下载并校验两个仓库到 `.cache/baselines/`，无需手工部署。
+实验代码只有三个入口：`darp_runner.py` 配置 RDDL、risk JSON、Manhattan heuristic 并调用 DARP，`raostar_runner.py` 通过 [Constrained-POMDP](https://github.com/ME-Msc/Constrained-POMDP) 的 adapter 调用固定提交的 [RAOStar](https://github.com/ME-Msc/RAOStar)，`run.py` 配对执行并生成 CSV/Markdown。该实验固定使用 `D(s,a)=1`、`zeta=0`，与外部 RAO* 的 action-depth horizon 对齐。首次运行会自动下载并校验两个仓库到 `.cache/baselines/`，无需手工部署。
 
 单配置检查：
 
@@ -103,10 +100,24 @@ RESUME=1 bash tools/run_repro.sh
 
 新增 RDDL 对比场景时可以复用同一 RAO* 缓存，但仍需在新的实验目录中提供该场景到 RAO* model API 的薄适配和等价性检查；不需要修改 DARP 的解析器、HILP、ILP 或 Gurobi 实现。
 
+## DARP Table 1 duration 实验
+
+Table 1 的 fixed（F）、state-dependent expected（E）和 Gaussian stochastic（S）duration 冒烟检查：
+
+```bash
+.venv/bin/python -m experiments.DARP-table1-grid.run --smoke
+```
+
+正式矩阵直接去掉 `--smoke`；默认执行论文的 $h\in\{3,4,5,6\}$、$\Delta\in\{0.1,0.2,0.3\}$、25 次 trial，并写入 `output/DARP-table1-grid/`。
+
+当前一次验证运行的汇总见 [`output/DARP-table1-grid/table1-validation.md`](output/DARP-table1-grid/table1-validation.md)，原始数据见同目录 CSV。
+
+该实验按论文文字把“从泥地出发或意图进入泥地”的动作设为 2，其余为 1；S 按 RDDL 语义将论文给出的 0.1 作为 Gaussian 方差。论文未公开 E/S 的原始实验代码，因此这里是基于[论文定义](https://ojs.aaai.org/index.php/AAAI/article/view/26743)的可审计重建，不宣称逐行复用作者 artifact。
+
 ## 核心代码
 
 ```text
-RDDL + duration.json + risk.json
+RDDL（含 duration）+ risk.json
   -> adapter       # 按需构建的稀疏浮点有限模型
   -> preprocess    # Algorithm 1
   -> expand        # Algorithm 2
@@ -155,7 +166,6 @@ MY_HEURISTIC = UtilityHeuristic(
 .venv/bin/python -m darp \
   --domain path/to/domain.rddl \
   --instance path/to/instance.rddl \
-  --duration path/to/duration.json \
   --risk path/to/risk.json \
   --planner hilp \
   --heuristic my_heuristic:MY_HEURISTIC \
@@ -171,7 +181,6 @@ from my_heuristic import MY_HEURISTIC
 result = solve_rddl(
     "path/to/domain.rddl",
     "path/to/instance.rddl",
-    "path/to/duration.json",
     risk_path="path/to/risk.json",
     planner="hilp",
     heuristic=MY_HEURISTIC,
