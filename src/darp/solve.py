@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
-from typing import Literal
+from typing import Any, Literal
 
 from darp.adapter.duration import build_duration_evaluator
 from darp.adapter.kernel import RDDLKernel, StateKey
@@ -32,6 +33,50 @@ class DARPResult:
     decision: ActionDecision
     elapsed_s: float
     risk_budget: float | None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-ready reusable search result."""
+        return {
+            "format": "darp-result",
+            "version": 1,
+            "elapsed_s": self.elapsed_s,
+            "risk_budget": self.risk_budget,
+            "decision": self.decision.to_dict(),
+        }
+
+    def save(self, path: str | Path) -> Path:
+        """Write this result as portable UTF-8 JSON."""
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(self.to_dict(), indent=2, sort_keys=True, allow_nan=False)
+            + "\n",
+            encoding="utf-8",
+        )
+        return target
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> DARPResult:
+        """Restore a result produced by :meth:`to_dict`."""
+        if value.get("format") != "darp-result" or value.get("version") != 1:
+            raise ValueError("Unsupported DARP result format or version.")
+        budget = value.get("risk_budget")
+        decision = value["decision"]
+        if not isinstance(decision, Mapping):
+            raise TypeError("DARPResult decision must be an object.")
+        return cls(
+            decision=ActionDecision.from_dict(decision),
+            elapsed_s=float(value["elapsed_s"]),
+            risk_budget=None if budget is None else float(budget),
+        )
+
+    @classmethod
+    def load(cls, path: str | Path) -> DARPResult:
+        """Load a result written by :meth:`save`."""
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(value, Mapping):
+            raise TypeError("DARP result JSON must contain an object.")
+        return cls.from_dict(value)
 
 
 def solve_rddl(

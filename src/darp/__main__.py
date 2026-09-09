@@ -91,10 +91,8 @@ def main(argv: list[str] | None = None) -> int:
     payload = {
         "planner": args.planner,
         "seed": args.seed,
-        "risk_budget": result.risk_budget,
         "heuristic": heuristic.name if heuristic is not None else None,
-        "elapsed_s": result.elapsed_s,
-        "decision": result.decision.to_dict(),
+        **result.to_dict(),
     }
     document = json.dumps(
         payload,

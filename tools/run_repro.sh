@@ -5,7 +5,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${VENV_DIR:-${ROOT_DIR}/.venv}"
-OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/output/DARP-vs-RAOstar-grid}"
+OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/experiments/DARP-vs-RAOstar-grid/output}"
 
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONHASHSEED="${PYTHONHASHSEED:-0}"

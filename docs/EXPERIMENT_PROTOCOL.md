@@ -49,7 +49,7 @@ Grid domain 使用每个动作只采样一次的 `move_outcome` intermediate flu
 .venv/bin/python -m experiments.DARP-vs-RAOstar-grid.run \
   --instance experiments/DARP-vs-RAOstar-grid/rddl/instance_5_h3.rddl \
   --trials 1 \
-  --output output/DARP-vs-RAOstar-grid/smoke.csv
+  --output experiments/DARP-vs-RAOstar-grid/output/smoke.csv
 ```
 
 完整 24-cell × 25-trial 矩阵：
@@ -60,7 +60,9 @@ bash tools/run_repro.sh
 RESUME=1 bash tools/run_repro.sh
 ```
 
-`run.py` 同时生成 long-form CSV 和 Markdown 均值表。默认结果由 Git 记录在 `output/DARP-vs-RAOstar-grid/`。离线运行可指定 `--constrained-pomdp-repo`、`--raostar-checkout` 和 `--baseline-cache`。
+`run.py` 同时生成 long-form CSV 和 Markdown 均值表。默认结果由 Git 记录在 `experiments/DARP-vs-RAOstar-grid/output/`。离线运行可指定 `--constrained-pomdp-repo`、`--raostar-checkout` 和 `--baseline-cache`。
+
+每个 DARP trial 还会保存完整 `DARPResult` JSON，并在由同一 RDDL 输入构建的 pyRDDLGym 环境中以同一 seed 调用一次 `agent.evaluate(env, episodes=1)`。策略采用具名 RDDL fluent 的版本化 policy graph；格式见 [策略格式](POLICY_FORMAT.md)。Table 1 CSV 的 `policy_return` 是该 sampled execution 的 discounted return，使用 RDDL reward 符号，不是求解器期望 objective。`policy_execution_time_s` 是这次完整调用的墙钟时间（包括环境 reset、策略查找、RDDL `env.step` 和统计汇总）；它不是 duration 模型中的物理时长。外部 RAO* 行不填写该列，因为它没有使用 DARP 的策略数据结构和执行器。
 
 正式 completion-time 实验不设置 timeout；调试时的 `--timeout` 同时传给 DARP 和 RAO*。DARP 的计时覆盖完整 `choose_action()`，包括 Gurobi model 创建、增量更新和求解；RDDL 与 risk JSON 加载不计时。RAO* 的计时覆盖其 `search()` 调用，与固定 baseline adapter 的定义一致。
 

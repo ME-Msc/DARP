@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import argparse
 import csv
-import statistics
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from statistics import fmean
+from time import perf_counter
 from typing import Any
 
 from darp.adapter.loader import load_rddl
+from darp.executor import PolicyExecutor
 from darp.model.risk_sidecar import load_risk_sidecar
+from darp.solve import DARPResult
 
 from .darp_runner import (
     DOMAIN,
@@ -32,10 +35,9 @@ ALGORITHMS = ("DARP-HILP", "RAO*")
 TRIALS = 25
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+EXPERIMENT_DIR = Path(__file__).resolve().parent
 DEFAULT_CACHE = PROJECT_ROOT / ".cache" / "baselines"
-DEFAULT_OUTPUT = (
-    PROJECT_ROOT / "output" / "DARP-vs-RAOstar-grid" / "table2-raw.csv"
-)
+DEFAULT_OUTPUT = EXPERIMENT_DIR / "output" / "table2-raw.csv"
 
 FIELDS = (
     "size",
@@ -43,12 +45,15 @@ FIELDS = (
     "delta",
     "algorithm",
     "trial",
+    "seed",
     "objective",
     "risk",
     "time_s",
     "n",
     "iterations",
     "complete",
+    "policy_execution_time_s",
+    "result_file",
     "constrained_pomdp_commit",
     "raostar_commit",
 )
@@ -109,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Constrained-POMDP: {raostar.constrained_pomdp_path}")
     print(f"RAOStar: {raostar.raostar_path}")
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    existing = _load_existing(args.output) if args.resume else {}
+    existing = _load_existing(args.output, args.seed) if args.resume else {}
     append = args.resume and args.output.is_file() and args.output.stat().st_size > 0
     with args.output.open("a" if append else "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=FIELDS, lineterminator="\n")
@@ -125,21 +130,53 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 key = _key(scenario, trial, "DARP-HILP")
                 if key not in existing:
-                    metrics = run_darp(
+                    seed = args.seed + trial - 1
+                    env = load_rddl(DOMAIN, case.instance).env
+                    result = run_darp(
                         case.instance,
                         delta=scenario.delta,
-                        seed=args.seed + trial - 1,
+                        seed=seed,
                         timeout_s=args.timeout,
                     )
-                    _save(writer, handle, existing, scenario, trial, "DARP-HILP", metrics)
+                    agent = PolicyExecutor(result.decision.policy)
+                    evaluation_started = perf_counter()
+                    statistics = agent.evaluate(env, episodes=1, seed=seed)
+                    evaluation_time_s = perf_counter() - evaluation_started
+                    result_path = _result_path(args.output, scenario, trial)
+                    result.save(result_path)
+                    metrics = _darp_metrics(
+                        result,
+                        evaluation_time_s,
+                        result_path.relative_to(args.output.parent).as_posix(),
+                    )
+                    _save(
+                        writer,
+                        handle,
+                        existing,
+                        scenario,
+                        trial,
+                        seed,
+                        "DARP-HILP",
+                        metrics,
+                    )
 
                 key = _key(scenario, trial, "RAO*")
                 if key not in existing:
+                    seed = args.seed + trial - 1
                     grid = raostar.make_grid(
                         scenario.size, scenario.horizon, scenario.delta
                     )
                     metrics = raostar.run(grid, timeout_s=args.timeout)
-                    _save(writer, handle, existing, scenario, trial, "RAO*", metrics)
+                    _save(
+                        writer,
+                        handle,
+                        existing,
+                        scenario,
+                        trial,
+                        seed,
+                        "RAO*",
+                        metrics,
+                    )
 
     summary = args.summary or args.output.with_suffix(".md")
     _write_summary(
@@ -224,6 +261,7 @@ def _save(
     existing: dict[tuple[int, int, float, int, str], dict[str, Any]],
     scenario: Scenario,
     trial: int,
+    seed: int,
     algorithm: str,
     metrics: dict[str, Any],
 ) -> None:
@@ -233,6 +271,7 @@ def _save(
         "delta": scenario.delta,
         "algorithm": algorithm,
         "trial": trial,
+        "seed": seed,
         **metrics,
         "constrained_pomdp_commit": CONSTRAINED_POMDP_COMMIT,
         "raostar_commit": RAOSTAR_COMMIT,
@@ -240,17 +279,58 @@ def _save(
     writer.writerow(row)
     handle.flush()
     existing[_key(scenario, trial, algorithm)] = row
+    execution_time = metrics.get("policy_execution_time_s")
+    execution = (
+        f", exec={float(execution_time):.6f}s"
+        if execution_time not in (None, "")
+        else ""
+    )
     print(
         f"{scenario.size}x{scenario.size} h={scenario.horizon} "
         f"delta={scenario.delta:.1f} trial={trial} {algorithm}: "
         f"obj={metrics['objective']:.6f}, risk={metrics['risk']:.6f}, "
         f"time={metrics['time_s']:.3f}s, n={metrics['n']}, "
-        f"iter={metrics['iterations']}"
+        f"iter={metrics['iterations']}{execution}"
     )
+
+
+def _darp_metrics(
+    result: DARPResult,
+    evaluation_time_s: float,
+    result_file: str,
+) -> dict[str, Any]:
+    decision = result.decision
+    utility = decision.policy.achieved_utility
+    risk = decision.policy.active_constraint_value
+    if utility is None or risk is None:
+        raise RuntimeError("DARP policy is missing objective or risk metrics.")
+    return {
+        "objective": -float(utility),
+        "risk": float(risk),
+        "time_s": result.elapsed_s,
+        "n": int(
+            decision.timing["expanded_nodes"]
+            + decision.timing["frontier_nodes"]
+        ),
+        "iterations": int(decision.timing["partial_ilp_solves"]),
+        "complete": True,
+        "policy_execution_time_s": evaluation_time_s,
+        "result_file": result_file,
+    }
+
+
+def _result_path(output: Path, scenario: Scenario, trial: int) -> Path:
+    delta = str(scenario.delta).replace(".", "p")
+    name = (
+        f"darp-{scenario.size}x{scenario.size}-h{scenario.horizon}-"
+        f"d{delta}-trial{trial:02d}.json"
+    )
+    return output.parent / "results" / output.stem / name
 
 
 def _load_existing(
     path: Path,
+    base_seed: int,
 ) -> dict[tuple[int, int, float, int, str], dict[str, Any]]:
     if not path.is_file() or path.stat().st_size == 0:
         return {}
@@ -260,6 +340,9 @@ def _load_existing(
         if tuple(reader.fieldnames or ()) != FIELDS:
             raise ValueError(f"Cannot resume CSV with a different schema: {path}")
         for row in reader:
+            trial = int(row["trial"])
+            if int(row["seed"]) != base_seed + trial - 1:
+                raise ValueError("Resume CSV uses a different trial seed")
             if row["algorithm"] not in ALGORITHMS:
                 raise ValueError(f"Unexpected algorithm in {path}: {row['algorithm']}")
             if row["constrained_pomdp_commit"] != CONSTRAINED_POMDP_COMMIT:
@@ -268,8 +351,15 @@ def _load_existing(
                 raise ValueError("Resume CSV uses a different RAOStar commit")
             if row["complete"].lower() != "true":
                 raise ValueError("Resume CSV contains an incomplete search")
+            if row["algorithm"] == "DARP-HILP":
+                if not row["policy_execution_time_s"] or not row["result_file"]:
+                    raise ValueError("Resume CSV is missing a DARP policy execution")
+                if not (path.parent / row["result_file"]).is_file():
+                    raise ValueError(
+                        f"Resume CSV references a missing result: {row['result_file']}"
+                    )
             scenario = Scenario(int(row["size"]), int(row["horizon"]), float(row["delta"]))
-            key = _key(scenario, int(row["trial"]), row["algorithm"])
+            key = _key(scenario, trial, row["algorithm"])
             if key in rows:
                 raise ValueError(f"Duplicate result row: {key}")
             rows[key] = row
@@ -307,6 +397,10 @@ def _write_summary(
                 raise ValueError("Summary CSV uses a different RAOStar commit")
             if float(row["risk"]) > scenario.delta + 1e-6:
                 raise ValueError(f"Infeasible risk in {csv_path}: {key}")
+            if algorithm == "DARP-HILP" and (
+                not row["policy_execution_time_s"] or not row["result_file"]
+            ):
+                raise ValueError(f"Missing DARP policy execution in {csv_path}: {key}")
             groups[scenario].setdefault(algorithm, []).append(row)
 
     expected = set(expected_scenarios)
@@ -374,12 +468,30 @@ def _write_summary(
             f"{scenario.delta:.1f} | {_mean(darp, 'risk'):.6f} | "
             f"{_mean(raostar, 'risk'):.6f} |"
         )
+    lines.extend(
+        [
+            "",
+            "## DARP policy execution",
+            "",
+            "Execution time is one `agent.evaluate(env, episodes=1)` wall-clock measurement; it is not modeled action duration.",
+            "",
+            "| Problem | h | Δ | DARP-HILP execution time (s) |",
+            "|:--|--:|--:|--:|",
+        ]
+    )
+    for scenario in sorted(expected):
+        darp = groups[scenario]["DARP-HILP"]
+        lines.append(
+            f"| {scenario.size}×{scenario.size} | {scenario.horizon} | "
+            f"{scenario.delta:.1f} | "
+            f"{_mean(darp, 'policy_execution_time_s'):.6f} |"
+        )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _mean(rows: list[dict[str, str]], field: str) -> float:
-    return statistics.fmean(float(row[field]) for row in rows)
+    return fmean(float(row[field]) for row in rows)
 
 
 def _validate_args(args: argparse.Namespace) -> None:

@@ -12,11 +12,13 @@ import csv
 from itertools import product
 from pathlib import Path
 from statistics import fmean
+from time import perf_counter
 from typing import Any
 
+from darp.adapter.loader import load_rddl
+from darp.executor import PolicyExecutor
 from darp.planning.heuristic import HeuristicInput, UtilityHeuristic
 from darp.solve import solve_rddl
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 EXPERIMENT_DIR = Path(__file__).resolve().parent
@@ -24,7 +26,7 @@ RDDL_DIR = EXPERIMENT_DIR / "rddl"
 SHARED_RDDL_DIR = PROJECT_ROOT / "experiments" / "DARP-vs-RAOstar-grid" / "rddl"
 DOMAIN = SHARED_RDDL_DIR / "domain.rddl"
 RISK = SHARED_RDDL_DIR / "risk.json"
-DEFAULT_OUTPUT = PROJECT_ROOT / "output" / "DARP-table1-grid" / "table1-raw.csv"
+DEFAULT_OUTPUT = EXPERIMENT_DIR / "output" / "table1-raw.csv"
 
 MODELS = ("F", "E", "S")
 HORIZONS = (3, 4, 5, 6)
@@ -49,6 +51,9 @@ FIELDS = (
     "ilp_variables",
     "ilp_constraints",
     "iterations",
+    "policy_return",
+    "policy_execution_time_s",
+    "result_file",
     "error",
 )
 
@@ -91,10 +96,19 @@ def _read_rows(path: Path) -> list[dict[str, str]]:
         reader = csv.DictReader(stream)
         if tuple(reader.fieldnames or ()) != FIELDS:
             raise ValueError(f"Unexpected CSV schema in {path}")
-        return list(reader)
+        rows = list(reader)
+    for row in rows:
+        if row["status"] == "ok" and (
+            not row["policy_return"]
+            or not row["policy_execution_time_s"]
+            or not row["result_file"]
+            or not (path.parent / row["result_file"]).is_file()
+        ):
+            raise ValueError("Resume CSV is missing a DARP result or execution.")
+    return rows
 
 
-def _solve(
+def _run_trial(
     model: str,
     horizon: int,
     delta: float,
@@ -102,6 +116,7 @@ def _solve(
     trial: int,
     seed: int,
     timeout_s: float | None,
+    result_path: Path,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "risk_path": RISK,
@@ -116,7 +131,9 @@ def _solve(
 
     # Duration is part of the RDDL instance/domain extension, so there is no
     # duration sidecar argument here.
-    result = solve_rddl(DOMAIN, _instance(model, horizon), **kwargs)
+    instance = _instance(model, horizon)
+    env = load_rddl(DOMAIN, instance).env
+    result = solve_rddl(DOMAIN, instance, **kwargs)
     decision = result.decision
     timing = decision.timing
     policy = decision.policy
@@ -129,6 +146,11 @@ def _solve(
     risk = policy.active_constraint_value
     if utility is None or risk is None:
         raise RuntimeError("DARP policy is missing objective or risk metrics")
+    agent = PolicyExecutor(policy)
+    evaluation_started = perf_counter()
+    statistics = agent.evaluate(env, episodes=1, seed=seed)
+    evaluation_time_s = perf_counter() - evaluation_started
+    result.save(result_path)
 
     return {
         "model": model,
@@ -148,8 +170,27 @@ def _solve(
         "ilp_variables": timing.get("ilp_variables", ""),
         "ilp_constraints": timing.get("ilp_constraints", ""),
         "iterations": timing.get("partial_ilp_solves", 1),
+        "policy_return": float(statistics["mean"]),
+        "policy_execution_time_s": evaluation_time_s,
+        "result_file": "",
         "error": "",
     }
+
+
+def _result_path(
+    output: Path,
+    model: str,
+    horizon: int,
+    delta: float,
+    planner: str,
+    trial: int,
+) -> Path:
+    delta_label = str(delta).replace(".", "p")
+    name = (
+        f"darp-{model.lower()}-h{horizon}-d{delta_label}-"
+        f"{planner}-trial{trial:02d}.json"
+    )
+    return output.parent / "results" / output.stem / name
 
 
 def _error_row(
@@ -265,6 +306,38 @@ def _write_markdown(rows: list[dict[str, str]], output: Path) -> None:
             cells.append(_format(ratio, 1))
         lines.append("| " + " | ".join(cells) + " |")
 
+    lines.extend(
+        [
+            "",
+            "## Policy execution",
+            "",
+            "Each cell is `sampled discounted return / evaluate seconds` from one `agent.evaluate(env, episodes=1)` call. Return follows the RDDL reward sign and is not the expected planner objective; time is not modeled action duration.",
+            "",
+            "| h | Δ | Full-ILP F | Full-ILP E | Full-ILP S | DARP-HILP F | DARP-HILP E | DARP-HILP S |",
+            "|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for horizon, delta in product(horizons, deltas):
+        cells = [str(horizon), f"{delta:.1f}"]
+        for planner in PLANNERS:
+            for model in MODELS:
+                sampled_return = _number(
+                    grouped, horizon, delta, model, planner, "policy_return"
+                )
+                evaluation_time = _number(
+                    grouped,
+                    horizon,
+                    delta,
+                    model,
+                    planner,
+                    "policy_execution_time_s",
+                )
+                cells.append(
+                    f"{_format(sampled_return, 2)} / "
+                    f"{_format(evaluation_time, 6)}"
+                )
+        lines.append("| " + " | ".join(cells) + " |")
+
     failures = sum(row["status"] != "ok" for row in rows)
     lines.extend(("", f"Failed trials recorded in raw CSV: {failures}.", ""))
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -316,7 +389,7 @@ def main() -> int:
     mode = "a" if args.resume and output.exists() else "w"
     failures = sum(row["status"] != "ok" for row in rows)
     with output.open(mode, newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=FIELDS)
+        writer = csv.DictWriter(stream, fieldnames=FIELDS, lineterminator="\n")
         if mode == "w":
             writer.writeheader()
         for model, horizon, delta, trial, planner in product(
@@ -328,10 +401,21 @@ def main() -> int:
             if key in completed:
                 continue
             seed = args.seed + trial - 1
+            result_path = _result_path(
+                output, model, horizon, delta, planner, trial
+            )
             try:
-                row = _solve(
-                    model, horizon, delta, planner, trial, seed, args.timeout
+                row = _run_trial(
+                    model,
+                    horizon,
+                    delta,
+                    planner,
+                    trial,
+                    seed,
+                    args.timeout,
+                    result_path,
                 )
+                row["result_file"] = result_path.relative_to(output.parent).as_posix()
             except Exception as error:  # Keep the rest of the long matrix runnable.
                 row = _error_row(
                     model, horizon, delta, planner, trial, seed, error

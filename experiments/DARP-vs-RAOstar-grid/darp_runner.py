@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from darp.planning.heuristic import HeuristicInput, UtilityHeuristic
-from darp.solve import solve_rddl
+from darp.solve import DARPResult, solve_rddl
 
 RDDL_DIR = Path(__file__).with_name("rddl")
 DOMAIN = RDDL_DIR / "domain.rddl"
@@ -33,8 +33,8 @@ def run_darp(
     delta: float,
     seed: int,
     timeout_s: float | None,
-) -> dict[str, float | int | bool]:
-    """Run one complete DARP-HILP search and return comparison metrics."""
+) -> DARPResult:
+    """Run one complete DARP-HILP search."""
     result = solve_rddl(
         DOMAIN,
         instance,
@@ -52,18 +52,9 @@ def run_darp(
             "DARP-HILP did not return a complete feasible policy: "
             f"status={decision.policy.solver_status}"
         )
-    utility = decision.policy.achieved_utility
-    risk = decision.policy.active_constraint_value
-    if utility is None or risk is None:
+    if (
+        decision.policy.achieved_utility is None
+        or decision.policy.active_constraint_value is None
+    ):
         raise RuntimeError("DARP policy is missing objective or risk metrics.")
-    return {
-        "objective": -float(utility),
-        "risk": float(risk),
-        "time_s": result.elapsed_s,
-        "n": int(
-            decision.timing["expanded_nodes"]
-            + decision.timing["frontier_nodes"]
-        ),
-        "iterations": int(decision.timing["partial_ilp_solves"]),
-        "complete": True,
-    }
+    return result

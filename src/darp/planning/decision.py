@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 from darp.planning.policy import ConditionalPolicy, json_ready
 
@@ -30,3 +31,23 @@ class ActionDecision:
             "value_kind": self.value_kind,
             "policy": self.policy.to_dict(),
         }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> ActionDecision:
+        """Restore a decision from :meth:`to_dict` output."""
+        action = value["action"]
+        timing = value["timing"]
+        policy = value["policy"]
+        if not isinstance(action, Mapping) or not isinstance(timing, Mapping):
+            raise TypeError("Decision action and timing must be objects.")
+        if not isinstance(policy, Mapping):
+            raise TypeError("Decision policy must be an object.")
+        return cls(
+            action=dict(action),
+            label=str(value["label"]),
+            value=float(value["value"]),
+            complete=bool(value["complete"]),
+            value_kind=str(value["value_kind"]),
+            timing={str(name): float(item) for name, item in timing.items()},
+            policy=ConditionalPolicy.from_dict(policy),
+        )

@@ -59,14 +59,14 @@ Risk 使用独立 JSON sidecar，直接定义 CC-POMDP 的预算 $\Delta$ 和风
   --risk experiments/DARP-vs-RAOstar-grid/rddl/risk.json \
   --heuristic experiments.DARP-vs-RAOstar-grid.darp_runner:MANHATTAN \
   --terminal-heuristic \
-  --output output/DARP-vs-RAOstar-grid/darp.json
+  --output experiments/DARP-vs-RAOstar-grid/output/darp.json
 ```
 
 `.vscode/launch.json` 使用同一入口和显式文件路径。
 
 ## DARP vs RAO* 实验
 
-仓库只保留 HILP 原论文 Table 2 的 Grid 成对实验及其结果，实验目录为 `experiments/DARP-vs-RAOstar-grid/`，结果目录为 `output/DARP-vs-RAOstar-grid/`。
+仓库只保留 HILP 原论文 Table 2 的 Grid 成对实验及其结果；代码、输入与输出均位于 `experiments/DARP-vs-RAOstar-grid/`。
 
 ### Grid 实验
 
@@ -83,7 +83,7 @@ Risk 使用独立 JSON sidecar，直接定义 CC-POMDP 的预算 $\Delta$ 和风
 .venv/bin/python -m experiments.DARP-vs-RAOstar-grid.run \
   --instance experiments/DARP-vs-RAOstar-grid/rddl/instance_5_h3.rddl \
   --trials 1 \
-  --output output/DARP-vs-RAOstar-grid/smoke.csv
+  --output experiments/DARP-vs-RAOstar-grid/output/smoke.csv
 ```
 
 单实例模式从 RDDL 读取网格大小与 horizon，并从 `rddl/risk.json` 读取默认 risk budget；命令行只保留 trial、timeout、seed 和输出等执行选项。批量 Table 2 实验中的 `size/horizon/delta` 列表仍是实验矩阵筛选器，每个被选实例的实际模型参数都会再次从 RDDL 校验。
@@ -96,7 +96,28 @@ bash tools/run_repro.sh
 RESUME=1 bash tools/run_repro.sh
 ```
 
-结果写入并由 Git 记录在 `output/DARP-vs-RAOstar-grid/`。已有本地 checkout 或离线运行时，可选设置 `CONSTRAINED_POMDP_REPO`、`RAOSTAR_CHECKOUT` 和 `BASELINE_CACHE`；本地 checkout 必须处在固定 commit 且 worktree clean。外部实现的 provenance、指标定义和计时边界见 [实验协议](docs/EXPERIMENT_PROTOCOL.md)。算法公式与代码对应见 [算法映射](docs/ALGORITHM_MAPPING.md)。
+结果写入并由 Git 记录在 `experiments/DARP-vs-RAOstar-grid/output/`。已有本地 checkout 或离线运行时，可选设置 `CONSTRAINED_POMDP_REPO`、`RAOSTAR_CHECKOUT` 和 `BASELINE_CACHE`；本地 checkout 必须处在固定 commit 且 worktree clean。外部实现的 provenance、指标定义和计时边界见 [实验协议](docs/EXPERIMENT_PROTOCOL.md)。算法公式与代码对应见 [算法映射](docs/ALGORITHM_MAPPING.md)。
+
+加入策略 artifact 与执行计时之前的完整规划结果保留为 `table2-legacy-raw.csv` / `table2-legacy.md`，不用于新版 `--resume`。
+
+每个 DARP 行的 `result_file` 指向完整、可反序列化的 `DARPResult` JSON；Table 1 的 `policy_return` 是一次 sampled policy execution 的 discounted return（使用 RDDL reward 符号，不是求解器期望 objective），`policy_execution_time_s` 是该次 `agent.evaluate(env, episodes=1)` 的完整墙钟时间，不是 RDDL 中定义的动作 duration。复用已保存策略：
+
+```python
+from darp.adapter.loader import load_rddl
+from darp.executor import PolicyExecutor
+from darp.solve import DARPResult
+
+result = DARPResult.load("result.json")
+
+# PolicyExecutor 本身就是 pyRDDLGym BaseAgent，可直接使用标准接口。
+env = load_rddl("path/to/domain.rddl", "path/to/instance.rddl").env
+agent = PolicyExecutor(result.decision.policy)
+statistics = agent.evaluate(env, episodes=10, seed=0)
+```
+
+策略 JSON 不绑定 RDDL 文件路径或哈希；执行时传入的 `env` 就是问题模型，场景来源由实验配置或备注记录。
+
+结果使用具名 RDDL fluent 的 JSON policy graph；格式及其他语言执行器需要实现的最小契约见 [策略格式](docs/POLICY_FORMAT.md)。
 
 新增 RDDL 对比场景时可以复用同一 RAO* 缓存，但仍需在新的实验目录中提供该场景到 RAO* model API 的薄适配和等价性检查；不需要修改 DARP 的解析器、HILP、ILP 或 Gurobi 实现。
 
@@ -108,9 +129,9 @@ Table 1 的 fixed（F）、state-dependent expected（E）和 Gaussian stochasti
 .venv/bin/python -m experiments.DARP-table1-grid.run --smoke
 ```
 
-正式矩阵直接去掉 `--smoke`；默认执行论文的 $h\in\{3,4,5,6\}$、$\Delta\in\{0.1,0.2,0.3\}$、25 次 trial，并写入 `output/DARP-table1-grid/`。
+正式矩阵直接去掉 `--smoke`；默认执行论文的 $h\in\{3,4,5,6\}$、$\Delta\in\{0.1,0.2,0.3\}$、25 次 trial，并写入 `experiments/DARP-table1-grid/output/`。
 
-当前一次验证运行的汇总见 [`output/DARP-table1-grid/table1-validation.md`](output/DARP-table1-grid/table1-validation.md)，原始数据见同目录 CSV。
+旧版一次验证运行保留为 [`experiments/DARP-table1-grid/output/table1-validation-legacy.md`](experiments/DARP-table1-grid/output/table1-validation-legacy.md)，它生成于加入策略执行计时之前；新版 smoke 输出及可复用策略也在同一 `output/` 目录。
 
 该实验按论文文字把“从泥地出发或意图进入泥地”的动作设为 2，其余为 1；S 按 RDDL 语义将论文给出的 0.1 作为 Gaussian 方差。论文未公开 E/S 的原始实验代码，因此这里是基于[论文定义](https://ojs.aaai.org/index.php/AAAI/article/view/26743)的可审计重建，不宣称逐行复用作者 artifact。
 
@@ -124,7 +145,8 @@ RDDL（含 duration）+ risk.json
   -> ilp_tree      # policy/flow/risk 约束
   -> hilp          # Algorithm 3
   -> gurobi        # 增量 p-ILP
-  -> policy        # 策略提取与浮点指标汇总
+  -> policy        # 策略数据、提取与序列化
+  -> executor      # 策略验证与 pyRDDLGym 执行
 ```
 
 ## 自定义 Heuristic

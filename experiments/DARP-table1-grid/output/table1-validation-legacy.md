@@ -1,5 +1,7 @@
 # DARP Table 1 grid experiment
 
+> Legacy planning-only output generated before reusable policy artifacts and execution timing were added.
+
 Values are means over successful trials; `Exp.% = HILP Exp.n / Full-ILP Act.n`.
 E/S use source-or-intended mud contact; S uses `Normal(mean, variance=0.1)` and `varsigma=0.3`.
 The paper does not publish its E/S artifact, so these are auditable DARP results rather than copied reference output.

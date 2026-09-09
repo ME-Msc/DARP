@@ -1,5 +1,7 @@
 # Table 2: Simulation results with heuristics
 
+> Legacy planning-only output generated before reusable policy artifacts and execution timing were added.
+
 Arithmetic means over 25 completed trials; time is planner wall-clock seconds.
 Objective values are solver-native.
 
