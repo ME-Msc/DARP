@@ -9,16 +9,16 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 from itertools import product
 from pathlib import Path
 from statistics import fmean
-from time import perf_counter
 from typing import Any
 
 from darp.adapter.loader import load_rddl
 from darp.executor import PolicyExecutor
 from darp.planning.heuristic import HeuristicInput, UtilityHeuristic
-from darp.solve import solve_rddl
+from darp.solve import DARPResult, solve_rddl
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 EXPERIMENT_DIR = Path(__file__).resolve().parent
@@ -51,7 +51,9 @@ FIELDS = (
     "ilp_variables",
     "ilp_constraints",
     "iterations",
-    "policy_return",
+    "evaluation_episodes",
+    "risk_rate",
+    "physical_duration_mean",
     "policy_execution_time_s",
     "result_file",
     "error",
@@ -89,7 +91,7 @@ def _key(row: dict[str, str]) -> tuple[str, int, float, str, int]:
     )
 
 
-def _read_rows(path: Path) -> list[dict[str, str]]:
+def _read_rows(path: Path, episodes: int) -> list[dict[str, str]]:
     if not path.exists():
         return []
     with path.open(newline="", encoding="utf-8") as stream:
@@ -98,8 +100,10 @@ def _read_rows(path: Path) -> list[dict[str, str]]:
             raise ValueError(f"Unexpected CSV schema in {path}")
         rows = list(reader)
     for row in rows:
+        if not row["evaluation_episodes"] or int(row["evaluation_episodes"]) != episodes:
+            raise ValueError("Resume CSV uses a different evaluation episode count.")
         if row["status"] == "ok" and (
-            not row["policy_return"]
+            not row["evaluation_episodes"]
             or not row["policy_execution_time_s"]
             or not row["result_file"]
             or not (path.parent / row["result_file"]).is_file()
@@ -115,6 +119,7 @@ def _run_trial(
     planner: str,
     trial: int,
     seed: int,
+    episodes: int,
     timeout_s: float | None,
     result_path: Path,
 ) -> dict[str, Any]:
@@ -133,48 +138,58 @@ def _run_trial(
     # duration sidecar argument here.
     instance = _instance(model, horizon)
     env = load_rddl(DOMAIN, instance).env
-    result = solve_rddl(DOMAIN, instance, **kwargs)
-    decision = result.decision
-    timing = decision.timing
-    policy = decision.policy
-    if not decision.complete or policy.feasible is not True:
-        raise RuntimeError(
-            "DARP did not return a complete feasible policy: "
-            f"status={policy.solver_status}"
+    try:
+        result = solve_rddl(DOMAIN, instance, **kwargs)
+        result.save(result_path)
+        result = DARPResult.load(result_path)
+        decision = result.decision
+        timing = decision.timing
+        policy = decision.policy
+        if not decision.complete or policy.feasible is not True:
+            raise RuntimeError(
+                "DARP did not return a complete feasible policy: "
+                f"status={policy.solver_status}"
+            )
+        utility = policy.achieved_utility
+        risk = policy.active_constraint_value
+        if utility is None or risk is None:
+            raise RuntimeError("DARP policy is missing objective or risk metrics")
+        agent = PolicyExecutor(policy)
+        statistics = agent.evaluate(
+            env,
+            episodes=episodes,
+            seed=seed,
+            risk_path=RISK,
         )
-    utility = policy.achieved_utility
-    risk = policy.active_constraint_value
-    if utility is None or risk is None:
-        raise RuntimeError("DARP policy is missing objective or risk metrics")
-    agent = PolicyExecutor(policy)
-    evaluation_started = perf_counter()
-    statistics = agent.evaluate(env, episodes=1, seed=seed)
-    evaluation_time_s = perf_counter() - evaluation_started
-    result.save(result_path)
+        objective = -float(utility)
 
-    return {
-        "model": model,
-        "horizon": horizon,
-        "delta": delta,
-        "planner": planner,
-        "trial": trial,
-        "seed": seed,
-        "status": "ok",
-        "objective": -float(utility),
-        "time_s": result.elapsed_s,
-        "risk": risk,
-        "solver_status": policy.solver_status,
-        "expanded_nodes": timing.get("expanded_nodes", ""),
-        "frontier_nodes": timing.get("frontier_nodes", ""),
-        "tree_nodes": timing.get("tree_nodes", ""),
-        "ilp_variables": timing.get("ilp_variables", ""),
-        "ilp_constraints": timing.get("ilp_constraints", ""),
-        "iterations": timing.get("partial_ilp_solves", 1),
-        "policy_return": float(statistics["mean"]),
-        "policy_execution_time_s": evaluation_time_s,
-        "result_file": "",
-        "error": "",
-    }
+        return {
+            "model": model,
+            "horizon": horizon,
+            "delta": delta,
+            "planner": planner,
+            "trial": trial,
+            "seed": seed,
+            "status": "ok",
+            "objective": objective,
+            "time_s": result.elapsed_s,
+            "risk": risk,
+            "solver_status": policy.solver_status,
+            "expanded_nodes": timing.get("expanded_nodes", ""),
+            "frontier_nodes": timing.get("frontier_nodes", ""),
+            "tree_nodes": timing.get("tree_nodes", ""),
+            "ilp_variables": timing.get("ilp_variables", ""),
+            "ilp_constraints": timing.get("ilp_constraints", ""),
+            "iterations": timing.get("partial_ilp_solves", 1),
+            "evaluation_episodes": episodes,
+            "risk_rate": statistics["risk_rate"],
+            "physical_duration_mean": statistics["physical_duration_mean"],
+            "policy_execution_time_s": statistics["rollout_time_s"] / episodes,
+            "result_file": "",
+            "error": "",
+        }
+    finally:
+        env.close()
 
 
 def _result_path(
@@ -251,6 +266,10 @@ def _write_markdown(rows: list[dict[str, str]], output: Path) -> None:
 
     horizons = sorted({key[0] for key in grouped})
     deltas = sorted({key[1] for key in grouped})
+    successful_counts = sorted({
+        sum(row["status"] == "ok" for row in trials)
+        for trials in grouped.values()
+    })
     header = ["h", "Δ"]
     for metric in ("Obj", "Time", "n", "Act.n"):
         header.extend(f"Full-ILP {metric} {model}" for model in MODELS)
@@ -261,6 +280,7 @@ def _write_markdown(rows: list[dict[str, str]], output: Path) -> None:
         "# DARP Table 1 grid experiment",
         "",
         "Values are means over successful trials; `Exp.% = HILP Exp.n / Full-ILP Act.n`.",
+        f"Successful trials per configuration: {', '.join(map(str, successful_counts))}. Single-trial values are individual runs, not 25-trial means.",
         "E/S use source-or-intended mud contact; S uses `Normal(mean, variance=0.1)` and `varsigma=0.3`.",
         "The paper does not publish its E/S artifact, so these are auditable DARP results rather than copied reference output.",
         "`—` means that the configuration has not produced a successful row in the raw CSV.",
@@ -309,34 +329,24 @@ def _write_markdown(rows: list[dict[str, str]], output: Path) -> None:
     lines.extend(
         [
             "",
-            "## Policy execution",
+            "## Saved-policy execution",
             "",
-            "Each cell is `sampled discounted return / evaluate seconds` from one `agent.evaluate(env, episodes=1)` call. Return follows the RDDL reward sign and is not the expected planner objective; time is not modeled action duration.",
+            "Every policy is saved, reloaded and executed. Rows are individual trials; risk is the fraction of episodes that enter a risky state at least once. Physical duration and execution wall-clock time are reported separately.",
             "",
-            "| h | Δ | Full-ILP F | Full-ILP E | Full-ILP S | DARP-HILP F | DARP-HILP E | DARP-HILP S |",
-            "|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| Case / trial | Planner | Episodes | Risk frequency | Mean physical duration | s/episode |",
+            "|:--|:--|--:|--:|--:|--:|",
         ]
     )
-    for horizon, delta in product(horizons, deltas):
-        cells = [str(horizon), f"{delta:.1f}"]
-        for planner in PLANNERS:
-            for model in MODELS:
-                sampled_return = _number(
-                    grouped, horizon, delta, model, planner, "policy_return"
-                )
-                evaluation_time = _number(
-                    grouped,
-                    horizon,
-                    delta,
-                    model,
-                    planner,
-                    "policy_execution_time_s",
-                )
-                cells.append(
-                    f"{_format(sampled_return, 2)} / "
-                    f"{_format(evaluation_time, 6)}"
-                )
-        lines.append("| " + " | ".join(cells) + " |")
+    for row in sorted(rows, key=_key):
+        if row["status"] != "ok":
+            continue
+        lines.append(
+            f"| {row['model']} h={row['horizon']} Δ={row['delta']} / {row['trial']} | "
+            f"{row['planner']} | {row['evaluation_episodes']} | "
+            f"{float(row['risk_rate']):.4f} | "
+            f"{float(row['physical_duration_mean']):.3f} | "
+            f"{float(row['policy_execution_time_s']):.6f} |"
+        )
 
     failures = sum(row["status"] != "ok" for row in rows)
     lines.extend(("", f"Failed trials recorded in raw CSV: {failures}.", ""))
@@ -351,6 +361,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--deltas", nargs="+", type=float, choices=DELTAS, default=DELTAS)
     parser.add_argument("--planners", nargs="+", choices=PLANNERS, default=PLANNERS)
     parser.add_argument("--trials", type=int, default=25)
+    parser.add_argument("--episodes", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=2023)
     parser.add_argument("--timeout", type=float, default=None)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
@@ -368,6 +379,8 @@ def main() -> int:
     args = _parser().parse_args()
     if args.trials <= 0:
         raise SystemExit("--trials must be positive")
+    if args.episodes <= 0:
+        raise SystemExit("--episodes must be positive")
     if args.timeout is not None and args.timeout <= 0:
         raise SystemExit("--timeout must be positive")
 
@@ -383,7 +396,7 @@ def main() -> int:
     if summary.resolve() == output.resolve():
         raise SystemExit("--summary and --output must be different files")
 
-    rows = _read_rows(output) if args.resume else []
+    rows = _read_rows(output, args.episodes) if args.resume else []
     completed = {_key(row) for row in rows}
     output.parent.mkdir(parents=True, exist_ok=True)
     mode = "a" if args.resume and output.exists() else "w"
@@ -412,6 +425,7 @@ def main() -> int:
                     planner,
                     trial,
                     seed,
+                    args.episodes,
                     args.timeout,
                     result_path,
                 )
@@ -421,13 +435,16 @@ def main() -> int:
                     model, horizon, delta, planner, trial, seed, error
                 )
                 failures += 1
+            row["evaluation_episodes"] = args.episodes
             writer.writerow(row)
             stream.flush()
             rows.append({field: str(row[field]) for field in FIELDS})
             print(
                 f"{model} h={horizon} Δ={delta:.1f} {planner} "
-                f"trial={trial}: {row['status']}"
+                f"trial={trial}: {row['status']}", flush=True,
             )
+            # Release large full-tree cycles between independent timed solves.
+            gc.collect()
 
     _write_markdown(rows, summary)
     print(f"raw: {output}")

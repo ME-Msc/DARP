@@ -1,16 +1,22 @@
-"""Validate and execute solved DARP policies through pyRDDLGym."""
+"""Execute solved DARP policies through pyRDDLGym."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from math import sqrt
+from pathlib import Path
+from random import Random
 from statistics import fmean, median, pstdev
 from time import perf_counter
 from typing import Any
 
 from pyRDDLGym.core.policy import BaseAgent
 
-from darp.adapter.kernel import ObservationKey
+from darp.adapter.duration import duration_moments
+from darp.adapter.kernel import ObservationKey, RDDLKernel, RiskConstraintSpec
+from darp.adapter.problem import PyRDDLGymProblem
+from darp.model.risk_sidecar import load_risk_sidecar
 from darp.planning.policy import (
     ConditionalPolicy,
     PolicyNode,
@@ -33,6 +39,8 @@ class PolicyExecutionResult:
     stop_reason: str
     terminated: bool
     truncated: bool
+    physical_duration: float | None = None
+    failed: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -43,6 +51,8 @@ class PolicyExecutionResult:
             "stop_reason": self.stop_reason,
             "terminated": self.terminated,
             "truncated": self.truncated,
+            "physical_duration": self.physical_duration,
+            "failed": self.failed,
         }
 
 
@@ -132,7 +142,7 @@ class PolicyExecutor(BaseAgent):
         verbose: bool = False,
         render: bool = False,
     ) -> PolicyExecutionResult:
-        """Run one policy-leaf-aware episode in a scalar pyRDDLGym env."""
+        """Run one raw episode; ``evaluate`` also records risk and duration."""
 
         if bool(getattr(env, "vectorized", False)) != self.use_tensor_obs:
             raise ValueError(
@@ -154,6 +164,9 @@ class PolicyExecutor(BaseAgent):
         seed: int | None,
         verbose: bool,
         render: bool,
+        *,
+        kernel: RDDLKernel | None = None,
+        duration_rng: Random | None = None,
     ) -> PolicyExecutionResult:
         self.reset()
         initial_input, _ = env.reset(seed=seed)
@@ -168,6 +181,8 @@ class PolicyExecutor(BaseAgent):
         terminated = False
         truncated = False
         stop_reason = "policy_leaf"
+        physical_duration = 0.0
+        failed = bool(kernel and kernel.state_failure(kernel.state_key(env.state)))
         started = perf_counter()
 
         for step in range(self.max_steps):
@@ -176,12 +191,20 @@ class PolicyExecutor(BaseAgent):
             action = self._action()
             if action is None:
                 break
+            if kernel is not None:
+                moments = duration_moments(
+                    kernel.grounded_model.duration, kernel, env.state, action
+                )
+                mean, variance = moments.mean, moments.variance
+                # 独立 RNG 不改变环境的 T/O 采样；不截断正态分布的负尾部。
+                physical_duration += (
+                    duration_rng.gauss(mean, sqrt(variance)) if variance else mean
+                )
             observation, reward, terminated, truncated, _ = env.step(action)
             steps += 1
             reward = float(reward)
             total_reward += reward
             discounted_return += reward * discount
-            discount *= gamma
             policy_input = (
                 observation if self.policy.input_kind == "observation" else env.state
             )
@@ -190,6 +213,9 @@ class PolicyExecutor(BaseAgent):
                     "RDDL simulator did not return a grounded fluent mapping."
                 )
             self._observe(policy_input)
+            discount *= gamma
+            if kernel is not None:
+                failed = failed or bool(kernel.state_failure(kernel.state_key(env.state)))
 
             if verbose:
                 print(
@@ -217,6 +243,8 @@ class PolicyExecutor(BaseAgent):
             stop_reason=stop_reason,
             terminated=bool(terminated),
             truncated=bool(truncated),
+            physical_duration=physical_duration if kernel is not None else None,
+            failed=failed if kernel is not None else None,
         )
 
     def evaluate(
@@ -226,32 +254,51 @@ class PolicyExecutor(BaseAgent):
         verbose: bool = False,
         render: bool = False,
         seed: int | None = None,
+        *,
+        risk_path: str | Path | None = None,
     ) -> dict[str, float]:
-        """Evaluate like ``BaseAgent.evaluate``, stopping at policy leaves."""
+        """Sample the saved policy and return execution statistics.
+
+        按策略的 observation 分支执行；不重算 belief、ILP 目标或停止条件。
+        风险频率与物理时长来自实际采样，不是模型可行性的证明。
+        """
 
         if episodes < 1:
             raise ValueError("episodes must be positive")
-        returns: list[float] = []
-        for episode in range(episodes):
-            result = self.run_episode(
-                env,
-                seed=seed if episode == 0 else None,
-                verbose=verbose,
-                render=render,
-            )
-            returns.append(result.discounted_return)
-            if verbose:
-                print(
-                    f"episode {episode + 1} ended with return "
-                    f"{result.discounted_return}"
-                )
-        return {
+        if bool(getattr(env, "vectorized", False)) != self.use_tensor_obs:
+            raise ValueError("RDDLEnv vectorized must match PolicyExecutor.use_tensor_obs.")
+        grounded = PyRDDLGymProblem(env.model.ast, env).build_grounded_model()
+        if grounded.duration is None:
+            raise ValueError("RDDL domain must define duration.")
+        risk = load_risk_sidecar(risk_path) if risk_path is not None else RiskConstraintSpec()
+        kernel = RDDLKernel.from_grounded_model(grounded, risk=risk)
+        duration_rng = Random(seed)
+        executions = []
+        original_horizon = env.horizon
+        env.horizon = max(original_horizon, self.max_steps)
+        started = perf_counter()
+        try:
+            for episode in range(episodes):
+                executions.append(self._run_episode(
+                    env, seed if episode == 0 else None, verbose, render,
+                    kernel=kernel, duration_rng=duration_rng,
+                ))
+        finally:
+            env.horizon = original_horizon
+        returns = [result.discounted_return for result in executions]
+        statistics = {
             "mean": fmean(returns),
             "median": float(median(returns)),
             "min": min(returns),
             "max": max(returns),
             "std": pstdev(returns),
+            "episodes": episodes,
+            "physical_duration_mean": fmean(result.physical_duration for result in executions),
+            "rollout_time_s": perf_counter() - started,
         }
+        if risk_path is not None:
+            statistics["risk_rate"] = fmean(result.failed for result in executions)
+        return statistics
 
 
 def _validate_policy_graph(nodes: Mapping[str, PolicyNode], root: str) -> int:

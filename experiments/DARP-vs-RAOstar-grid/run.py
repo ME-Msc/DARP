@@ -5,10 +5,10 @@ from __future__ import annotations
 import argparse
 import csv
 from collections import defaultdict
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import fmean
-from time import perf_counter
 from typing import Any
 
 from darp.adapter.loader import load_rddl
@@ -52,6 +52,9 @@ FIELDS = (
     "n",
     "iterations",
     "complete",
+    "evaluation_episodes",
+    "risk_rate",
+    "physical_duration_mean",
     "policy_execution_time_s",
     "result_file",
     "constrained_pomdp_commit",
@@ -94,6 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--horizons", type=int, nargs="+")
     parser.add_argument("--deltas", type=float, nargs="+")
     parser.add_argument("--trials", type=int, default=TRIALS)
+    parser.add_argument("--episodes", type=int, default=1000)
     parser.add_argument("--timeout", type=float, help="same search limit for both solvers")
     parser.add_argument("--seed", type=int, default=2023)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
@@ -114,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Constrained-POMDP: {raostar.constrained_pomdp_path}")
     print(f"RAOStar: {raostar.raostar_path}")
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    existing = _load_existing(args.output, args.seed) if args.resume else {}
+    existing = _load_existing(args.output, args.seed, args.episodes) if args.resume else {}
     append = args.resume and args.output.is_file() and args.output.stat().st_size > 0
     with args.output.open("a" if append else "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=FIELDS, lineterminator="\n")
@@ -131,22 +135,26 @@ def main(argv: list[str] | None = None) -> int:
                 key = _key(scenario, trial, "DARP-HILP")
                 if key not in existing:
                     seed = args.seed + trial - 1
-                    env = load_rddl(DOMAIN, case.instance).env
-                    result = run_darp(
-                        case.instance,
-                        delta=scenario.delta,
-                        seed=seed,
-                        timeout_s=args.timeout,
-                    )
-                    agent = PolicyExecutor(result.decision.policy)
-                    evaluation_started = perf_counter()
-                    statistics = agent.evaluate(env, episodes=1, seed=seed)
-                    evaluation_time_s = perf_counter() - evaluation_started
-                    result_path = _result_path(args.output, scenario, trial)
-                    result.save(result_path)
+                    with closing(load_rddl(DOMAIN, case.instance).env) as env:
+                        result = run_darp(
+                            case.instance,
+                            delta=scenario.delta,
+                            seed=seed,
+                            timeout_s=args.timeout,
+                        )
+                        result_path = _result_path(args.output, scenario, trial)
+                        result.save(result_path)
+                        result = DARPResult.load(result_path)
+                        agent = PolicyExecutor(result.decision.policy)
+                        statistics = agent.evaluate(
+                            env,
+                            episodes=args.episodes,
+                            seed=seed,
+                            risk_path=RISK,
+                        )
                     metrics = _darp_metrics(
                         result,
-                        evaluation_time_s,
+                        statistics,
                         result_path.relative_to(args.output.parent).as_posix(),
                     )
                     _save(
@@ -296,7 +304,7 @@ def _save(
 
 def _darp_metrics(
     result: DARPResult,
-    evaluation_time_s: float,
+    statistics: dict[str, float],
     result_file: str,
 ) -> dict[str, Any]:
     decision = result.decision
@@ -314,7 +322,10 @@ def _darp_metrics(
         ),
         "iterations": int(decision.timing["partial_ilp_solves"]),
         "complete": True,
-        "policy_execution_time_s": evaluation_time_s,
+        "evaluation_episodes": int(statistics["episodes"]),
+        "risk_rate": statistics["risk_rate"],
+        "physical_duration_mean": statistics["physical_duration_mean"],
+        "policy_execution_time_s": statistics["rollout_time_s"] / statistics["episodes"],
         "result_file": result_file,
     }
 
@@ -331,6 +342,7 @@ def _result_path(output: Path, scenario: Scenario, trial: int) -> Path:
 def _load_existing(
     path: Path,
     base_seed: int,
+    episodes: int,
 ) -> dict[tuple[int, int, float, int, str], dict[str, Any]]:
     if not path.is_file() or path.stat().st_size == 0:
         return {}
@@ -352,6 +364,8 @@ def _load_existing(
             if row["complete"].lower() != "true":
                 raise ValueError("Resume CSV contains an incomplete search")
             if row["algorithm"] == "DARP-HILP":
+                if not row["evaluation_episodes"] or int(row["evaluation_episodes"]) != episodes:
+                    raise ValueError("Resume CSV uses a different evaluation episode count")
                 if not row["policy_execution_time_s"] or not row["result_file"]:
                     raise ValueError("Resume CSV is missing a DARP policy execution")
                 if not (path.parent / row["result_file"]).is_file():
@@ -395,8 +409,6 @@ def _write_summary(
                 raise ValueError("Summary CSV uses a different Constrained-POMDP commit")
             if row["raostar_commit"] != RAOSTAR_COMMIT:
                 raise ValueError("Summary CSV uses a different RAOStar commit")
-            if float(row["risk"]) > scenario.delta + 1e-6:
-                raise ValueError(f"Infeasible risk in {csv_path}: {key}")
             if algorithm == "DARP-HILP" and (
                 not row["policy_execution_time_s"] or not row["result_file"]
             ):
@@ -427,7 +439,11 @@ def _write_summary(
     lines = [
         "# Table 2: Simulation results with heuristics",
         "",
-        f"Arithmetic means over {expected_trials} completed trials; time is planner wall-clock seconds.",
+        (
+            "Each cell is one completed trial, not a 25-trial mean; time is planner wall-clock seconds."
+            if expected_trials == 1 else
+            f"Arithmetic means over {expected_trials} completed trials; time is planner wall-clock seconds."
+        ),
         "Objective values are solver-native.",
         "",
         "| Problem | h | Δ | DARP-HILP Obj. | DARP-HILP Time (s) | "
@@ -451,9 +467,9 @@ def _write_summary(
     lines.extend(
         [
             "",
-            "## Supplementary risk diagnostics",
+            "## Solver-reported risk",
             "",
-            "This diagnostic table is not part of the original Table 2.",
+            "Risk values come directly from each solver; no model recomputation is performed.",
             "",
             "| Problem | h | Δ | DARP-HILP Risk | RAO* Risk |",
             "|:--|--:|--:|--:|--:|",
@@ -471,21 +487,24 @@ def _write_summary(
     lines.extend(
         [
             "",
-            "## DARP policy execution",
+            "## DARP saved-policy execution",
             "",
-            "Execution time is one `agent.evaluate(env, episodes=1)` wall-clock measurement; it is not modeled action duration.",
+            "Each saved policy is reloaded and executed in pyRDDLGym. Rows report first-entry risk frequency, mean physical duration and wall-clock time per episode. RAO* reports search metrics only.",
             "",
-            "| Problem | h | Δ | DARP-HILP execution time (s) |",
-            "|:--|--:|--:|--:|",
+            "| Case / trial | Episodes | Risk frequency | Mean duration | s/episode |",
+            "|:--|--:|--:|--:|--:|",
         ]
     )
     for scenario in sorted(expected):
-        darp = groups[scenario]["DARP-HILP"]
-        lines.append(
-            f"| {scenario.size}×{scenario.size} | {scenario.horizon} | "
-            f"{scenario.delta:.1f} | "
-            f"{_mean(darp, 'policy_execution_time_s'):.6f} |"
-        )
+        for row in sorted(groups[scenario]["DARP-HILP"], key=lambda item: int(item["trial"])):
+            lines.append(
+                f"| {scenario.size}×{scenario.size} h={scenario.horizon} "
+                f"Δ={scenario.delta:.1f} / {row['trial']} | "
+                f"{row['evaluation_episodes']} | "
+                f"{float(row['risk_rate']):.4f} | "
+                f"{float(row['physical_duration_mean']):.3f} | "
+                f"{float(row['policy_execution_time_s']):.6f} |"
+            )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -497,6 +516,8 @@ def _mean(rows: list[dict[str, str]], field: str) -> float:
 def _validate_args(args: argparse.Namespace) -> None:
     if args.trials < 1:
         raise ValueError("--trials must be positive")
+    if args.episodes < 1:
+        raise ValueError("--episodes must be positive")
     if args.timeout is not None and args.timeout <= 0:
         raise ValueError("--timeout must be positive")
     if args.summary is not None and args.summary.resolve() == args.output.resolve():

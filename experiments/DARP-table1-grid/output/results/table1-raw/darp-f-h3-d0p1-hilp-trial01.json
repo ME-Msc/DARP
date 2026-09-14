@@ -1,0 +1,438 @@
+{
+  "decision": {
+    "action": {
+      "move_down": false,
+      "move_right": true,
+      "move_up": false
+    },
+    "complete": true,
+    "label": "move_right",
+    "policy": {
+      "achieved_utility": -8.932312499999998,
+      "active_constraint_value": 0.08976562500000002,
+      "complete": true,
+      "feasible": true,
+      "format": "darp-policy-graph",
+      "input": "observation",
+      "nodes": [
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n0",
+          "stage": 0,
+          "transitions": [
+            {
+              "next": "n1",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n2",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n3",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n1",
+          "stage": 1,
+          "transitions": [
+            {
+              "next": "n4",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n5",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n6",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n2",
+          "stage": 1,
+          "transitions": [
+            {
+              "next": "n7",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n8",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n9",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n3",
+          "stage": 1,
+          "transitions": [
+            {
+              "next": "n10",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n11",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n12",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n4",
+          "stage": 2,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n5",
+          "stage": 2,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n6",
+          "stage": 2,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n7",
+          "stage": 2,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n8",
+          "stage": 2,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n9",
+          "stage": 2,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n10",
+          "stage": 2,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n11",
+          "stage": 2,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n12",
+          "stage": 2,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        }
+      ],
+      "root": "n0",
+      "solver_status": "optimal",
+      "timing": "act-then-observe",
+      "version": 1
+    },
+    "timing": {
+      "certifying_utility_bound": 1.0,
+      "expanded_nodes": 31.0,
+      "expansion_rounds": 11.0,
+      "frontier_nodes": 237.0,
+      "frontier_refinement_exhausted": 1.0,
+      "global_expandable_frontier": 237.0,
+      "gurobi_model_update_ms": 5.434994352981448,
+      "gurobi_optimize_ms": 7.793282857164741,
+      "gurobi_solve_ms": 15.791921643540263,
+      "ilp_constraints": 68.0,
+      "ilp_variables": 268.0,
+      "partial_ilp_solves": 12.0,
+      "solver_time_limit_hit": 0.0,
+      "tree_ilp_build_ms": 26.233169715851545,
+      "warm_start_filter_ms": 0.20226789638400078
+    },
+    "value": -8.932312499999998,
+    "value_kind": "achieved_utility"
+  },
+  "elapsed_s": 0.06369836302474141,
+  "format": "darp-result",
+  "risk_budget": 0.1,
+  "version": 1
+}

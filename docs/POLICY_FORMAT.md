@@ -13,7 +13,7 @@ DARP writes UTF-8 JSON rather than Python pickle so the result can be read by ex
     "label": "move_up",
     "complete": true,
     "value": -5.0,
-    "value_kind": "exact",
+    "value_kind": "achieved_utility",
     "timing": {},
     "policy": {
       "format": "darp-policy-graph",
@@ -57,7 +57,7 @@ DARP writes UTF-8 JSON rather than Python pickle so the result can be read by ex
 
 - `root` identifies the first action node.
 - `format` and `version` version the standalone policy payload; DARP version 1 emits a finite acyclic tree encoded as a graph.
-- Each node contains the complete grounded RDDL action assignment. An executor should use `action`; `action_label` is only for display.
+- Each node contains the complete grounded RDDL action assignment. The executor sends `action` to the environment and uses it when evaluating the duration expression; `action_label` is descriptive.
 - `stage` is the number of prior actions and must increase by one along every edge.
 - After executing the node action, match the returned grounded fluent map against one `transitions[].observation` object.
 - `next` names the next action node. `null` means that the policy has reached a valid terminal leaf.
@@ -98,8 +98,30 @@ result = DARPResult.load(
 agent = PolicyExecutor(result.decision.policy)
 
 env = load_rddl(domain, instance).env
-statistics = agent.evaluate(env)
+statistics = agent.evaluate(
+    env, episodes=1000, seed=0,
+    risk_path="experiments/DARP-vs-RAOstar-grid/rddl/risk.json",
+)
 ```
+
+`evaluate(env)` is also valid. Supply `risk_path` to measure first-entry risk frequency. Duration comes from the environment's DARP-extended RDDL AST; no duration JSON or policy metadata is required.
+
+## Evaluation results
+
+The executor checks the policy graph, follows its observation edges and stops at a policy leaf or environment termination. `evaluate` returns pyRDDLGym reward statistics and execution measurements:
+
+| Statistics key | Meaning |
+| --- | --- |
+| `mean`, `median`, `min`, `max`, `std` | Sampled discounted returns using the original RDDL reward. |
+| `risk_rate` | Fraction of episodes that enter the risky set at least once, including the initial state; present when `risk_path` is supplied. |
+| `physical_duration_mean` | Mean accumulated action duration along the sampled true-state trajectories. |
+| `rollout_time_s`, `episodes` | Total rollout wall-clock time and number of episodes. |
+
+An episode is marked failed once, even if it repeatedly visits risky states. Execution continues according to the policy after failure. Hidden simulator state is used for risk and duration measurements only; a POMDP policy still receives observations. `risk_rate` is a sample frequency, not the solver's probability guarantee.
+
+Physical duration is read from the original RDDL expression at each action's true starting state. Fixed and state-dependent values are accumulated directly; Normal durations use a separate random stream without changing environment transition/observation sampling. Normal variance is retained even when planning uses only its expectation. Physical duration is distinct from the paper's belief-based duration stopping criterion and from execution wall-clock time.
+
+The experiments keep solver objectives in their main tables and episode count, risk frequency, physical duration and execution time in supplementary tables. `statistics["mean"]` remains available for inspecting raw RDDL reward; execution does not apply the planner's optional terminal heuristic or compare results with paper tables.
 
 ## Why this representation
 

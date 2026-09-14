@@ -1,0 +1,3670 @@
+{
+  "decision": {
+    "action": {
+      "move_down": false,
+      "move_right": true,
+      "move_up": false
+    },
+    "complete": true,
+    "label": "move_right",
+    "policy": {
+      "achieved_utility": -8.330533203124999,
+      "active_constraint_value": 0.15553190065651704,
+      "complete": true,
+      "feasible": true,
+      "format": "darp-policy-graph",
+      "input": "observation",
+      "nodes": [
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n0",
+          "stage": 0,
+          "transitions": [
+            {
+              "next": "n1",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n2",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n3",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n1",
+          "stage": 1,
+          "transitions": [
+            {
+              "next": "n4",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n5",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n6",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n2",
+          "stage": 1,
+          "transitions": [
+            {
+              "next": "n7",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n8",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n9",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n3",
+          "stage": 1,
+          "transitions": [
+            {
+              "next": "n10",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n11",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n12",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n4",
+          "stage": 2,
+          "transitions": [
+            {
+              "next": "n13",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n14",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n15",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n5",
+          "stage": 2,
+          "transitions": [
+            {
+              "next": "n16",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n17",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n18",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n6",
+          "stage": 2,
+          "transitions": [
+            {
+              "next": "n19",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n20",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n21",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n7",
+          "stage": 2,
+          "transitions": [
+            {
+              "next": "n22",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n23",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n24",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n8",
+          "stage": 2,
+          "transitions": [
+            {
+              "next": "n25",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n26",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n27",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n9",
+          "stage": 2,
+          "transitions": [
+            {
+              "next": "n28",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n29",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n30",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n10",
+          "stage": 2,
+          "transitions": [
+            {
+              "next": "n31",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n32",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n33",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n11",
+          "stage": 2,
+          "transitions": [
+            {
+              "next": "n34",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n35",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n36",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n12",
+          "stage": 2,
+          "transitions": [
+            {
+              "next": "n37",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n38",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n39",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n13",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n40",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n41",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n42",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n14",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n43",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n44",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n45",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n15",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n46",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n47",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n48",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n16",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n49",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n50",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n51",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n17",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n52",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n53",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n54",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n18",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n55",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n56",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n57",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n19",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n58",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n59",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n60",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n20",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n61",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n62",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n63",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n21",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n64",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n65",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n66",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n22",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n67",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n68",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n69",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n23",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n70",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n71",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n72",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n24",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n73",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n74",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n75",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n25",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n76",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n77",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n78",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n26",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n79",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n80",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n81",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n27",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n82",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n83",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n84",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n28",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n85",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n86",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n87",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n29",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n88",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n89",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n90",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n30",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n91",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n92",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n93",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n31",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n94",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n95",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n96",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n32",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n97",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n98",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n99",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n33",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n100",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n101",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n102",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n34",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n103",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n104",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n105",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n35",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n106",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n107",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n108",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n36",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n109",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n110",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n111",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n37",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n112",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n113",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n114",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n38",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n115",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n116",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n117",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n39",
+          "stage": 3,
+          "transitions": [
+            {
+              "next": "n118",
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": "n119",
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": "n120",
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n40",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n41",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n42",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n43",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n44",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n45",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n46",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n47",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n48",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n49",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n50",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n51",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n52",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n53",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n54",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n55",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n56",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n57",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n58",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n59",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n60",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n61",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n62",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n63",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n64",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n65",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n66",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n67",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n68",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n69",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n70",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n71",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n72",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n73",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n74",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n75",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n76",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n77",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n78",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n79",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n80",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n81",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n82",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n83",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n84",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n85",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n86",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n87",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n88",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n89",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n90",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n91",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n92",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n93",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n94",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n95",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n96",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n97",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n98",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n99",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n100",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n101",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n102",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n103",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n104",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n105",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n106",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n107",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n108",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n109",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n110",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n111",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n112",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n113",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n114",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": false,
+            "move_right": true,
+            "move_up": false
+          },
+          "action_label": "move_right",
+          "id": "n115",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n116",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n117",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n118",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n119",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        },
+        {
+          "action": {
+            "move_down": true,
+            "move_right": false,
+            "move_up": false
+          },
+          "action_label": "move_down",
+          "id": "n120",
+          "stage": 4,
+          "transitions": [
+            {
+              "next": null,
+              "observation": {
+                "obs": 0
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 1
+              }
+            },
+            {
+              "next": null,
+              "observation": {
+                "obs": 2
+              }
+            }
+          ]
+        }
+      ],
+      "root": "n0",
+      "solver_status": "optimal",
+      "timing": "act-then-observe",
+      "version": 1
+    },
+    "timing": {
+      "expanded_nodes": 90484.0,
+      "gurobi_solve_ms": 1019.5705539081246,
+      "ilp_constraints": 22622.0,
+      "ilp_variables": 90484.0,
+      "solver_time_limit_hit": 0.0,
+      "tree_ilp_build_ms": 30395.308677107096,
+      "tree_nodes": 113105.0
+    },
+    "value": -8.330533203124999,
+    "value_kind": "achieved_utility"
+  },
+  "elapsed_s": 31.6196567309089,
+  "format": "darp-result",
+  "risk_budget": 0.3,
+  "version": 1
+}

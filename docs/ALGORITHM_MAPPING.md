@@ -130,6 +130,18 @@ $$
 h_q=\sum_s \rho(q)b_q(s)h(s,a_q).
 $$
 
-cost-to-go 回调必须返回负值，因为 DARP 最大化 utility。未提供回调时只使用一步 utility 作为 fallback；核心不再内置 reachable-Bellman 或 Manhattan。`frontier_width=None` 展开 incumbent 中全部 frontier，与论文复现实验一致；有限宽度仅是显式的 batching 选项。`terminal_heuristic` 单独控制 duration 边界的评价，避免把实验的 terminal value 混进 RDDL reward。当前 action-level terminal value 要求同一 action 的所有 observation branch 同时停止；混合停止/继续会 fail fast，callback 也必须为模型 terminal state 返回正确终值。
+cost-to-go 回调必须返回负值，因为 DARP 最大化 utility。未提供回调时只使用一步 utility 作为 fallback；核心不再内置 reachable-Bellman 或 Manhattan。`frontier_width=None` 展开 incumbent 中全部 frontier，与论文复现实验一致；有限宽度仅是显式的 batching 选项。`terminal_heuristic` 单独控制 duration 边界的评价，避免把实验的 terminal value 混进 RDDL reward。`apply_terminal_heuristic` 按 observation branch 处理：仅对因 duration 停止的分支，以该分支概率加权的动作执行前状态 heuristic 替换最后一步 utility；继续分支保留真实 utility。因此同一 action 的混合停止/继续分支可以共存。已知模型终止分支保留真实 RDDL utility，不做 duration terminal replacement。
 
 只有算法不再包含被当前策略选中的可展开 frontier、Gurobi 返回容差内 `OPTIMAL`、浮点风险满足预算且没有触发资源上限时，结果才标记 `complete`。full-ILP 枚举完整有限树，仅作为很小 horizon 的结构 oracle。
+
+## 7. 已保存策略的执行
+
+`executor.PolicyExecutor` 接受 `ConditionalPolicy`，检查策略图结构后，通过 `evaluate(env, episodes=..., seed=..., risk_path=...)` 在 pyRDDLGym 中执行。每步按当前节点执行动作，再根据观测选择后继，直到策略叶或环境终止。保存的 JSON 由 `DARPResult.load()` 读取后使用同一接口。
+
+`risk_rate` 是至少进入过一次风险集合的 episode 比例，包含初态，重复失败只计一次。它只用于执行统计，不让策略提前终止；未传 `risk_path` 时不返回此项。策略仍使用观测，真实状态只用于统计风险和每步动作时长。
+
+`physical_duration_mean` 汇总真实状态轨迹上的累计动作时长。固定值直接累计，Normal 使用独立随机数流采样；这一物理时长与 E/S 规划时基于平滑 belief 的停止量、执行墙钟时间分别记录。
+
+`mean` 等 BaseAgent 字段是原始 RDDL discounted reward 统计。主表的 objective 直接读取求解器结果，规划阶段可选的 terminal heuristic 不在执行器中重复应用；附表仅展示执行次数、风险频率、物理时长和执行时间。
+
+实验代码生成表格供手动对照原文。Table 1 的 E/S 缺少作者原始 artifact，当前数值尚未完全吻合；输入与计时边界见 [实验协议](EXPERIMENT_PROTOCOL.md)。

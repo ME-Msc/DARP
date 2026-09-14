@@ -94,19 +94,20 @@ def _memoized_moments(
                 f"Unknown duration action: {action!r}."
             ) from error
         state_mapping = _state_mapping(state)
-        result = _moments(expression, kernel, state_mapping, assignment)
+        result = duration_moments(expression, kernel, state_mapping, assignment)
         cache[key] = result
         return result
 
     return evaluate
 
 
-def _moments(
+def duration_moments(
     expression: Any,
     kernel: RDDLKernel,
     state: Mapping[str, Any],
     action: Mapping[str, Any],
 ) -> DurationEstimate:
+    """Read D(s,a)'s moments for planning or independent physical sampling."""
     if not _is_expression(expression):
         return DurationEstimate(mean=_number(expression, "duration"))
     expression_type, operator = expression.etype
@@ -117,7 +118,7 @@ def _moments(
             if bool(kernel.deterministic_value(condition, state, action))
             else false_value
         )
-        return _moments(selected, kernel, state, action)
+        return duration_moments(selected, kernel, state, action)
     if expression_type == "randomvar":
         if operator != "Normal":
             raise DurationExpressionError(
@@ -247,4 +248,4 @@ def _number(value: Any, label: str) -> float:
     return number
 
 
-__all__ = ["DurationExpressionError", "build_duration_evaluator"]
+__all__ = ["DurationExpressionError", "build_duration_evaluator", "duration_moments"]
