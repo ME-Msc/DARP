@@ -340,14 +340,15 @@ def _policy_node_from_dict(value: Any, input_kind: PolicyInput) -> PolicyNode:
     decoded = tuple(
         _policy_transition_from_dict(item, input_kind) for item in transitions
     )
-    if len(dict(decoded)) != len(decoded):
+    decoded_transitions = dict(decoded)
+    if len(decoded_transitions) != len(decoded):
         raise ValueError("Policy node repeats an observation transition.")
     return PolicyNode(
         node_id=str(value["id"]),
         stage=int(value["stage"]),
         action_label=str(value["action_label"]),
         assignment=dict(action),
-        transitions=dict(decoded),
+        transitions=decoded_transitions,
     )
 
 

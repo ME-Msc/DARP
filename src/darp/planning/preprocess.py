@@ -63,8 +63,13 @@ def initialize_root_frontier(
         raise ValueError("Paper preprocessing requires a root belief.")
 
     # Unnormalised mass directly stores the history occurrence probability.
-    root_ordinary_mass = kernel.initial_constraint_mass(root_belief)
-    root_constraint_mass = kernel.initial_safe_mass(root_belief)
+    root_ordinary_mass = kernel.continuing_mass(kernel.initial_constraint_mass(root_belief))
+    root_constraint_mass = kernel.continuing_mass(kernel.initial_safe_mass(root_belief))
+    if not root_ordinary_mass:
+        raise ValueError("The initial belief is already terminal; no action policy is required.")
+    # Initial risk is still computed from the complete b0 by the ILP encoder.
+    # / 根动作仅在尚未终止时执行，但初始风险仍按完整 b0 计入。
+    root_belief = kernel.constraint_mass_belief(root_ordinary_mass)
 
     # Algorithm 1 lines 3-6: pop q=root from N and create qa for every action.
     # 论文第 3-6 行：从 N 取出 root observation history，并为每个 action 创建 qa。

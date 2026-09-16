@@ -1,6 +1,6 @@
 """Run the Table 1 grid matrix with DARP-HILP and DARP full-ILP.
 
-The shared grid domain and risk file are reused from DARP-vs-RAOstar-grid.
+The grid domain and instances are local to this experiment's rddl directory.
 The raw CSV is checkpointed after every trial, so ``--resume`` can continue an
 interrupted run.  As in the paper, horizon 6 runs HILP only.
 """
@@ -20,12 +20,9 @@ from darp.executor import PolicyExecutor
 from darp.planning.heuristic import HeuristicInput, UtilityHeuristic
 from darp.solve import DARPResult, solve_rddl
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 EXPERIMENT_DIR = Path(__file__).resolve().parent
 RDDL_DIR = EXPERIMENT_DIR / "rddl"
-SHARED_RDDL_DIR = PROJECT_ROOT / "experiments" / "DARP-vs-RAOstar-grid" / "rddl"
-DOMAIN = SHARED_RDDL_DIR / "domain.rddl"
-RISK = SHARED_RDDL_DIR / "risk.json"
+DOMAIN = RDDL_DIR / "domain.rddl"
 DEFAULT_OUTPUT = EXPERIMENT_DIR / "output" / "table1-raw.csv"
 
 MODELS = ("F", "E", "S")
@@ -103,8 +100,7 @@ def _read_rows(path: Path, episodes: int) -> list[dict[str, str]]:
         if not row["evaluation_episodes"] or int(row["evaluation_episodes"]) != episodes:
             raise ValueError("Resume CSV uses a different evaluation episode count.")
         if row["status"] == "ok" and (
-            not row["evaluation_episodes"]
-            or not row["policy_execution_time_s"]
+            not row["policy_execution_time_s"]
             or not row["result_file"]
             or not (path.parent / row["result_file"]).is_file()
         ):
@@ -124,7 +120,6 @@ def _run_trial(
     result_path: Path,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
-        "risk_path": RISK,
         "planner": planner,
         "risk_budget": delta,
         "seed": seed,
@@ -159,7 +154,6 @@ def _run_trial(
             env,
             episodes=episodes,
             seed=seed,
-            risk_path=RISK,
         )
         objective = -float(utility)
 

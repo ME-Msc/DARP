@@ -24,17 +24,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--domain", required=True, help="RDDL domain file")
     parser.add_argument("--instance", required=True, help="RDDL instance file")
     parser.add_argument(
-        "--risk",
-        required=True,
-        help="JSON CC-POMDP risk sidecar (budget + risky_states)",
-    )
-    parser.add_argument(
         "--planner",
         choices=("hilp", "full-ilp"),
         default="hilp",
     )
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--risk-budget", type=float)
     parser.add_argument("--expansion-rounds", type=int)
     parser.add_argument(
         "--frontier-width",
@@ -76,10 +70,8 @@ def main(argv: list[str] | None = None) -> int:
     result = solve_rddl(
         args.domain,
         args.instance,
-        risk_path=args.risk,
         planner=cast(PlannerName, args.planner),
         seed=args.seed,
-        risk_budget=args.risk_budget,
         expansion_rounds=args.expansion_rounds,
         frontier_width=args.frontier_width,
         heuristic=heuristic,

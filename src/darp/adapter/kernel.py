@@ -9,7 +9,6 @@ from math import isfinite, prod
 from typing import Any
 
 StateKey = tuple[tuple[str, Hashable], ...]
-StateSelector = tuple[tuple[str, bool | int], ...]
 ObservationKey = tuple[tuple[str, Hashable], ...]
 Distribution = dict[Hashable, float]
 ActionKey = tuple[tuple[str, Hashable], ...]
@@ -49,20 +48,6 @@ class KernelError(ValueError):
     """Raised when finite-kernel evaluation is unsupported. / 有限内核求值不支持时抛出。"""
 
 
-@dataclass(frozen=True, slots=True)
-class RiskConstraintSpec:
-    r"""Describe the paper CC-POMDP tuple :math:`\langle R,\Delta\rangle`.
-
-    Each partial selector is a conjunction of grounded fluent equalities; the
-    selectors form their union.  A state is risky when it matches any selector.
-    / 每个部分状态 selector 内部为 AND，多个 selector 之间为 OR，共同定义风险集
-    :math:`R`。
-    """
-
-    budget: float | None = None
-    risky_states: tuple[StateSelector, ...] = ()
-
-
 @dataclass(frozen=True)
 class ConstraintMassOutcome:
     """One observation branch of an unnormalized constraint flow."""
@@ -77,7 +62,6 @@ class ConstraintMassExpansion:
     """Sparse float mass propagation for one constraint action."""
 
     coefficient: float
-    post_action_mass: Mapping[StateKey, float]
     observations: tuple[ConstraintMassOutcome, ...]
 
 
@@ -86,7 +70,6 @@ class RDDLKernel:
     """Lazily compile reached grounded states into sparse float kernels. / 将触达的 grounded 状态按需编译为稀疏浮点内核。"""
 
     grounded_model: Any
-    risk: RiskConstraintSpec = field(default_factory=RiskConstraintSpec)
     _state_names_cache: tuple[str, ...] = field(default=(), init=False, repr=False, compare=False)
     _action_names_cache: tuple[str, ...] = field(default=(), init=False, repr=False, compare=False)
     _observation_names_cache: tuple[str, ...] = field(default=(), init=False, repr=False, compare=False)
@@ -100,6 +83,12 @@ class RDDLKernel:
         default_factory=dict, init=False, repr=False, compare=False
     )
     _reward_cache: dict[tuple[int, int], float] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _transition_reward_cache: dict[tuple[int, int, int], float] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _state_terminal_cache: dict[int, bool] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
     _state_failure_cache: dict[int, float] = field(
@@ -153,11 +142,9 @@ class RDDLKernel:
     def from_grounded_model(
         cls,
         grounded_model: Any,
-        *,
-        risk: RiskConstraintSpec | None = None,
     ) -> RDDLKernel:
         """Build a sparse kernel from a pyRDDLGym grounded model. / 从 pyRDDLGym grounded model 构建稀疏内核。"""
-        kernel = cls(grounded_model=grounded_model, risk=risk or RiskConstraintSpec())
+        kernel = cls(grounded_model=grounded_model)
         kernel._validate_supported()
         return kernel
 
@@ -298,14 +285,37 @@ class RDDLKernel:
         states = tuple(state for state, probability in belief.items() if probability > 0)
         return bool(states) and all(self._state_is_terminal(state) for state in states)
 
+    def continuing_mass(
+        self, mass: Mapping[StateKey, float]
+    ) -> Mapping[StateKey, float]:
+        """Keep unnormalised mass of episodes that have not terminated.
+
+        / done=False 是继续执行时已知的信息；移除结束的轨迹，不放大剩余概率。
+        """
+        if not self._terminations_cache:
+            return mass
+        return {
+            state: probability
+            for state, probability in mass.items()
+            if probability > 0 and not self._state_is_terminal(state)
+        }
+
     def _state_is_terminal(self, state: StateKey) -> bool:
+        # Termination depends only on the state and this kernel's fixed model.
+        # / 相同状态的终止判断与搜索历史无关；False 也必须命中缓存。
+        state_id = self._state_index.register(state)
+        cached = self._state_terminal_cache.get(state_id)
+        if cached is not None:
+            return cached
         context = self._context(self.state_from_key(state), {})
         for expression in self._terminations_cache:
             distribution = self.expression_distribution(expression, context)
             if len(distribution) != 1:
                 raise KernelError("RDDL termination expressions must be deterministic.")
             if bool(next(iter(distribution))):
+                self._state_terminal_cache[state_id] = True
                 return True
+        self._state_terminal_cache[state_id] = False
         return False
 
     def state_key(self, state: Mapping[str, Any]) -> StateKey:
@@ -336,7 +346,6 @@ class RDDLKernel:
         post_action_mass = self._transition_mass(state_mass, action_id, action)
         return ConstraintMassExpansion(
             coefficient=0.0,
-            post_action_mass=post_action_mass,
             observations=self._constraint_mass_observations(post_action_mass, action),
         )
 
@@ -348,21 +357,17 @@ class RDDLKernel:
         """Propagate Lemma 3.3 unnormalized safe-prefix mass."""
         action_id = self._action_id(action)
         post_action_mass: dict[StateKey, float] = {}
-        for source, target, transition_mass in self._transition_branches(
+        for _, target, transition_mass in self._transition_branches(
             safe_mass, action_id, action
         ):
-            failure = self.transition_failure(source, target, action)
-            if failure <= 0.0:
-                surviving = transition_mass
-            elif failure >= 1.0:
+            # Boolean risk removes failed trajectories from the safe flow.
+            # / 布尔风险谓词为真时，只从安全概率流中移除该轨迹。
+            if self.state_failure(target):
                 continue
-            else:
-                surviving = transition_mass * (1.0 - failure)
-            if surviving > 0:
-                post_action_mass[target] = post_action_mass.get(target, 0.0) + surviving
+            if transition_mass > 0:
+                post_action_mass[target] = post_action_mass.get(target, 0.0) + transition_mass
         return ConstraintMassExpansion(
             coefficient=self.safe_constraint_coefficient_for_mass(safe_mass, action),
-            post_action_mass=post_action_mass,
             observations=self._constraint_mass_observations(post_action_mass, action),
         )
 
@@ -487,25 +492,14 @@ class RDDLKernel:
         cached = self._state_failure_cache.get(state_id)
         if cached is not None:
             return cached
-        state_mapping = self.state_from_key(state)
-        failure = float(
-            any(
-                _state_matches_selector(state_mapping, selector)
-                for selector in self.risk.risky_states
-            )
+        value = self.deterministic_value(
+            self.grounded_model.risk, self.state_from_key(state), {}
         )
+        if type(value) is not bool:
+            raise KernelError(f"Risk expression must return a Boolean, got {value!r}.")
+        failure = float(value)
         self._state_failure_cache[state_id] = failure
         return failure
-
-    def transition_failure(
-        self,
-        source: StateKey,
-        target: StateKey,
-        action: Mapping[str, Any],
-    ) -> float:
-        """Return whether the transition enters the paper's risky-state set."""
-        del source, action
-        return self.state_failure(target)
 
     def _transition_risk_row(
         self,
@@ -518,16 +512,11 @@ class RDDLKernel:
         cached = self._transition_risk_rows.get(cache_key)
         if cached is not None:
             return cached
-        source = self._state_index.key(source_id)
         row = self._transition_row(source_id, action_id, action)
         risk = _probability(
             sum(
                 probability
-                * self.transition_failure(
-                    source,
-                    self._state_index.key(int(target_id)),
-                    action,
-                )
+                * self.state_failure(self._state_index.key(int(target_id)))
                 for target_id, probability in zip(
                     row.next_state_ids,
                     row.probabilities,
@@ -683,43 +672,38 @@ class RDDLKernel:
         action: Mapping[str, Any],
         observation: ObservationKey,
     ) -> tuple[Mapping[StateKey, float], float]:
-        """Return action-start mass and reward jointly weighted by one observation."""
+        """Return action-start mass/reward weighted by observation and nontermination."""
         action_id = self._action_id(action)
         result: dict[StateKey, float] = {}
         utility = 0.0
         for state, mass in state_mass.items():
+            state_id = self._state_index.register(state)
             row = self._transition_row(
-                self._state_index.register(state),
+                state_id,
                 action_id,
                 action,
             )
-            state_context = self._context(self.state_from_key(state), action)
             for target_id, probability in zip(
                 row.next_state_ids,
                 row.probabilities,
             ):
                 target = self._state_index.key(int(target_id))
+                if self._terminations_cache and self._state_is_terminal(target):
+                    continue
                 joint = (
                     float(mass)
                     * probability
                     * self.observation_probability(
-                    observation,
-                    target,
-                    action,
-                )
+                        observation,
+                        target,
+                        action,
+                    )
                 )
                 if joint <= 0.0:
                     continue
                 result[state] = result.get(state, 0.0) + joint
-                target_state = self.state_from_key(target)
-                utility += joint * self.expected_reward(
-                    {
-                        **state_context,
-                        **{
-                            f"{name}'": target_state.get(name, False)
-                            for name in self.state_names
-                        },
-                    }
+                utility += joint * self._transition_reward_for_ids(
+                    state_id, action_id, int(target_id), action
                 )
         return result, utility
 
@@ -850,27 +834,39 @@ class RDDLKernel:
         cached = self._reward_cache.get(cache_key)
         if cached is not None:
             return cached
-        state = self.state_from_key(self._state_index.key(state_id))
-        context = self._context(state, action)
         row = self._transition_row(state_id, action_id, action)
         reward = sum(
             probability
-            * self.expected_reward(
-                {
-                    **context,
-                    **{
-                        f"{name}'": self.state_from_key(
-                            self._state_index.key(int(target_id))
-                        ).get(name, False)
-                        for name in self.state_names
-                    },
-                }
+            * self._transition_reward_for_ids(
+                state_id, action_id, int(target_id), action
             )
             for target_id, probability in zip(row.next_state_ids, row.probabilities)
         )
         if not isfinite(reward):
             raise KernelError("Expected reward must be finite.")
         self._reward_cache[cache_key] = reward
+        return reward
+
+    def _transition_reward_for_ids(
+        self,
+        state_id: int,
+        action_id: int,
+        target_id: int,
+        action: Mapping[str, Any],
+    ) -> float:
+        """Cache E[R(s,a,s')] without regrouping history-weighted sums.
+
+        / 仅缓存模型相关的 reward 期望；概率乘法、累加顺序及终止过滤保持不变。
+        """
+        cache_key = (state_id, action_id, target_id)
+        cached = self._transition_reward_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        context = self._context(self.state_from_key(self._state_index.key(state_id)), action)
+        target = self.state_from_key(self._state_index.key(target_id))
+        context.update({f"{name}'": target.get(name, False) for name in self.state_names})
+        reward = self.expected_reward(context)
+        self._transition_reward_cache[cache_key] = reward
         return reward
 
     def _observation_distribution_for_state(
@@ -924,7 +920,7 @@ class RDDLKernel:
         return _normalize_distribution(partials)
 
     def _validate_supported(self) -> None:
-        """Validate finite state ranges and CC-POMDP risky-state selectors."""
+        """Validate finite state ranges and a deterministic state-risk predicate."""
         state_ranges = getattr(self.grounded_model, "state_ranges", {}) or {}
         unsupported = [
             name
@@ -937,26 +933,35 @@ class RDDLKernel:
                 "state fluents only: "
                 + ", ".join(unsupported)
             )
-        selector_names = {
-            name
-            for selector in self.risk.risky_states
-            for name, _ in selector
-        }
-        unknown_names = sorted(selector_names - set(self.state_names))
-        if unknown_names:
+        expression = getattr(self.grounded_model, "risk", None)
+        if expression is None:
+            raise KernelError("RDDL domain must define `risk = <Boolean expression>;`.")
+        self._validate_risk_expression(expression, set())
+
+    def _validate_risk_expression(self, expression: Any, resolving: set[str]) -> None:
+        """Reject non-state or stochastic risk dependencies without enumerating states."""
+        if not _is_expression(expression):
+            return
+        expression_type, operator = expression.etype
+        if expression_type == "randomvar":
+            raise KernelError(f"Risk must be deterministic; {operator} is not allowed.")
+        if expression_type == "pvar":
+            name, parameters = expression.args
+            if parameters not in (None, []):
+                raise KernelError(f"Risk expression is not grounded: {name}{parameters}.")
+            if name in self.state_names or name in self.non_fluents:
+                return
+            if name in self.intermediate_names:
+                if name in resolving:
+                    raise KernelError(f"Cyclic risk intermediate dependency at {name!r}.")
+                self._validate_risk_expression(self.cpf_expression(name), resolving | {name})
+                return
             raise KernelError(
-                "Risky-state selectors reference unknown grounded state fluents: "
-                + ", ".join(unknown_names)
+                f"Risk cannot reference {name!r}; use current state, non-fluents "
+                "or deterministic state-only intermediate fluents."
             )
-        for selector in self.risk.risky_states:
-            for name, expected in selector:
-                state_range = str(state_ranges.get(name, "bool"))
-                expected_type = bool if state_range == "bool" else int
-                if type(expected) is not expected_type:
-                    raise KernelError(
-                        f"Risky-state selector {name!r} must use a "
-                        f"{state_range} value, got {expected!r}."
-                    )
+        for argument in _as_args(expression.args):
+            self._validate_risk_expression(argument, resolving)
 
 
 def _cpf_expression(value: Any) -> Any:
@@ -1012,20 +1017,6 @@ def _plain_value(value: Any) -> Hashable:
     if isinstance(value, dict):
         return tuple(sorted(value.items()))
     return value
-
-
-def _state_matches_selector(
-    state: Mapping[str, Any],
-    selector: StateSelector,
-) -> bool:
-    """Return whether a state satisfies every equality in one selector."""
-    for name, expected in selector:
-        if name not in state:
-            return False
-        actual = _plain_value(state[name])
-        if type(actual) is not type(expected) or actual != expected:
-            return False
-    return True
 
 
 def _normalize_distribution(

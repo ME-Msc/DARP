@@ -13,13 +13,11 @@ from typing import Any
 
 from darp.adapter.loader import load_rddl
 from darp.executor import PolicyExecutor
-from darp.model.risk_sidecar import load_risk_sidecar
 from darp.solve import DARPResult
 
 from .darp_runner import (
     DOMAIN,
     RDDL_DIR,
-    RISK,
     run_darp,
 )
 from .raostar_runner import (
@@ -118,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Constrained-POMDP: {raostar.constrained_pomdp_path}")
     print(f"RAOStar: {raostar.raostar_path}")
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    existing = _load_existing(args.output, args.seed, args.episodes) if args.resume else {}
+    existing = _load_existing(args.output, args.seed, args.episodes) if args.resume else set()
     append = args.resume and args.output.is_file() and args.output.stat().st_size > 0
     with args.output.open("a" if append else "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=FIELDS, lineterminator="\n")
@@ -127,14 +125,9 @@ def main(argv: list[str] | None = None) -> int:
         for case in cases:
             scenario = case.scenario
             for trial in range(1, args.trials + 1):
-                if all(
-                    _key(scenario, trial, algorithm) in existing
-                    for algorithm in ALGORITHMS
-                ):
-                    continue
+                seed = args.seed + trial - 1
                 key = _key(scenario, trial, "DARP-HILP")
                 if key not in existing:
-                    seed = args.seed + trial - 1
                     with closing(load_rddl(DOMAIN, case.instance).env) as env:
                         result = run_darp(
                             case.instance,
@@ -150,7 +143,6 @@ def main(argv: list[str] | None = None) -> int:
                             env,
                             episodes=args.episodes,
                             seed=seed,
-                            risk_path=RISK,
                         )
                     metrics = _darp_metrics(
                         result,
@@ -170,7 +162,6 @@ def main(argv: list[str] | None = None) -> int:
 
                 key = _key(scenario, trial, "RAO*")
                 if key not in existing:
-                    seed = args.seed + trial - 1
                     grid = raostar.make_grid(
                         scenario.size, scenario.horizon, scenario.delta
                     )
@@ -200,11 +191,11 @@ def main(argv: list[str] | None = None) -> int:
 def _build_cases(args: argparse.Namespace) -> tuple[Case, ...]:
     if args.instance is not None:
         instance = args.instance.expanduser().resolve()
-        size, horizon = _read_instance(instance)
+        size, horizon, budget = _read_instance(instance)
         canonical = _instance_path(size, horizon).resolve()
         if instance != canonical:
             raise ValueError(f"Expected checked-in instance {canonical}")
-        return (Case(Scenario(size, horizon, _default_risk_budget()), instance),)
+        return (Case(Scenario(size, horizon, budget), instance),)
 
     sizes = args.sizes or GRID_SIZES
     horizons = args.horizons or HORIZONS
@@ -213,7 +204,7 @@ def _build_cases(args: argparse.Namespace) -> tuple[Case, ...]:
     for selected_size in sizes:
         for selected_horizon in horizons:
             instance = _instance_path(selected_size, selected_horizon).resolve()
-            if _read_instance(instance) != (selected_size, selected_horizon):
+            if _read_instance(instance)[:2] != (selected_size, selected_horizon):
                 raise ValueError(f"RDDL metadata mismatch: {instance}")
             cases.extend(
                 Case(Scenario(selected_size, selected_horizon, delta), instance)
@@ -229,44 +220,39 @@ def _instance_path(size: int, horizon: int) -> Path:
     return path
 
 
-def _read_instance(instance: Path) -> tuple[int, int]:
-    model = load_rddl(DOMAIN, instance).env.model
-    non_fluents = model.non_fluents
-    rows = int(non_fluents["max_row"]) + 1
-    columns = int(non_fluents["max_col"]) + 1
-    if rows != columns:
-        raise ValueError("The RAO* comparison requires a square Grid.")
-    expected_state = {
-        "grid_row": rows - 1,
-        "grid_col": 0,
-        "row_mod5": (rows - 1) % 5,
-        "col_mod5": 0,
-    }
-    if (
-        (int(non_fluents["goal_row"]), int(non_fluents["goal_col"]))
-        != (0, columns - 1)
-        or float(non_fluents["transition_accuracy"]) != 0.85
-        or float(non_fluents["observation_accuracy"]) != 0.85
-        or {name: int(model.state_fluents[name]) for name in expected_state}
-        != expected_state
-        or int(model.max_allowed_actions) != 1
-        or float(model.discount) != 1.0
-    ):
-        raise ValueError(f"RDDL does not match the paper Grid: {instance}")
-    return rows, int(model.horizon)
-
-
-def _default_risk_budget() -> float:
-    budget = load_risk_sidecar(RISK).budget
-    if budget is None:
-        raise ValueError("risk.json must define a default budget.")
-    return float(budget)
+def _read_instance(instance: Path) -> tuple[int, int, float]:
+    problem = load_rddl(DOMAIN, instance)
+    with closing(problem.env) as env:
+        model = env.model
+        non_fluents = model.non_fluents
+        rows = int(non_fluents["max_row"]) + 1
+        columns = int(non_fluents["max_col"]) + 1
+        if rows != columns:
+            raise ValueError("The RAO* comparison requires a square Grid.")
+        expected_state = {
+            "grid_row": rows - 1,
+            "grid_col": 0,
+            "row_mod5": (rows - 1) % 5,
+            "col_mod5": 0,
+        }
+        if (
+            (int(non_fluents["goal_row"]), int(non_fluents["goal_col"]))
+            != (0, columns - 1)
+            or float(non_fluents["transition_accuracy"]) != 0.85
+            or float(non_fluents["observation_accuracy"]) != 0.85
+            or {name: int(model.state_fluents[name]) for name in expected_state}
+            != expected_state
+            or int(model.max_allowed_actions) != 1
+            or float(model.discount) != 1.0
+        ):
+            raise ValueError(f"RDDL does not match the paper Grid: {instance}")
+        return rows, int(model.horizon), float(problem.native_ast.instance.risk_budget)
 
 
 def _save(
     writer: csv.DictWriter,
     handle: Any,
-    existing: dict[tuple[int, int, float, int, str], dict[str, Any]],
+    existing: set[tuple[int, int, float, int, str]],
     scenario: Scenario,
     trial: int,
     seed: int,
@@ -286,7 +272,7 @@ def _save(
     }
     writer.writerow(row)
     handle.flush()
-    existing[_key(scenario, trial, algorithm)] = row
+    existing.add(_key(scenario, trial, algorithm))
     execution_time = metrics.get("policy_execution_time_s")
     execution = (
         f", exec={float(execution_time):.6f}s"
@@ -343,10 +329,10 @@ def _load_existing(
     path: Path,
     base_seed: int,
     episodes: int,
-) -> dict[tuple[int, int, float, int, str], dict[str, Any]]:
+) -> set[tuple[int, int, float, int, str]]:
     if not path.is_file() or path.stat().st_size == 0:
-        return {}
-    rows: dict[tuple[int, int, float, int, str], dict[str, Any]] = {}
+        return set()
+    rows: set[tuple[int, int, float, int, str]] = set()
     with path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         if tuple(reader.fieldnames or ()) != FIELDS:
@@ -376,7 +362,7 @@ def _load_existing(
             key = _key(scenario, trial, row["algorithm"])
             if key in rows:
                 raise ValueError(f"Duplicate result row: {key}")
-            rows[key] = row
+            rows.add(key)
     return rows
 
 

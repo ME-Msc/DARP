@@ -12,3 +12,4 @@ dist/
 
 # Temporary experiment files.
 *.tmp
+/experiments/*/output/regression-*/

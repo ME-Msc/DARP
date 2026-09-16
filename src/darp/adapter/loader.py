@@ -12,12 +12,11 @@ from typing import Any
 
 from darp.adapter.problem import PyRDDLGymProblem, RDDLLoadError
 
-
 _PARSER_LOCK = Lock()
 
 
 def load_rddl(domain: str | Path, instance: str | Path) -> PyRDDLGymProblem:
-    """Load one DARP-extended RDDL domain/instance pair through pyRDDLGym."""
+    """Load standard or DARP-extended RDDL through pyRDDLGym."""
     domain_path = Path(domain).expanduser()
     instance_path = Path(instance).expanduser()
     _ensure_matplotlib_cache_dir()
@@ -51,14 +50,18 @@ def load_rddl(domain: str | Path, instance: str | Path) -> PyRDDLGymProblem:
         raise RDDLLoadError(
             "pyRDDLGym model did not expose the RDDL AST required for grounding."
         )
-    return PyRDDLGymProblem(native_ast=native_ast, env=env)
+    try:
+        return PyRDDLGymProblem(native_ast=native_ast, env=env)
+    except RDDLLoadError:
+        env.close()
+        raise
 
 
 @lru_cache(maxsize=1)
 def _extended_rddl_parser() -> Any:
-    """Build pyRDDLGym's parser with DARP's two top-level extensions."""
+    """Extend pyRDDLGym's top-level grammar for duration and CC-POMDP risk."""
 
-    import ply.yacc as yacc
+    from ply import yacc
     from pyRDDLGym.core.debug.exception import RDDLParseError
     from pyRDDLGym.core.parser.domain import Domain
     from pyRDDLGym.core.parser.parser import RDDLParser
@@ -75,12 +78,7 @@ def _extended_rddl_parser() -> Any:
             # calls, so serialize use of the one cached grammar instance.
             with _PARSER_LOCK:
                 self.lexer._lexer.lineno = 1
-                ast = super().parse(input)
-            if not hasattr(ast.domain, "duration"):
-                raise RDDLParseError(
-                    "DARP domains require a top-level 'duration = <expr>;' section."
-                )
-            return ast
+                return super().parse(input)
 
         def p_error(self, p: Any) -> None:
             if p is None:
@@ -91,32 +89,30 @@ def _extended_rddl_parser() -> Any:
             """domain_block : DOMAIN IDENT LCURLY req_section domain_list RCURLY"""
             sections = p[5]
             domain = Domain(p[2], p[4], sections)
-            if "duration" in sections:
-                domain.duration = sections["duration"]
+            for name in ("duration", "risk"):
+                if name in sections:
+                    setattr(domain, name, sections[name])
             p[0] = ("domain", domain)
 
         def p_domain_list_darp_extension(self, p: Any) -> None:
             """domain_list : domain_list darp_extension_section"""
             name, value = p[2]
-            if name != "duration":
+            if name not in ("duration", "risk"):
                 raise ValueError(f"Unknown DARP domain section {name!r}.")
             if name in p[1]:
-                raise ValueError("DARP domain contains duplicate duration sections.")
+                raise ValueError(f"DARP domain contains duplicate {name} sections.")
             p[1][name] = value
             p[0] = p[1]
 
         def p_instance_list_darp_extension(self, p: Any) -> None:
             """instance_list : instance_list darp_extension_section"""
             name, expression = p[2]
-            if name != "max-duration-shortfall-probability":
+            if name not in ("max-duration-shortfall-probability", "risk-budget"):
                 raise ValueError(f"Unknown DARP instance section {name!r}.")
-            key = "max_duration_shortfall_probability"
+            key = name.replace("-", "_")
             if key in p[1]:
-                raise ValueError(
-                    "DARP instance contains duplicate "
-                    "max-duration-shortfall-probability sections."
-                )
-            value = _constant_probability(expression)
+                raise ValueError(f"DARP instance contains duplicate {name} sections.")
+            value = _constant_probability(expression, name)
             p[1][key] = value
             p[0] = p[1]
 
@@ -129,19 +125,17 @@ def _extended_rddl_parser() -> Any:
     return parser
 
 
-def _constant_probability(expression: Any) -> float:
+def _constant_probability(expression: Any, name: str) -> float:
     """Read a literal probability from a parsed RDDL expression."""
 
     if getattr(expression, "etype", (None,))[0] != "constant":
-        raise ValueError("max-duration-shortfall-probability must be a number.")
+        raise ValueError(f"{name} must be a number.")
     value = getattr(expression, "value", None)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("max-duration-shortfall-probability must be a number.")
+        raise ValueError(f"{name} must be a number.")
     probability = float(value)
     if not isfinite(probability) or not 0.0 <= probability <= 1.0:
-        raise ValueError(
-            "max-duration-shortfall-probability must be finite and in [0, 1]."
-        )
+        raise ValueError(f"{name} must be finite and in [0, 1].")
     return probability
 
 

@@ -1,94 +1,56 @@
-# DARP vs RAO* 实验协议
+# Grid 实验协议
 
-## 1. 目的与外部实现
+本文记录 Table 1 duration 和 Table 2 DARP vs RAO* 的配置、指标及比较边界。使用方法统一见 README 的[实验命令](../README.md#实验)、[RDDL 扩展](../README.md#rddl-扩展)及[策略保存与回放](../README.md#策略保存与回放)。
 
-实验比较 DARP-HILP 与外部 RAO* 在同一部分可观测 Grid CC-POMDP 上的 native objective、first-entry chance risk、搜索时间、节点数和迭代数。
+## 模型与实验矩阵
 
-外部场景和 adapter 来自 `ME-Msc/Constrained-POMDP@d84d099493b973a63d879255d2221c1930d649aa`，RAO* 来自 `ME-Msc/RAOStar@543f782d80ceb9555130e911c1fcf7074153d267`。后者是 reimplementation，不是 RAO* 原作者 artifact。两个提交目前均无顶层 LICENSE；发表时必须披露来源并单独核查授权。
+两个实验各自使用目录内的 `rddl/domain.rddl` 和 instance，输入互不依赖。共同配置如下：
 
-## 2. 固定模型
+| 项目 | 配置 |
+|:--|:--|
+| 起点 / 目标 | `(size-1,0)` / `(0,size-1)` |
+| 动作与转移 | L、U、R、D；意图方向概率 0.85，两侧滑移各 0.075 |
+| 观测 | 相邻边界墙数 0/1/2；正确概率 0.85 |
+| Cost / heuristic | 非目标状态 cost 1，目标状态 cost 0；Manhattan distance |
+| Horizon / risk budget | `h ∈ {3,4,5,6}`，`Δ ∈ {0.1,0.2,0.3}` |
+| 风险位置 | 5×5 模板 `(0,0),(3,0),(3,1),(1,3),(1,4)`；100×100 按 `(row mod 5,col mod 5)` 平铺 |
 
-```text
-size                  5×5, 100×100
-horizon               3, 4, 5, 6
-risk budget delta     0.1, 0.2, 0.3
-start / goal          (size-1,0) / (0,size-1)
-actions               L, U, R, D
-transition            intended .85, slips .075/.075
-observation           boundary-wall count 0/1/2; correct .85
-cost                  1 at non-goal, 0 at goal
-duration              deterministic 1
-heuristic             Manhattan distance to goal
-```
+Grid 每步只采样一次 `move_outcome` intermediate fluent，行列和模 5 坐标共享该结果，保持联合滑移分布。确定性初态直接来自 RDDL。Risk 表示整条策略至少进入一次危险状态的概率，包含初态，重复进入不重复计数。
 
-5×5 风险模板为 `(0,0),(3,0),(3,1),(1,3),(1,4)`，100×100 按 `(row mod 5,col mod 5)` 平铺。risk 是执行中首次进入危险状态的概率。
+Table 1 使用 5×5 Grid，比较 Full-ILP 与 HILP。F 的时长恒为 1；E 的泥地动作均值为 2、其余为 1，使用方差为 0 的代表性均值模型；S 使用相同均值、Normal 方差 0.1 和 percentile 概率阈值 0.3。泥地位置为 `(0,3),(1,1),(2,2),(3,4),(4,2)`，“接触泥地”指源状态或意图终点位于泥地。`h` 是 duration 阈值，E/S 使用规划中的平滑 belief 停止量。每轮完整矩阵有 27 条 Full-ILP 和 36 条 HILP 记录，`h=6` 只运行 HILP；Full-ILP 的预处理上限为 800,000 条 action record，触发时记录失败。
 
-DARP 的 domain duration 表达式在 Table 2 默认 non-fluent 下化简为 `D(s,a)=1.0`，`rddl/risk.json` 的 `budget + risky_states` 给出 CC-POMDP 风险约束，instance RDDL 的 horizon 是 duration 阈值。RAO* 使用相同数值的 action-depth horizon。
+作者 E/S 原始实验 artifact 和 E 的物理方差尚不明确，当前 E/S 数值与原表存在差异；这些结果用于报告上述明确配置下的实验，不宣称完整复现 Table 1。
 
-DARP 的 terminal action node 使用论文 HILP 的 Manhattan replacement，RAO* 保持其原生的 step-cost 加 depth-`h` child Manhattan backup。两端执行相同动作数并共享 T/O/risk/duration，但 native objective 的边界定义不同，因此表中 objective 不能直接解释为共同 policy-quality 指标。
+Table 2 使用 5×5、100×100 Grid，共 24 个配置，分别运行 DARP-HILP 与 RAO*。Duration 恒为 1，DARP 的 duration horizon 与 RAO* 的 action-depth horizon 对齐。两端共享 T/O/risk/duration，但 DARP 在 terminal action node 使用 Manhattan replacement，RAO* 保留 step-cost 加 depth-`h` child Manhattan backup；native objective 的边界定义不同，不能直接作为共同的策略质量指标。
 
-## 3. 三个实验文件
+## 外部 baseline
 
-```text
-darp_runner.py     DARP 输入路径、Manhattan heuristic 与一次求解调用
-raostar_runner.py  固定仓库下载与校验、外部 Grid 和 RAO* adapter 调用
-run.py             参数矩阵、配对执行、CSV 和 Markdown 汇总
-```
+Table 2 的场景和 adapter 固定为 `ME-Msc/Constrained-POMDP@d84d099493b973a63d879255d2221c1930d649aa`，RAO* 固定为 `ME-Msc/RAOStar@543f782d80ceb9555130e911c1fcf7074153d267`。RAO* 是第三方 reimplementation，不是原作者 artifact；固定提交均无顶层 LICENSE，使用其代码发表或分发前需核查授权。
 
-Grid domain 使用每个动作只采样一次的 `move_outcome` intermediate fluent。`grid_row'`、`grid_col'`、`row_mod5'` 和 `col_mod5'` 共享该结果，因此保持论文中的 `.85/.075/.075` 联合滑移分布，同时不把随机结果放入 belief state。RDDL 声明的确定性初态由 DARP 直接读取，不需要外部 root-belief provider。
+`darp_runner.py` 配置 RDDL、Manhattan heuristic 并调用 DARP；`raostar_runner.py` 校验固定提交、clean worktree 和必要文件，通过外部 `raostar_adapter.run_raostar()` 执行 baseline；`run.py` 配对运行并汇总。自动缓存仅首次 detached checkout，已有目录不会 pull/reset，也不修改 baseline 算法。离线 checkout 和缓存参数见 README。
 
-`darp_runner.py` 只配置输入并调用 DARP。此前的模型等价性与策略重算检查属于独立历史审计，不在当前实验运行中重复执行。
+## 指标与计时
 
-外部仓库必须位于固定 commit、worktree clean 且包含必要文件。自动缓存只做首次 detached checkout，已有目录不会被 pull 或 reset。DARP 不复制或修改 baseline 算法；RAO* 始终由外部 `raostar_adapter.run_raostar()` 执行。
+| 指标 | 定义 |
+|:--|:--|
+| `objective` | DARP 为 `-achieved_utility`，转成 cost 符号；RAO* 为其 native objective |
+| `risk` | 求解器报告的首次风险概率，CSV 保留原始浮点值，不裁剪超预算值 |
+| `time_s` | DARP 为完整 `choose_action()`，包括树构建、Gurobi model 创建、更新和求解，不含 RDDL 加载；RAO* 为固定 adapter 的 `search()` |
+| Table 1 节点数 | Full-ILP `n` 为 `tree_nodes`；`Act.n` 和 HILP `Exp.n` 为各自 `ilp_variables`；`Exp.% = 100 × Exp.n / Act.n` |
+| Table 2 `n` | DARP 为 `expanded_nodes + frontier_nodes` action histories；RAO* 为 belief hypergraph nodes |
+| `iterations` | HILP 为 p-ILP solves，Full-ILP 为 1，RAO* 为 expansions；仅表示各实现的搜索规模 |
+| `policy_execution_time_s` | `rollout_time_s / episodes`，每条 episode 的环境 reset、策略查询、`env.step` 与统计墙钟开销，不含规划时间 |
 
-## 4. 执行与输出
+正式 completion-time 实验不设 timeout；调试 Table 2 时，同一个 `--timeout` 传给两端。DARP 使用 `MIPGap=1e-6`、Gurobi 默认 `1e-6` 线性约束可行性容差及默认线程数。`complete` 表示求解器报告搜索完成，不表示 zero-gap、有理数复核或实验脚本独立证明可行性。
 
-单配置：
+每个 DARP trial 保存完整 `DARPResult` JSON，重新载入策略后，在相同 RDDL 的 pyRDDLGym 环境执行，默认 1000 条 episode。`risk_rate` 是至少失败一次的 episode 比例，风险后继续执行策略；有限采样略超预算不等于模型约束被违反。风险和 duration 统计读取真实状态，策略仍只收到 observation。
 
-```bash
-.venv/bin/python -m experiments.DARP-vs-RAOstar-grid.run \
-  --instance experiments/DARP-vs-RAOstar-grid/rddl/instance_5_h3.rddl \
-  --trials 1 --episodes 1000 \
-  --output experiments/DARP-vs-RAOstar-grid/output/smoke.csv
-```
+`physical_duration_mean` 是真实轨迹累计动作时长的均值：F/E 使用配置的确定性时长，S 使用独立随机数流采样 Normal；它与 E/S 规划停止量及执行墙钟时间含义不同。策略按叶节点或环境终止条件停止。BaseAgent 的 `statistics["mean"]` 等回报字段是原始 RDDL discounted reward，不应用 Manhattan terminal replacement，不能与规划 objective 混用。RAO* 只报告搜索指标，没有 DARP executor rollout，两端不比较执行墙钟时间。
 
-完整 24-cell 矩阵，每个 cell 的 DARP-HILP 和 RAO* 各求解 1 次，每个 DARP 策略执行 1000 条 episode：
+## 输出与续跑
 
-```bash
-TRIALS=1 bash tools/run_repro.sh
-# 仅继续同一版本、同一配置的中断实验：
-TRIALS=1 RESUME=1 bash tools/run_repro.sh
-```
+当前结果见 [Table 1](../experiments/DARP-table1-grid/output/table1.md) 和 [Table 2](../experiments/DARP-vs-RAOstar-grid/output/table2.md)；对应 long-form CSV 与策略 JSON 保存在各自 `output/` 下。Markdown 从 CSV 汇总，供手动对照原文，执行附表保留逐 trial 指标。
 
-`run.py` 同时生成 long-form CSV 和按原表结构排版的 Markdown。`--trials 1` 时规划时间就是一次求解的观测值，不是论文 25 次 trial 的均值，也不能据此断言稳定的速度优势。默认结果由 Git 记录在 `experiments/DARP-vs-RAOstar-grid/output/`。离线运行可指定 `--constrained-pomdp-repo`、`--raostar-checkout` 和 `--baseline-cache`。
+Runner 默认 25 个规划 trial，当前两张结果表使用每配置 1 个 trial；单次时间是一次观测，不是论文的 25 次均值，不能据此断言稳定速度优势。每策略 1000 条 episode 是执行采样次数，不是独立规划次数。多 trial 时，Table 1 对成功记录求均值并报告失败数；Table 2 要求完整配对 trial。
 
-每个 DARP trial 保存完整 `DARPResult` JSON，再从 JSON 读取策略，在同一 RDDL 输入构建的 pyRDDLGym 环境中调用 `agent.evaluate(env, episodes=1000, seed=seed, risk_path=RISK)`。策略格式与统计字段见 [策略格式](POLICY_FORMAT.md)。实验代码负责生成表格，原论文数值由读者手动对照。
-
-主表 objective 和 risk 来自求解器，附表仅记录 episode 数、首次风险频率、平均物理时长和执行墙钟时间。`statistics["mean"]` 等 BaseAgent 字段仍返回原始 RDDL discounted reward，执行阶段不应用 Manhattan terminal replacement，因此这些回报不与规划 objective 混用。
-
-CSV 的 `policy_execution_time_s` 为 `rollout_time_s / episodes`，表示平均每条 episode 的环境 reset、策略查询、`env.step` 及统计开销；它不包含规划时间，也不是动作的物理时长。外部 RAO* 只运行搜索并报告原生规划指标，未通过 DARP executor 做策略 rollout；两端不比较策略执行墙钟时间。
-
-Risk 每条 episode 只记录“是否至少失败过一次”：包括初始状态属于风险集的情况，多次进入或停留在风险状态仍只计一次，发生风险后继续执行原策略。`risk_rate` 是采样频率，有限采样的频率略超预算不等于策略违反模型约束。风险统计使用 simulator 的真实状态，但策略仍只收到其定义的 observation。
-
-正式 completion-time 实验不设置 timeout；调试时的 `--timeout` 同时传给 DARP 和 RAO*。DARP 的计时覆盖完整 `choose_action()`，包括 Gurobi model 创建、增量更新和求解；RDDL 与 risk JSON 加载不计时。RAO* 的计时覆盖其 `search()` 调用，与固定 baseline adapter 的定义一致。
-
-`complete` 表示对应求解器报告搜索完成，不代表实验脚本重新证明了策略可行性。DARP 使用 `MIPGap=1e-6` 和 Gurobi 默认的 `1e-6` 线性约束可行性容差；这不表示 zero-gap 或有理数复核。两端 CSV 都保留原始浮点 risk，不裁剪超预算值。较严格的 gap 避免约 200 的 Grid objective 因默认相对容差提前停止而影响两位小数。Gurobi 线程数使用默认设置。DARP 的 `n` 是 `expanded+frontier` action histories，RAO* 的 `n` 是 belief hypergraph nodes；`iterations` 分别表示 p-ILP solves 和 RAO* expansions，只作为各自实现的搜索规模指标。
-
-## 5. Table 1 duration 实验
-
-`experiments/DARP-table1-grid/` 共用 Grid domain 和 risk 文件，用 instance 的 non-fluents 指定 F、E、S。F 为所有动作时长 1；E 按论文文字设置接触泥地均值 2、其他均值 1，当前使用方差为 0 的代表性均值模型，作者原实验的 E 物理方差不明确；S 使用相同均值和 Normal 方差 0.1，percentile 阈值为 0.3。对 $h\in\{3,4,5,6\}$、$\Delta\in\{0.1,0.2,0.3\}$ 运行 Full-ILP/HILP，其中 $h=6$ 按原表只运行 HILP：
-
-```bash
-.venv/bin/python -m experiments.DARP-table1-grid.run --trials 1 --episodes 1000 \
-  --summary experiments/DARP-table1-grid/output/table1.md
-```
-
-该命令产生 27 条 Full-ILP 和 36 条 HILP 规划记录；1000 条 episode 是每次所得策略的执行次数，不是独立规划 trial。Full-ILP 保留 800,000 action-record 预处理上限，触发资源上限时记录失败。
-
-执行器按每步真实状态读取原 RDDL duration：F/E 累计当前配置的确定性时长，S 采样 Normal 时长，汇总为 `physical_duration_mean`。独立随机数流保持环境 T/O 抽样不变。物理时长与论文使用平滑 belief 的 E/S 停止量含义不同；策略按规划结果的叶节点停止。
-
-结果保存在 [Table 1](../experiments/DARP-table1-grid/output/table1.md) 和 [Table 2](../experiments/DARP-vs-RAOstar-grid/output/table2.md)，供手动对照。当前缺少作者 E/S 实验的原始 artifact，已有部分数值不一致，不能宣称完整复现 Table 1。例如 E/h=4/Δ=0.1 为 9.62（论文 9.66），S/h=5/Δ=0.1 为 10.63（论文 10.50）。泥地 duration 当前按“源状态或意图终点位于泥地”定义，核对这一解释仍需作者原始配置。
-
-旧版输出可能包含不同的执行字段；恢复实验仅使用同一版本、配置和 trial 设置的结果，避免混用计时口径。
-
-2026-09-14 的精简只删除了当前 `table1-raw.csv`、`table2-raw.csv` 的诊断列并重新排版；63 条和 48 条原记录的保留值全部未变，计时仍来自此前运行，不是精简后重新测量。原 CSV 备份在项目内 `.cache/metric-cleanup-20260914/`；保存的策略 JSON 未修改。
+`--resume` 仅用于继续同一代码版本、RDDL、配置、seed、trial 和 episode 设置的中断实验。CSV schema、episode 数和策略文件检查不能替代源码或 RDDL 哈希校验；旧版输出不可混入当前运行。Table 1 已记录的失败 trial 也会被跳过，续跑不会自动重试。策略 JSON 不绑定模型路径或哈希，执行方需保留匹配的 RDDL。

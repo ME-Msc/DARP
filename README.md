@@ -1,226 +1,256 @@
 # DARP
 
-DARP 是论文 *Heuristic Search in Dual Space for Constrained Fixed-Horizon POMDPs with Durative Actions* 的研究实现。它从 RDDL 按需构建有限可达模型，采用与论文参考实现一致的稀疏浮点概率质量传播 belief/risk，并使用 Gurobi 求解 full-ILP 或增量 HILP。
+DARP 是论文 *Heuristic Search in Dual Space for Constrained Fixed-Horizon POMDPs with Durative Actions* 的离线求解器：读取标准或扩展 RDDL，通过 Full-ILP/HILP 求解并保存条件策略，在 pyRDDLGym 中回放。
 
-仓库目前只保留核心求解器以及 Table 1 duration、`DARP vs RAO*` Grid 实验。
+- [算法映射](docs/ALGORITHM_MAPPING.md)：公式、符号、实现及支持范围。
+- [实验协议](docs/EXPERIMENT_PROTOCOL.md)：配置、计时口径和比较边界。
+- 结果：[Table 1](experiments/DARP-table1-grid/output/table1.md)、[Table 2](experiments/DARP-vs-RAOstar-grid/output/table2.md)。
 
-## 安装
+## 安装与求解
+
+需要 CPython 3.12.3 和有效的 Gurobi 许可证；在仓库根目录执行：
 
 ```bash
 bash tools/install.sh
-```
-
-需要 CPython 3.12.3、`requirements-lock.txt` 中的依赖以及有效的 Gurobi 许可证。查看通用求解入口：
-
-```bash
 .venv/bin/python -m darp --help
 ```
 
-## Heuristic、duration 与 risk
+以下 `domain.rddl`、`instance.rddl` 替换为你的标准或扩展 RDDL 文件。Full-ILP 用于小规模验证，HILP 见[自定义 Heuristic](#自定义-heuristic)。
 
-HILP 可通过 `--heuristic package.module:OBJECT` 加载外部 `UtilityHeuristic`。回调返回 utility-to-go；若计算的是 cost-to-go，应返回其负值。history probability 由核心统一加权：
-
-$$
-h_q=\sum_s \rho(q)b_q(s)h(s,a_q).
-$$
-
-Duration 直接在 domain 中用现有 RDDL 表达式定义 $D(s,a)$。三种写法示例（任选一条）：
-
-```rddl
-duration = 1.0;                                      // fixed
-duration = if (mud_contact) then 2.0 else 1.0;      // state-dependent expected
-duration = Normal(if (mud_contact) then 2.0 else 1.0, 0.1); // stochastic
-```
-
-扩展语法只有两条：`duration-section ::= "duration" "=" expr ";"`；`duration-threshold ::= "max-duration-shortfall-probability" "=" number ";"`。其中 `expr` 和 `number` 直接复用 RDDL 原有语法。
-
-表达式可使用当前有限 kernel 支持的 RDDL 常量、算术、布尔、关系和 `if`，并引用 state fluent、action fluent、non-fluent 及确定性 intermediate fluent；`Normal` 的第二个参数是方差。需要论文的 percentile stopping criterion 时，在 instance 中可选写 `max-duration-shortfall-probability = 0.3;`；省略时使用 deterministic/expected duration。horizon 仍由 instance RDDL 提供。
-
-Risk 使用独立 JSON sidecar，直接定义 CC-POMDP 的预算 $\Delta$ 和风险状态集合 $R$。例如：
-
-```json
-{
-  "budget": 0.1,
-  "risky_states": [
-    {"unsafe": true},
-    {"phase": 2, "blocked": true}
-  ]
-}
-```
-
-`budget` 是 `[0,1]` 内的概率；`risky_states` 中每个对象是一个部分状态 selector：对象内的 fluent 等式同时满足（AND）即匹配，任一对象匹配（OR）即属于 $R$。selector 支持当前有限 kernel 使用的 Boolean 和 integer fluent，因此既可表达 `{"unsafe": true}`，也可表达 Grid 位置、阶段或模式组合。初始状态属于 $R$ 的质量会先从预算扣除，之后只统计首次进入 $R$ 的概率。若危险由动作或转移触发，应由 RDDL CPF 更新 `unsafe` 等状态 fluent，再由 `risky_states` 引用；risk sidecar 不重复定义转移逻辑。`--risk-budget` 可覆盖文件预算，但不会改变风险集合。
-
-单独运行或调试 DARP 时指定 domain、instance 和 risk；duration 已包含在 domain：
+### 命令行
 
 ```bash
 .venv/bin/python -m darp \
-  --domain experiments/DARP-vs-RAOstar-grid/rddl/domain.rddl \
-  --instance experiments/DARP-vs-RAOstar-grid/rddl/instance_5_h3.rddl \
-  --risk experiments/DARP-vs-RAOstar-grid/rddl/risk.json \
-  --heuristic experiments.DARP-vs-RAOstar-grid.darp_runner:MANHATTAN \
-  --terminal-heuristic \
-  --output experiments/DARP-vs-RAOstar-grid/output/darp.json
+  --domain domain.rddl --instance instance.rddl \
+  --planner full-ilp --output result.json
 ```
 
-`.vscode/launch.json` 使用同一入口和显式文件路径。
-
-## DARP vs RAO* 实验
-
-Table 2 的 Grid 成对实验位于 `experiments/DARP-vs-RAOstar-grid/`；Table 1 的 duration 实验位于 `experiments/DARP-table1-grid/`。
-
-结果表：[Table 1](experiments/DARP-table1-grid/output/table1.md)、[Table 2](experiments/DARP-vs-RAOstar-grid/output/table2.md)，供手动对照原文。Table 1 的 E/S 与原文尚有数值差异，具体边界见 [实验协议](docs/EXPERIMENT_PROTOCOL.md)。
-
-### Grid 实验
-
-实验位于 `experiments/DARP-vs-RAOstar-grid/`，使用原论文 Table 2 的 Grid 配置，对比：
-
-- DARP-HILP；
-- 固定提交的外部 RAO* reimplementation。
-
-实验代码只有三个入口：`darp_runner.py` 配置 RDDL、risk JSON、Manhattan heuristic 并调用 DARP，`raostar_runner.py` 通过 [Constrained-POMDP](https://github.com/ME-Msc/Constrained-POMDP) 的 adapter 调用固定提交的 [RAOStar](https://github.com/ME-Msc/RAOStar)，`run.py` 配对执行并生成 CSV/Markdown。该实验固定使用 `D(s,a)=1`、`zeta=0`，与外部 RAO* 的 action-depth horizon 对齐。首次运行会自动下载并校验两个仓库到 `.cache/baselines/`，无需手工部署。
-
-单配置检查：
-
-```bash
-.venv/bin/python -m experiments.DARP-vs-RAOstar-grid.run \
-  --instance experiments/DARP-vs-RAOstar-grid/rddl/instance_5_h3.rddl \
-  --trials 1 --episodes 1000 \
-  --output experiments/DARP-vs-RAOstar-grid/output/smoke.csv
-```
-
-单实例模式从 RDDL 读取网格大小与 horizon，并从 `rddl/risk.json` 读取默认 risk budget；命令行只保留 trial、timeout、seed 和输出等执行选项。批量 Table 2 实验中的 `size/horizon/delta` 列表仍是实验矩阵筛选器，每个被选实例的实际模型参数都会再次从 RDDL 校验。
-
-以下命令对每个配置、每种算法求解 1 次，每个 DARP 策略执行 1000 条 episode，逐 trial 保存并支持断点续跑。单次规划耗时不等于论文的 25 次均值：
-
-```bash
-TRIALS=1 bash tools/run_repro.sh
-# 仅在继续同一版本、同一配置的中断实验时：
-TRIALS=1 RESUME=1 bash tools/run_repro.sh
-```
-
-结果写入并由 Git 记录在 `experiments/DARP-vs-RAOstar-grid/output/`。已有本地 checkout 或离线运行时，可选设置 `CONSTRAINED_POMDP_REPO`、`RAOSTAR_CHECKOUT` 和 `BASELINE_CACHE`；本地 checkout 必须处在固定 commit 且 worktree clean。外部实现的 provenance、指标定义和计时边界见 [实验协议](docs/EXPERIMENT_PROTOCOL.md)。算法公式与代码对应见 [算法映射](docs/ALGORITHM_MAPPING.md)。
-
-加入策略 artifact 与执行计时之前的完整规划结果保留为 `table2-legacy-raw.csv` / `table2-legacy.md`，不用于新版 `--resume`。
-
-每个 DARP 行的 `result_file` 指向完整的 `DARPResult` JSON。实验保存后重新读取策略，由 `executor` 在 pyRDDLGym 中执行。主表的 objective 来自求解器；附表记录执行 episode 数、首次风险频率、累计物理时长均值和每条 episode 的执行墙钟时间。复用当前 Grid 策略：
+### Python
 
 ```python
+from darp.solve import solve_rddl
+
+result = solve_rddl("domain.rddl", "instance.rddl", planner="full-ilp")
+result.save("result.json")
+```
+
+默认 `timeout_s=60`，不是整个进程的硬超时，Full-ILP 预处理不计入求解时限。Full-ILP 默认最多预处理 100,000 个动作历史，超限会报错；返回结果后，用 `result.decision.complete` 判断搜索是否完成。断点调试使用 [launch.json](.vscode/launch.json)。
+
+## RDDL 扩展
+
+标准 RDDL 可以不写扩展字段。缺少 `duration` 时默认固定时长 1；缺少 `risk` 时默认没有危险状态，预算未提供时默认 0，等价于：
+
+```rddl
+duration = 1.0;    // domain
+risk = false;     // domain
+risk-budget = 0.0; // instance
+```
+
+显式设置的值不会被覆盖；只要显式声明了 `risk`（包括 `risk = false;`），就必须在 instance 中提供 `risk-budget`。
+
+### Duration
+
+Domain 内任选一种定义；示例中的 fluent 需先在模型中声明：
+
+```rddl
+duration = 1.0;                                            // fixed
+duration = if (move_up) then 1.0 else 2.0;                  // 不同动作
+duration = if (mud_contact) then 2.0 else 1.0;               // state-dependent
+duration = Normal(if (mud_contact) then 2.0 else 1.0, 0.1);  // stochastic，第二项为方差
+```
+
+Instance 内使用原有的 `horizon` 指定时间边界：
+
+```rddl
+horizon = 3;
+```
+
+以上基础配置按固定或期望时长判断是否达到 `horizon`；仅写 `Normal(...)` 不会自动启用论文的 S 百分位停止判据，回放时仍采样其实际时长。`horizon` 不额外限制动作步数，`termination` 可提前结束执行。
+
+Duration 表达式支持当前 kernel 的常量、算术、布尔、比较、`if`，及 state/action/non-fluent、确定性 intermediate fluent；`Normal` 需直接作为 duration 或 `if` 分支的结果，不能任意嵌入算术表达式。
+
+### Risk
+
+```rddl
+// domain：unsafe 是已声明的 Boolean state fluent
+risk = unsafe;
+
+// instance：全策略至少失败一次的概率预算，包含初态
+risk-budget = 0.1;
+```
+
+`risk` 必须是仅依赖当前 state/non-fluent 的确定性 Boolean，可经过确定性 intermediate fluent；不可引用 action、next-state 或随机采样。动作导致的失败应由 CPF 更新 `unsafe`。预算不是单步上限，重复进入风险状态不重复计数。
+
+```rddl
+// 无风险模型
+risk = false;       // domain
+risk-budget = 0.0;  // instance
+```
+
+### 语法与支持范围
+
+```ebnf
+duration-section  ::= "duration" "=" expr ";" ;
+risk-section      ::= "risk" "=" expr ";" ;
+risk-budget       ::= "risk-budget" "=" number ";" ;
+```
+
+`duration`、`risk` 在 domain，`risk-budget` 在 instance；省略时按上述规则处理。`horizon` 沿用原有 instance 字段，`expr/number` 复用 RDDL 语法。包含扩展声明的文件须用 DARP 的 `load_rddl()` 解析；标准文件也可直接用官方 `pyRDDLGym.make()` 加载。
+
+当前支持 bool/int 状态、有限转移/观测、Boolean 单动作、`discount=1`；不支持并行动作、action preconditions、state invariants 或全部 RDDL 表达式。
+
+## 策略保存与回放
+
+### DARP 环境：加载策略并评估
+
+```python
+from contextlib import closing
 from darp.adapter.loader import load_rddl
 from darp.executor import PolicyExecutor
 from darp.solve import DARPResult
 
-result = DARPResult.load("experiments/DARP-vs-RAOstar-grid/output/darp.json")
-# PolicyExecutor 本身就是 pyRDDLGym BaseAgent，可直接使用标准接口。
-env = load_rddl(
-    "experiments/DARP-vs-RAOstar-grid/rddl/domain.rddl",
-    "experiments/DARP-vs-RAOstar-grid/rddl/instance_5_h3.rddl",
-).env
+result = DARPResult.load("result.json")
 agent = PolicyExecutor(result.decision.policy)
-statistics = agent.evaluate(
-    env, episodes=1000, seed=0,
-    risk_path="experiments/DARP-vs-RAOstar-grid/rddl/risk.json",
-)
+with closing(load_rddl("domain.rddl", "instance.rddl").env) as env:
+    statistics = agent.evaluate(env, episodes=1000, seed=0)
+print(statistics)
 ```
 
-策略 JSON 不绑定 RDDL 文件路径或哈希；执行时传入的 `env` 就是问题模型，场景来源由实验配置或备注记录。
+返回 reward 的 `mean/median/min/max/std`、`risk_rate`、`physical_duration_mean`、`rollout_time_s` 和 `episodes`。采样风险频率不等于规划风险的证明；物理时长不同于墙钟时间；reward 不包含终端启发式。
 
-`risk_rate` 是至少进入过一次危险状态的 episode 比例，包含初态；未传 `risk_path` 时不返回该项。`physical_duration_mean` 累计每条真实状态轨迹上的动作时长，Normal 使用独立随机数流采样。策略仍按观测选择动作，按策略叶或环境终止条件停止。`statistics["mean"]` 可查看原始 RDDL discounted reward 的均值；它不应用规划时的 terminal heuristic，不与主表 objective 混用。物理 duration 也不等于执行墙钟时间。
+### 原生 pyRDDLGym 环境：回放与可视化
 
-结果使用具名 RDDL fluent 的 JSON policy graph；格式及其他语言执行器需要实现的最小契约见 [策略格式](docs/POLICY_FORMAT.md)。
+标准 RDDL 必须与策略模型匹配，且不包含 DARP 扩展声明：
 
-新增 RDDL 对比场景时可以复用同一 RAO* 缓存，但仍需在新的实验目录中提供该场景到 RAO* model API 的薄适配和等价性检查；不需要修改 DARP 的解析器、HILP、ILP 或 Gurobi 实现。
+```python
+from contextlib import closing
+import pyRDDLGym
+from darp.executor import PolicyExecutor
+from darp.solve import DARPResult
 
-## DARP Table 1 duration 实验
-
-Table 1 的 fixed（F）、state-dependent expected（E）和 Gaussian stochastic（S）duration 冒烟检查：
-
-```bash
-.venv/bin/python -m experiments.DARP-table1-grid.run --smoke --episodes 1000
+result = DARPResult.load("result.json")
+agent = PolicyExecutor(result.decision.policy)
+with closing(pyRDDLGym.make("standard_domain.rddl", "standard_instance.rddl", vectorized=False)) as env:
+    env.set_visualizer("text")  # 可替换成场景专用 visualizer
+    statistics = agent.evaluate(env, seed=0, render=True)
+    env.render()  # 最后一步结果
+print(statistics)
 ```
 
-完整矩阵使用论文的 $h\in\{3,4,5,6\}$、$\Delta\in\{0.1,0.2,0.3\}$；每配置求解 1 次、策略执行 1000 条 episode，写入 `experiments/DARP-table1-grid/output/`：
+无显示窗口时，将上例 `with` 内的三行替换为：
+
+```python
+statistics = agent.evaluate(env, seed=0)
+image = env.render(to_display=False)
+```
+
+`evaluate()` 支持标准和扩展环境，共用相同默认值；标准无风险环境的 `risk_rate=0`，物理时长等于执行步数。若求解时定义了非默认 duration/risk，评估也必须使用相同定义，不能用原生环境的默认统计验证原约束。仅需单条轨迹信息时可用 `agent.run_episode(env)`，它不统计 risk/duration。可视化由环境负责，见[官方说明](https://pyrddlgym.readthedocs.io/en/latest/start.html#visualizing-environments)。
+
+回放要求相同模型、对象、初始条件和 grounded fluent 命名，且策略完整可行；它重新采样轨迹，不是重放固定轨迹。执行器临时将环境步数上限扩到至少策略深度，到叶节点或环境终止时停止，随后恢复上限。自行调用 `sample_action()` 时须在返回 `None` 时停止。
+
+### 单独序列化策略
+
+以下接前面的 `result`；完整结果文件仍优先使用 `result.save()/DARPResult.load()`：
+
+```python
+import json
+from darp.planning.policy import ConditionalPolicy
+
+text = json.dumps(result.decision.policy.to_dict())
+policy = ConditionalPolicy.from_dict(json.loads(text))
+```
+
+完整 JSON 为 `format="darp-result", version=1`，策略位于 `decision.policy`；策略字段如下：
+
+| 字段 | 含义 |
+| --- | --- |
+| `format / version` | `darp-policy-graph / 1`，DARP 自有格式。 |
+| `input / timing` | `observation` 或全可观测的 `state`；`act-then-observe`。 |
+| `root / nodes` | 根动作 ID、有限无环策略图的节点列表。 |
+| 节点 `id / stage / action_label / action` | ID、从 0 开始的深度、说明性标签、完整 grounded 动作字典。 |
+| 节点 `transitions` | `{"observation": {...}, "next": "node-id"}` 的列表；`next=null` 为叶节点。 |
+| `complete / feasible` | 均为 `true` 才能执行。 |
+| `solver_status / achieved_utility / active_constraint_value` | 求解状态、规划效用、全策略风险。 |
+
+执行契约：执行 action → 精确匹配 observation/state 字典 → 转到 next。沿边 `stage` 增加 1，字典顺序无关，名称和值须匹配。JSON 不绑定 RDDL 路径或哈希，调用者负责提供匹配环境。
+
+## 实验
+
+每个实验使用独立的 `rddl/` 和 `output/`；CSV 是原始指标，Markdown 是汇总表，`results/` 是策略 JSON。下面每配置求解 1 次，每个 DARP 策略默认回放 1000 次。
+
+### Table 2：DARP vs RAO*
 
 ```bash
-.venv/bin/python -m experiments.DARP-table1-grid.run --trials 1 --episodes 1000 \
+# 单配置；输出到 smoke.csv，避免覆盖正式结果
+.venv/bin/python -m experiments.DARP-vs-RAOstar-grid.run \
+  --instance experiments/DARP-vs-RAOstar-grid/rddl/instance_5_h3.rddl \
+  --trials 1 --output experiments/DARP-vs-RAOstar-grid/output/smoke.csv
+
+# 完整矩阵
+TRIALS=1 bash tools/run_repro.sh
+
+# 继续同版本、同配置的中断实验
+TRIALS=1 RESUME=1 bash tools/run_repro.sh
+```
+
+首次运行自动下载固定 baseline 到 `.cache/baselines/`。离线运行使用固定 commit、clean worktree 的本地仓库：
+
+```bash
+CONSTRAINED_POMDP_REPO=/path/to/Constrained-POMDP \
+RAOSTAR_CHECKOUT=/path/to/RAOStar \
+TRIALS=1 bash tools/run_repro.sh
+```
+
+### Table 1：F/E/S duration
+
+```bash
+# 冒烟检查
+.venv/bin/python -m experiments.DARP-table1-grid.run --smoke
+
+# 完整矩阵
+.venv/bin/python -m experiments.DARP-table1-grid.run --trials 1 \
   --summary experiments/DARP-table1-grid/output/table1.md
 ```
 
-旧版一次验证运行保留为 [`experiments/DARP-table1-grid/output/table1-validation-legacy.md`](experiments/DARP-table1-grid/output/table1-validation-legacy.md)，它生成于加入策略执行计时之前；新版 smoke 输出及可复用策略也在同一 `output/` 目录。
-
-该实验按[论文描述](https://ojs.aaai.org/index.php/AAAI/article/view/26743)把“从泥地出发或意图进入泥地”的动作均值设为 2，其余为 1；E 使用方差为 0 的代表性均值模型，S 使用 Gaussian 方差 0.1。目前缺少作者 E/S 的原始实验 artifact，结果尚未完全吻合原表，不能称为完整复现。
-
-## 核心代码
-
-```text
-RDDL（含 duration）+ risk.json
-  -> adapter       # 按需构建的稀疏浮点有限模型
-  -> preprocess    # Algorithm 1
-  -> expand        # Algorithm 2
-  -> ilp_tree      # policy/flow/risk 约束
-  -> hilp          # Algorithm 3
-  -> gurobi        # 增量 p-ILP
-  -> policy        # 策略数据、提取与序列化
-  -> executor      # 策略结构检查与 pyRDDLGym 执行
-```
+Table 1 的 E/S 仍与论文有数值差异；单次计时不是论文的 25 次统计。配置与比较边界见[实验协议](docs/EXPERIMENT_PROTOCOL.md)。
 
 ## 自定义 Heuristic
 
-用户可以在任意可被 Python 导入的模块中定义自己的 heuristic。例如，在项目根目录创建 `my_heuristic.py`：
+以 Grid 为例，在项目根目录创建 `my_heuristic.py`；其他场景需替换状态字段和估值逻辑：
 
 ```python
 from darp.planning.heuristic import HeuristicInput, UtilityHeuristic
 
-
-def _estimate(value: HeuristicInput) -> int:
-    """Estimate utility-to-go for one grounded state/action pair."""
-
-    row = int(value.state["grid_row"])
-    col = int(value.state["grid_col"])
-    goal_row = int(value.non_fluents["goal_row"])
-    goal_col = int(value.non_fluents["goal_col"])
-
-    if (row, col) == (goal_row, goal_col):
-        return 0
-
-    cost_lower_bound = abs(row - goal_row) + abs(col - goal_col)
-    return -cost_lower_bound  # DARP maximizes utility, so negate cost-to-go.
-
+def estimate(value: HeuristicInput) -> float:
+    # state：单个状态；non_fluents：模型常量
+    # action_label：动作名；action：完整 grounded 动作字典
+    row, col = value.state["grid_row"], value.state["grid_col"]
+    goal_row, goal_col = value.non_fluents["goal_row"], value.non_fluents["goal_col"]
+    return -float(abs(row - goal_row) + abs(col - goal_col))  # cost-to-go 取负
 
 MY_HEURISTIC = UtilityHeuristic(
     name="my-grid-manhattan",
-    evaluate=_estimate,
-    # Set True only after proving this is an upper bound on optimal utility.
-    upper_bound=False,
+    evaluate=estimate,
+    upper_bound=False,  # 证明是最优 utility 的上界后才能设 True
 )
 ```
 
-`HeuristicInput.state` 是单个 grounded state，`action_label` 是当前动作名称，`action` 是完整的 grounded action assignment，`non_fluents` 是 RDDL 常量。回调只返回该状态和动作的 utility-to-go；不要在回调中乘 belief 或 history probability，DARP 会统一计算 $h_q=\sum_s\rho(q)b_q(s)h(s,a_q)$。
-
-通过命令行加载：
+命令行加载：
 
 ```bash
 .venv/bin/python -m darp \
-  --domain path/to/domain.rddl \
-  --instance path/to/instance.rddl \
-  --risk path/to/risk.json \
-  --planner hilp \
-  --heuristic my_heuristic:MY_HEURISTIC \
-  --output output/result.json
+  --domain domain.rddl --instance instance.rddl \
+  --planner hilp --heuristic my_heuristic:MY_HEURISTIC --output result.json
 ```
 
-也可以通过 Python API 传入同一个对象：
+Python 调用：
 
 ```python
 from darp.solve import solve_rddl
 from my_heuristic import MY_HEURISTIC
 
-result = solve_rddl(
-    "path/to/domain.rddl",
-    "path/to/instance.rddl",
-    risk_path="path/to/risk.json",
-    planner="hilp",
-    heuristic=MY_HEURISTIC,
-)
+result = solve_rddl("domain.rddl", "instance.rddl", heuristic=MY_HEURISTIC)
+result.save("result.json")
 ```
 
-只有能够证明 heuristic 是最大化 utility 的上界时，才能设置 `upper_bound=True`；HILP 用该标志判断 frontier 清空后是否可以正常结束。普通场景不要添加 `--terminal-heuristic`，因为它会在 duration 边界用 heuristic 替换 RDDL 叶节点 reward，仅适用于明确采用这种终端估值定义的实验。
+回调不乘 belief/history probability，核心统一加权。未证明上界时保持 `upper_bound=False`，结果可能无法认证搜索完成。`--terminal-heuristic` 会改变边界目标，仅用于明确采用终端估值的实验，不作为通用求解选项。

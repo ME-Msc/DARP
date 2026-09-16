@@ -23,6 +23,7 @@ instance table1_grid_s_h4 {
         col_mod5 = 0;
     };
     max-nondef-actions = 1;
+    risk-budget = 0.1;
     max-duration-shortfall-probability = 0.3;
     horizon = 4;
     discount = 1.0;

@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Debug DARP: RDDL + risk",
+      "name": "Debug DARP: RDDL",
       "type": "debugpy",
       "request": "launch",
       "module": "darp",
@@ -22,8 +22,6 @@
         "${workspaceFolder}/experiments/DARP-vs-RAOstar-grid/rddl/domain.rddl",
         "--instance",
         "${workspaceFolder}/experiments/DARP-vs-RAOstar-grid/rddl/instance_5_h3.rddl",
-        "--risk",
-        "${workspaceFolder}/experiments/DARP-vs-RAOstar-grid/rddl/risk.json",
         "--planner",
         "hilp",
         "--heuristic",

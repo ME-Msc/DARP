@@ -23,7 +23,13 @@ class PyRDDLGymProblem:
     env: Any
     _grounded_model_cache: Any | None = field(default=None, init=False, repr=False, compare=False)
 
-    def build_grounded_model(self) -> "RDDLGroundedModel":
+    def __post_init__(self) -> None:
+        # An explicit risk predicate requires an explicit budget, even if false.
+        # 显式声明风险时不能替用户决定预算；标准 RDDL 的无风险默认值在 grounding 时补齐。
+        if hasattr(self.native_ast.domain, "risk") and not hasattr(self.native_ast.instance, "risk_budget"):
+            raise RDDLLoadError("An explicit RDDL risk predicate requires 'risk-budget' in the instance.")
+
+    def build_grounded_model(self) -> RDDLGroundedModel:
         """Return and cache one enum-safe pyRDDLGym grounded model.
 
         pyRDDLGym's environment keeps a lifted model, so the initial syntax
@@ -52,6 +58,7 @@ def _build_enum_aware_grounded_model(native_ast: Any) -> Any:
     from pyRDDLGym.core.compiler.model import RDDLPlanningModel
     from pyRDDLGym.core.debug.exception import raise_warning
     from pyRDDLGym.core.grounder import RDDLGrounder
+    from pyRDDLGym.core.parser.expr import Expression
 
     class EnumAwareRDDLGrounder(RDDLGrounder):
         """Normalize enum literals in pyRDDLGym init blocks. / 归一化 pyRDDLGym 初始化块里的 enum literal。"""
@@ -92,7 +99,15 @@ def _build_enum_aware_grounded_model(native_ast: Any) -> Any:
 
     grounder = EnumAwareRDDLGrounder(native_ast)
     grounded = grounder.ground()
-    grounded.duration = grounder._scan_expr_tree(native_ast.domain.duration, {})
+    # Normalize defaults here for both file loading and native-env evaluation.
+    # 仅补全 DARP 的 grounded 视图，不修改调用者的 AST 或环境模型。
+    grounded.duration = grounder._scan_expr_tree(
+        getattr(native_ast.domain, "duration", Expression(("number", 1.0))), {}
+    )
+    grounded.risk = grounder._scan_expr_tree(
+        getattr(native_ast.domain, "risk", Expression(("boolean", False))), {}
+    )
+    grounded.risk_budget = getattr(native_ast.instance, "risk_budget", 0.0)
     grounded.max_duration_shortfall_probability = getattr(
         native_ast.instance,
         "max_duration_shortfall_probability",

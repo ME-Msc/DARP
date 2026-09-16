@@ -100,7 +100,10 @@ def apply_terminal_heuristic(
     if action is None or kernel is None:
         raise ValueError("Terminal heuristic evaluation requires an action and kernel.")
 
-    if len(terminal) == len(expanded.observation_frontiers):
+    if (
+        len(terminal) == len(expanded.observation_frontiers)
+        and not getattr(kernel.grounded_model, "terminations", ())
+    ):
         utility = history_heuristic_coefficient(
             heuristic,
             state_mass=item.ordinary_mass,
@@ -202,17 +205,22 @@ def expand_frontier_item(
     next_frontier: list[FrontierItem] = []
     for ordinary_outcome in ordinary_mass_qa.observations:
         observation = ordinary_outcome.observation
-        ordinary_mass_qao = ordinary_outcome.state_mass
+        qao_node = interface.observation_node(item.node, ordinary_outcome.label)
+        ordinary_mass_qao = kernel.continuing_mass(ordinary_outcome.state_mass)
+        if not ordinary_mass_qao:
+            # The last transition's reward/risk was already counted above.
+            # / 环境已结束：保留叶边和最后一步 reward/risk，不再要求累计 duration 达到 h。
+            branches.append(ObservationFrontier(observation, (), False, False))
+            continue
         b_qao = kernel.constraint_mass_belief(ordinary_mass_qao)
         constraint_outcome = constraint_outcomes.get(observation)
-        constraint_mass_qao = (
+        constraint_mass_qao = kernel.continuing_mass(
             constraint_outcome.state_mass if constraint_outcome is not None else {}
         )
         observation_keys_qao = item.observation_keys + (
             observation,
         )  # 完整观测序列 o_1..o_k。
         ordinary_mass_trace_qao = item.ordinary_mass_trace + (ordinary_mass_qao,)
-        qao_node = interface.observation_node(item.node, ordinary_outcome.label)
 
         # Lines 10-20 after the backward messages: compute duration from
         # smoothed action-start beliefs.  For action a_i, D(S_i,a_i) uses
@@ -243,6 +251,7 @@ def expand_frontier_item(
                 action_label=item.action_label,
                 action_assignment=a_q,
                 observation=observation,
+                next_state_support=ordinary_mass_qao,
             )
         else:
             actions_qa = item.node.history.actions
@@ -266,20 +275,13 @@ def expand_frontier_item(
             duration_evaluator.horizon,
             duration_evaluator.zeta,
         )
-        # Reuse the normalized posterior for terminal and action callbacks.
-        callback_belief_qao: Mapping[Any, Any] = b_qao
-        model_terminal_qao = interface.belief_is_terminal(callback_belief_qao)
-        should_expand_qao = (
-            expand_qao
-            and bool(ordinary_mass_qao)
-            and not model_terminal_qao
-        )
+        # Only live trajectories reach the next decision; their belief includes done=False.
+        # / 下一次决策已知环境未结束；只归一化 belief，不归一化 history mass。
         child_actions = _child_frontier(
             observation_node=qao_node,
             interface=interface,
-            should_expand=should_expand_qao,
+            should_expand=expand_qao,
             belief=b_qao,
-            action_belief=callback_belief_qao,
             ordinary_mass=ordinary_mass_qao,
             constraint_mass=constraint_mass_qao,
             ordinary_mass_trace=ordinary_mass_trace_qao,
@@ -290,10 +292,9 @@ def expand_frontier_item(
             ObservationFrontier(
                 observation=observation,
                 child_frontier=child_actions,
-                should_expand=should_expand_qao,
-                # A known model terminal keeps its exact RDDL value even if it
-                # also happens to reach the duration boundary.
-                duration_stopped=not expand_qao and not model_terminal_qao,
+                should_expand=expand_qao,
+                # Model-terminal-only outcomes were retained as leaves above.
+                duration_stopped=not expand_qao,
             )
         )
         next_frontier.extend(child_actions)
@@ -430,6 +431,7 @@ def _advance_augmented_duration_belief(
     action_label: str,
     action_assignment: Mapping[str, Any],
     observation: ObservationKey,
+    next_state_support: Mapping[StateKey, float],
 ) -> DurationProgress:
     r"""Apply the paper's deterministic chance-duration state augmentation.
 
@@ -441,9 +443,9 @@ def _advance_augmented_duration_belief(
        \quad\text{when }g'=g+D(s,a),
 
     multiplies by :math:`O(o\mid s',a)`, and normalizes on the observed
-    history.  The returned distribution is therefore
-    :math:`Pr(S_{qao},G_{qao}\mid qao)` and directly supports
-    :math:`\tau(qao)=Pr(G_{qao}<h\mid qao)`.
+    history and ``done=False``, using ``next_state_support`` from the ordinary
+    live posterior. This keeps the duration distribution consistent with the
+    episode's continuation, without renormalizing each transition row.
     """
     if progress.augmented_belief is None:
         state_weights = {
@@ -484,6 +486,8 @@ def _advance_augmented_duration_belief(
         if transition_total <= 0:
             continue
         for next_state, transition_weight in transition_weights.items():
+            if next_state not in next_state_support:
+                continue
             observation_probability = kernel.observation_probability(
                 observation, next_state, action_assignment
             )
@@ -528,7 +532,6 @@ def _child_frontier(
     interface: ANDORSearchInterface,
     should_expand: bool,
     belief: Mapping[Any, float],
-    action_belief: Mapping[Any, Any],
     ordinary_mass: Mapping[StateKey, float],
     constraint_mass: Mapping[StateKey, float],
     ordinary_mass_trace: tuple[Mapping[StateKey, float], ...],
@@ -538,7 +541,7 @@ def _child_frontier(
     """Create action children under one observation node. / 在 observation 节点下创建 action 子节点。"""
     if not should_expand:
         return ()
-    action_nodes = interface.action_nodes(observation_node, belief=action_belief)
+    action_nodes = interface.action_nodes(observation_node, belief=belief)
     return tuple(
         FrontierItem(
             node=child,

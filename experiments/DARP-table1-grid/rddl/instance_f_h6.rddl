@@ -23,6 +23,7 @@ instance table1_grid_f_h6 {
         col_mod5 = 0;
     };
     max-nondef-actions = 1;
+    risk-budget = 0.1;
     horizon = 6;
     discount = 1.0;
 }

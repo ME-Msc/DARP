@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from math import sqrt
-from pathlib import Path
 from random import Random
 from statistics import fmean, median, pstdev
 from time import perf_counter
@@ -14,9 +13,8 @@ from typing import Any
 from pyRDDLGym.core.policy import BaseAgent
 
 from darp.adapter.duration import duration_moments
-from darp.adapter.kernel import ObservationKey, RDDLKernel, RiskConstraintSpec
+from darp.adapter.kernel import ObservationKey, RDDLKernel
 from darp.adapter.problem import PyRDDLGymProblem
-from darp.model.risk_sidecar import load_risk_sidecar
 from darp.planning.policy import (
     ConditionalPolicy,
     PolicyNode,
@@ -178,7 +176,7 @@ class PolicyExecutor(BaseAgent):
         discounted_return = 0.0
         discount = 1.0
         gamma = float(env.discount)
-        terminated = False
+        terminated = bool(getattr(env, "done", False))
         truncated = False
         stop_reason = "policy_leaf"
         physical_duration = 0.0
@@ -186,6 +184,10 @@ class PolicyExecutor(BaseAgent):
         started = perf_counter()
 
         for step in range(self.max_steps):
+            # reset() can already terminate the episode; no action is then legal.
+            if terminated:
+                stop_reason = "model_terminal"
+                break
             if render:
                 env.render()
             action = self._action()
@@ -254,8 +256,6 @@ class PolicyExecutor(BaseAgent):
         verbose: bool = False,
         render: bool = False,
         seed: int | None = None,
-        *,
-        risk_path: str | Path | None = None,
     ) -> dict[str, float]:
         """Sample the saved policy and return execution statistics.
 
@@ -270,8 +270,7 @@ class PolicyExecutor(BaseAgent):
         grounded = PyRDDLGymProblem(env.model.ast, env).build_grounded_model()
         if grounded.duration is None:
             raise ValueError("RDDL domain must define duration.")
-        risk = load_risk_sidecar(risk_path) if risk_path is not None else RiskConstraintSpec()
-        kernel = RDDLKernel.from_grounded_model(grounded, risk=risk)
+        kernel = RDDLKernel.from_grounded_model(grounded)
         duration_rng = Random(seed)
         executions = []
         original_horizon = env.horizon
@@ -293,11 +292,10 @@ class PolicyExecutor(BaseAgent):
             "max": max(returns),
             "std": pstdev(returns),
             "episodes": episodes,
+            "risk_rate": fmean(result.failed for result in executions),
             "physical_duration_mean": fmean(result.physical_duration for result in executions),
             "rollout_time_s": perf_counter() - started,
         }
-        if risk_path is not None:
-            statistics["risk_rate"] = fmean(result.failed for result in executions)
         return statistics
 
 
@@ -306,18 +304,15 @@ def _validate_policy_graph(nodes: Mapping[str, PolicyNode], root: str) -> int:
     if nodes[root].stage != 0:
         raise ValueError("Policy root must be at stage zero.")
     memo: dict[str, int] = {}
-    reached: set[str] = set()
 
     def depth(node_id: str, active: set[str]) -> int:
         if node_id in active:
             raise ValueError("DARP policies must be acyclic.")
         if node_id in memo:
-            reached.add(node_id)
             return memo[node_id]
         node = nodes[node_id]
         if not node.transitions:
             raise ValueError(f"Policy node {node_id!r} has no outcomes.")
-        reached.add(node_id)
         child_depths: list[int] = []
         for next_node in node.transitions.values():
             if next_node is None:
@@ -335,7 +330,7 @@ def _validate_policy_graph(nodes: Mapping[str, PolicyNode], root: str) -> int:
         return memo[node_id]
 
     maximum = depth(root, set())
-    if reached != set(nodes):
+    if len(memo) != len(nodes):
         raise ValueError("Policy contains nodes unreachable from its root.")
     return maximum
 

@@ -688,7 +688,7 @@ def _materialized_frontier_leaf_record(
         # validation must inspect its observation branches. At a duration
         # boundary, the optional terminal heuristic is the experiment's actual
         # terminal objective and must therefore be included in achieved utility.
-        policy_expansion=(exact_expansion if has_continuation else expanded),
+        policy_expansion=exact_expansion,
     )
 
 

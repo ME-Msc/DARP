@@ -20,6 +20,7 @@ instance paper_grid_100_h5 {
         col_mod5 = 0;
     };
     max-nondef-actions = 1;
+    risk-budget = 0.1;
     horizon = 5;
     discount = 1.0;
 }

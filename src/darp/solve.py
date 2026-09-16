@@ -13,7 +13,6 @@ from darp.adapter.duration import build_duration_evaluator
 from darp.adapter.kernel import RDDLKernel, StateKey
 from darp.adapter.loader import load_rddl
 from darp.adapter.runtime import PyRDDLGymRuntime
-from darp.model.risk_sidecar import load_risk_sidecar
 from darp.planning.decision import ActionDecision
 from darp.planning.full_ilp import FullILPPlanner
 from darp.planning.heuristic import UtilityHeuristic
@@ -83,7 +82,6 @@ def solve_rddl(
     domain: str | Path,
     instance: str | Path,
     *,
-    risk_path: str | Path,
     planner: PlannerName = "hilp",
     seed: int = 0,
     risk_budget: float | None = None,
@@ -101,11 +99,7 @@ def solve_rddl(
     problem = load_rddl(domain, instance)
     runtime = PyRDDLGymRuntime(problem.env)
     runtime.reset(seed=seed)
-    constraint = load_risk_sidecar(risk_path)
-    interface = problem.build_grounded_view().build_and_or_interface(
-        runtime,
-        risk=constraint,
-    )
+    interface = problem.build_grounded_view().build_and_or_interface(runtime)
     kernel = interface.kernel
     if kernel is None:
         raise ValueError("RDDL duration evaluation requires DARP's RDDL kernel.")
@@ -114,7 +108,7 @@ def solve_rddl(
         interface.actions,
         horizon=runtime.horizon,
     )
-    budget = risk_budget if risk_budget is not None else constraint.budget
+    budget = risk_budget if risk_budget is not None else kernel.grounded_model.risk_budget
 
     root_belief = None
     if root_belief_factory is not None:

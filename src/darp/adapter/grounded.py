@@ -51,14 +51,14 @@ class GroundedRDDLView:
             for action in runtime.action_candidates()
         )
 
-    def build_and_or_interface(self, runtime: Any, risk: Any | None = None) -> ANDORSearchInterface:
+    def build_and_or_interface(self, runtime: Any) -> ANDORSearchInterface:
         """Build the action/observation interface consumed by AND-OR search. / 构建 AND-OR 搜索消费的 action/observation 接口。"""
         from darp.adapter.kernel import RDDLKernel
 
         return ANDORSearchInterface.from_actions_and_observations(
             actions=self.action_choices(runtime),
             observation_scope=self.observation_scope(),
-            kernel=RDDLKernel.from_grounded_model(self.grounded_model, risk=risk),
+            kernel=RDDLKernel.from_grounded_model(self.grounded_model),
         )
 
     def validate_supported(self) -> None:

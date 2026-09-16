@@ -9,7 +9,6 @@ from darp.solve import DARPResult, solve_rddl
 
 RDDL_DIR = Path(__file__).with_name("rddl")
 DOMAIN = RDDL_DIR / "domain.rddl"
-RISK = RDDL_DIR / "risk.json"
 
 
 def _negative_manhattan(value: HeuristicInput) -> int:
@@ -38,7 +37,6 @@ def run_darp(
     result = solve_rddl(
         DOMAIN,
         instance,
-        risk_path=RISK,
         planner="hilp",
         seed=seed,
         risk_budget=delta,

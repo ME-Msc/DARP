@@ -477,8 +477,6 @@ def _definition31_flow_constraints(
         )
     for index, observation_frontier in enumerate(expanded.observation_frontiers):
         child_frontier = observation_frontier.child_frontier
-        if observation_frontier.should_expand and not child_frontier:
-            continue
         if not should_encode:
             continue
         if not child_frontier:
