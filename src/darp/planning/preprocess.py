@@ -1,4 +1,4 @@
-"""Root-frontier initialization helpers for paper Algorithm 1."""
+"""Root-frontier initialization helpers for paper Algorithm 1. / 论文 Algorithm 1 的根 frontier 初始化。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,11 @@ from darp.model.duration import DurationProgress
 
 @dataclass(frozen=True, eq=False)
 class FrontierItem:
-    """Track one action history with ordinary and constraint probability flow."""
+    """Track history q and its ordinary/safe probability flow.
+
+    / 保存动作历史 q；ordinary_mass 对应 rho(q)b_q，constraint_mass 对应
+    此前一直安全的联合概率质量。两者不应混用或再次乘历史概率。
+    """
 
     node: ANDORNode
     belief: Mapping[StateKey, float]
@@ -63,6 +67,7 @@ def initialize_root_frontier(
         raise ValueError("Paper preprocessing requires a root belief.")
 
     # Unnormalised mass directly stores the history occurrence probability.
+    # 未归一化概率质量直接保留历史发生概率。
     root_ordinary_mass = kernel.continuing_mass(kernel.initial_constraint_mass(root_belief))
     root_constraint_mass = kernel.continuing_mass(kernel.initial_safe_mass(root_belief))
     if not root_ordinary_mass:
@@ -100,6 +105,9 @@ def resolve_root_belief(
     model-declared b0 so no simulator hidden state leaks into planning. An MDP
     uses the runtime's current state, which matters when the public planner API
     is called after the environment has already advanced.
+
+    / 显式 belief 优先；POMDP 使用模型初始 belief，避免读取模拟器隐藏状态；
+    MDP 使用当前可观测状态，使环境已推进时的调用仍有一致语义。
     """
     if interface.kernel is None:
         return None

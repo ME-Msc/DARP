@@ -1,4 +1,4 @@
-"""Build the paper's duration models from one grounded RDDL expression."""
+"""Build the paper's duration models from one grounded RDDL expression. / 从实例化 RDDL 表达式构建论文的时长模型。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from darp.model.duration import (
 
 
 class DurationExpressionError(ValueError):
-    """Raised when the RDDL duration clause is invalid or unsupported."""
+    """Raised when the RDDL duration clause is invalid or unsupported. / 时长子句无效或不受支持时抛出。"""
 
 
 def build_duration_evaluator(
@@ -27,7 +27,7 @@ def build_duration_evaluator(
     *,
     horizon: float,
 ) -> HistoryDurationEvaluator:
-    """Compile ``duration = D(s,a);`` without changing the planning algorithm."""
+    """Compile ``duration = D(s,a);`` without changing the planning algorithm. / 编译时长表达式，不改变规划算法。"""
     expression = getattr(kernel.grounded_model, "duration", None)
     if expression is None:
         raise DurationExpressionError(
@@ -107,7 +107,7 @@ def duration_moments(
     state: Mapping[str, Any],
     action: Mapping[str, Any],
 ) -> DurationEstimate:
-    """Read D(s,a)'s moments for planning or independent physical sampling."""
+    """Read D(s,a)'s moments for planning or independent physical sampling. / 读取 D(s,a) 的均值与方差，用于规划或独立时长采样。"""
     if not _is_expression(expression):
         return DurationEstimate(mean=_number(expression, "duration"))
     expression_type, operator = expression.etype
@@ -153,7 +153,7 @@ def duration_moments(
 
 
 def _features(expression: Any, kernel: RDDLKernel) -> set[str]:
-    """Return active state/action/Normal dependencies after non-fluent branching."""
+    """Return active state/action/Normal dependencies after non-fluent branching. / 确定 non-fluent 分支后收集实际状态、动作与正态分布依赖。"""
     if not _is_expression(expression):
         return set()
     expression_type, operator = expression.etype
@@ -234,7 +234,7 @@ def _state_mapping(state: Hashable) -> Mapping[str, Any]:
 
 
 def _number(value: Any, label: str) -> float:
-    """Convert one RDDL numeric value without accepting Boolean durations."""
+    """Convert one RDDL numeric value without accepting Boolean durations. / 转换数值型时长，拒绝布尔值。"""
     if isinstance(value, bool):
         raise DurationExpressionError(f"{label} must be numeric, not Boolean.")
     try:

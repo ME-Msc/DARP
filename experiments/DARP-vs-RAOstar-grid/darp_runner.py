@@ -1,4 +1,4 @@
-"""Configure and run DARP for the Grid comparison."""
+"""Configure DARP for the Grid comparison. 配置并运行 Grid 对比中的 DARP。"""
 
 from __future__ import annotations
 

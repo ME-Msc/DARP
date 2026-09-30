@@ -2,6 +2,7 @@
 set -euo pipefail
 
 # Install DARP's locked Python environment.
+# 安装 DARP 锁定版本的 Python 环境。
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"

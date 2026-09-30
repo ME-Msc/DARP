@@ -52,7 +52,11 @@ class PolicyTreeILP:
 
 @dataclass(frozen=True)
 class Algorithm1ExpansionRecord:
-    """Store one Algorithm-1 action history and its current expansion state."""
+    """Store one Algorithm-1 action history and its current expansion state.
+
+    / 保存动作历史 q 的展开记录；expanded.metrics.utility 在 E 中为 u_q，
+    在启发式 frontier 记录中为 h_q^u；policy_expansion 保留真实执行语义。
+    """
 
     var_id: str
     item: FrontierItem
@@ -64,6 +68,7 @@ class Algorithm1ExpansionRecord:
     # 修改的展开，用于可执行策略验证。
     # ``None`` marks a lazy HILP leaf whose observation branches are postponed
     # until the incumbent selects it.
+    # None 表示延迟展开的 frontier；直到当前解选中它才生成观测分支。
     policy_expansion: ExpandedAction | None = None
 
 
@@ -256,7 +261,7 @@ def paper_preprocess(
 
 
 def validate_risk_budget(risk_budget: float | None) -> None:
-    r"""Validate the CC-POMDP chance budget :math:`\Delta`."""
+    r"""Validate the CC-POMDP chance budget :math:`\Delta`. / 校验概率预算 Delta 的范围。"""
     if risk_budget is None:
         return
     numeric = float(risk_budget)

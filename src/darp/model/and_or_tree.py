@@ -1,4 +1,4 @@
-"""AND-OR history tree data structures for DARP search."""
+"""AND-OR history tree data structures for DARP search. / DARP 搜索使用的 AND-OR 历史树数据结构。"""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ class ActionChoice:
 
 @dataclass(frozen=True, slots=True)
 class ObservationScope:
-    """Identify whether histories observe POMDP outputs or MDP states."""
+    """Identify whether histories observe POMDP outputs or MDP states. / 指明历史记录的是 POMDP 观测还是 MDP 状态。"""
 
     mode: str
 
@@ -103,6 +103,9 @@ class ANDORSearchInterface:
         Kernels with state-dependent action sets may expose
         ``available_action_labels(belief)``.  Static RDDL kernels need no extra
         method and retain the original global action set.
+
+        / 保持实例化动作的顺序；支持状态依赖动作集的内核可提供上述方法，
+        静态 RDDL 内核直接沿用全局动作集。
         """
         available = getattr(self.kernel, "available_action_labels", None)
         if belief is None or not callable(available):
@@ -143,7 +146,7 @@ class ANDORSearchInterface:
         )
 
     def belief_is_terminal(self, belief: Mapping[Any, Any]) -> bool:
-        """Return an optional kernel-defined terminal-belief predicate."""
+        """Return an optional kernel-defined terminal-belief predicate. / 调用内核可选的终止信念判断。"""
         predicate = getattr(self.kernel, "belief_is_terminal", None)
         return bool(predicate(belief)) if callable(predicate) else False
 
@@ -167,5 +170,5 @@ class ANDORSearchInterface:
 
 
 def _node_token(value: str) -> str:
-    """Return an injective path-safe token for an action/observation label."""
+    """Return an injective path-safe token for an action/observation label. / 将动作或观测标签编码为无冲突且路径安全的标记。"""
     return f"{len(value)}:{quote(value, safe='')}"

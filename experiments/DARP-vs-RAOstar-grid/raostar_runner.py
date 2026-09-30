@@ -1,4 +1,7 @@
-"""Fetch the pinned external sources and run their existing RAO* adapter."""
+"""Run pinned external sources through their RAO* adapter.
+
+下载并核验固定版本的外部源码，通过其已有适配器运行 RAO*。
+"""
 
 from __future__ import annotations
 
@@ -45,7 +48,7 @@ RAOSTAR = _Source(
 
 @dataclass(frozen=True, slots=True)
 class RAOStarRunner:
-    """Thin delegate to verified Constrained-POMDP and RAOStar checkouts."""
+    """Delegate to verified repositories. 仅代理到已核验的两个外部仓库。"""
 
     constrained_pomdp_path: Path
     raostar_path: Path

@@ -1,4 +1,4 @@
-"""Run DARP once on an RDDL problem and export the conditional policy."""
+"""Run DARP and export its policy. 求解一个 RDDL 问题并导出条件策略。"""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Sparse floating-point kernel over pyRDDLGym grounded expressions."""
+"""Sparse floating-point kernel over pyRDDLGym grounded expressions. / 对实例化 RDDL 表达式构建稀疏浮点概率内核。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ ActionKey = tuple[tuple[str, Hashable], ...]
 
 @dataclass(frozen=True, slots=True)
 class SparseTransitionRow:
-    """Store one cached sparse row of $$T_a$$."""
+    """Store one cached sparse row of $$T_a$$. / 缓存动作转移矩阵 T_a 的一个稀疏行。"""
 
     next_state_ids: tuple[int, ...]
     probabilities: tuple[float, ...]
@@ -50,7 +50,7 @@ class KernelError(ValueError):
 
 @dataclass(frozen=True)
 class ConstraintMassOutcome:
-    """One observation branch of an unnormalized constraint flow."""
+    """One observation branch of an unnormalized constraint flow. / 未归一化约束概率流中的一个观测分支。"""
 
     observation: ObservationKey
     label: str
@@ -59,7 +59,7 @@ class ConstraintMassOutcome:
 
 @dataclass(frozen=True)
 class ConstraintMassExpansion:
-    """Sparse float mass propagation for one constraint action."""
+    """Sparse float mass propagation for one constraint action. / 单个动作的稀疏浮点概率质量传播结果。"""
 
     coefficient: float
     observations: tuple[ConstraintMassOutcome, ...]
@@ -165,7 +165,7 @@ class RDDLKernel:
 
     @property
     def intermediate_names(self) -> tuple[str, ...]:
-        """Return grounded intermediate fluent names in evaluation order."""
+        """Return grounded intermediate fluent names in evaluation order. / 按求值顺序返回实例化中间变量名称。"""
         return self._intermediate_names_cache
 
     @property
@@ -179,7 +179,7 @@ class RDDLKernel:
         return self._cpfs_cache
 
     def cpf_expression(self, name: str) -> Any:
-        """Return one grounded CPF expression by name."""
+        """Return one grounded CPF expression by name. / 按名称获取实例化 CPF 表达式。"""
         try:
             return _cpf_expression(self.cpfs[name])
         except KeyError as error:
@@ -191,7 +191,7 @@ class RDDLKernel:
         state: Mapping[str, Any],
         action: Mapping[str, Any],
     ) -> Any:
-        """Evaluate one deterministic grounded RDDL expression at ``(s, a)``."""
+        """Evaluate one deterministic grounded RDDL expression at ``(s, a)``. / 在状态动作对上计算确定性 RDDL 表达式。"""
         context = self._context(state, action)
         self._resolve_deterministic_intermediates(expression, context, set())
         distribution = self.expression_distribution(
@@ -208,7 +208,7 @@ class RDDLKernel:
         context: dict[str, Any],
         resolving: set[str],
     ) -> None:
-        """Resolve only intermediate CPFs referenced by an external expression."""
+        """Resolve only intermediate CPFs referenced by an external expression. / 只解析外部表达式实际依赖的中间 CPF。"""
         intermediate_names = set(self._intermediate_names_cache)
         for name in _expression_pvariables(expression) & intermediate_names:
             if name in context:
@@ -236,7 +236,7 @@ class RDDLKernel:
         self,
         belief: Mapping[StateKey, float],
     ) -> Mapping[StateKey, float]:
-        """Return a normalized sparse mass for the initial belief."""
+        """Return a normalized sparse mass for the initial belief. / 返回初始信念的归一化稀疏概率质量。"""
         mass = _normalized_mass(belief)
         for state in mass:
             self._state_index.register(state)
@@ -246,7 +246,7 @@ class RDDLKernel:
         self,
         belief: Mapping[StateKey, float],
     ) -> Mapping[StateKey, float]:
-        """Return unnormalized root mass that has survived initial failure."""
+        """Return unnormalized root mass that has survived initial failure. / 返回排除初始失败状态后的未归一化根概率质量。"""
         ordinary = self.initial_constraint_mass(belief)
         safe: dict[StateKey, float] = {}
         for state, probability in ordinary.items():
@@ -259,7 +259,7 @@ class RDDLKernel:
     def constraint_mass_belief(
         mass: Mapping[StateKey, float],
     ) -> Mapping[StateKey, float]:
-        """Normalize an unnormalized mass into a conditional belief."""
+        """Normalize an unnormalized mass into a conditional belief. / 将未归一化概率质量转换为条件信念。"""
         return _mass_belief(mass)
 
     def initial_belief_from_model(self) -> Mapping[StateKey, float]:
@@ -279,7 +279,7 @@ class RDDLKernel:
         return self.initial_belief_from_state(declared)
 
     def belief_is_terminal(self, belief: Mapping[StateKey, float]) -> bool:
-        """Match RDDL termination semantics for every positive-support state."""
+        """Match RDDL termination semantics for every positive-support state. / 检查所有正概率状态是否满足 RDDL 终止条件。"""
         if not self._terminations_cache:
             return False
         states = tuple(state for state, probability in belief.items() if probability > 0)
@@ -290,6 +290,7 @@ class RDDLKernel:
     ) -> Mapping[StateKey, float]:
         """Keep unnormalised mass of episodes that have not terminated.
 
+        Continuing reveals done=False; remove terminal paths without rescaling.
         / done=False 是继续执行时已知的信息；移除结束的轨迹，不放大剩余概率。
         """
         if not self._terminations_cache:
@@ -301,7 +302,7 @@ class RDDLKernel:
         }
 
     def _state_is_terminal(self, state: StateKey) -> bool:
-        # Termination depends only on the state and this kernel's fixed model.
+        # Termination depends only on state/model, not history; cached False must also be reused.
         # / 相同状态的终止判断与搜索历史无关；False 也必须命中缓存。
         state_id = self._state_index.register(state)
         cached = self._state_terminal_cache.get(state_id)
@@ -341,7 +342,7 @@ class RDDLKernel:
         state_mass: Mapping[StateKey, float],
         action: Mapping[str, Any],
     ) -> ConstraintMassExpansion:
-        """Propagate ordinary history mass through sparse transition rows."""
+        """Propagate ordinary history mass through sparse transition rows. / 用稀疏转移行传播普通历史概率质量，不剔除失败轨迹。"""
         action_id = self._action_id(action)
         post_action_mass = self._transition_mass(state_mass, action_id, action)
         return ConstraintMassExpansion(
@@ -354,7 +355,7 @@ class RDDLKernel:
         safe_mass: Mapping[StateKey, float],
         action: Mapping[str, Any],
     ) -> ConstraintMassExpansion:
-        """Propagate Lemma 3.3 unnormalized safe-prefix mass."""
+        """Propagate Lemma 3.3 unnormalized safe-prefix mass. / 传播引理 3.3 中此前未失败的历史概率质量，不归一化。"""
         action_id = self._action_id(action)
         post_action_mass: dict[StateKey, float] = {}
         for _, target, transition_mass in self._transition_branches(
@@ -382,6 +383,9 @@ class RDDLKernel:
         but does not yet need surviving post-action mass. Cached state-action
         risk rows avoid rescanning the same transition branches at every
         frontier history.
+
+        / 计算引理 3.3 的首次进入危险状态的风险系数，不生成后继节点。
+        frontier 只需全局风险行中的 r_q；缓存状态动作风险行可避免重复扫描转移。
         """
         action_id = self._action_id(action)
         return _probability(
@@ -402,7 +406,7 @@ class RDDLKernel:
         action_id: int,
         action: Mapping[str, Any],
     ) -> Mapping[StateKey, float]:
-        """Apply cached transition rows to sparse state mass."""
+        """Apply cached transition rows to sparse state mass. / 对稀疏状态概率质量应用缓存的转移行。"""
         result: dict[StateKey, float] = {}
         for _, target, transition_mass in self._transition_branches(
             state_mass, action_id, action
@@ -416,7 +420,7 @@ class RDDLKernel:
         action_id: int,
         action: Mapping[str, Any],
     ) -> Iterable[tuple[StateKey, StateKey, float]]:
-        """Yield positive transition mass while reusing cached rows."""
+        """Yield positive transition mass while reusing cached rows. / 复用缓存转移行并产生正概率质量的转移分支。"""
         for source, source_mass in state_mass.items():
             if source_mass <= 0.0:
                 continue
@@ -441,7 +445,7 @@ class RDDLKernel:
         post_action_mass: Mapping[StateKey, float],
         action: Mapping[str, Any],
     ) -> tuple[ConstraintMassOutcome, ...]:
-        """Split unnormalized state mass by cached observation rows."""
+        """Split unnormalized state mass by cached observation rows. / 用缓存观测行拆分未归一化状态概率质量。"""
         if not self.observation_names:
             return tuple(
                 ConstraintMassOutcome(
@@ -477,7 +481,7 @@ class RDDLKernel:
         self,
         belief: Mapping[StateKey, float],
     ) -> float:
-        """Return initial/root state risk."""
+        """Return initial/root state risk. / 返回初始信念已处于危险状态的概率。"""
         mass = _normalized_mass(belief)
         return _probability(
             sum(
@@ -487,7 +491,7 @@ class RDDLKernel:
         )
 
     def state_failure(self, state: StateKey) -> float:
-        """Return the indicator that ``state`` belongs to the risky set."""
+        """Return the indicator that ``state`` belongs to the risky set. / 返回当前状态是否属于危险状态集合的指示值。"""
         state_id = self._state_index.register(state)
         cached = self._state_failure_cache.get(state_id)
         if cached is not None:
@@ -507,7 +511,7 @@ class RDDLKernel:
         action_id: int,
         action: Mapping[str, Any],
     ) -> float:
-        """Return cached expected first-entry risk for one state-action row."""
+        """Return cached expected first-entry risk for one state-action row. / 返回缓存的状态动作转移风险，与安全前缀质量结合计算首次失败。"""
         cache_key = (source_id, action_id)
         cached = self._transition_risk_rows.get(cache_key)
         if cached is not None:
@@ -531,7 +535,7 @@ class RDDLKernel:
         state: Mapping[str, Any],
         action: Mapping[str, Any],
     ) -> Mapping[StateKey, float]:
-        """Return one sparse transition row."""
+        """Return one sparse transition row. / 返回一个稀疏状态转移行。"""
         source_id = self._state_index.register(self.state_key(state))
         row = self._transition_row(source_id, self._action_id(action), action)
         return {
@@ -625,7 +629,7 @@ class RDDLKernel:
         state: StateKey,
         action: Mapping[str, Any],
     ) -> float:
-        """Return one observation likelihood."""
+        """Return one observation likelihood. / 返回给定状态和动作下的观测似然。"""
         if observation and observation[0][0] == "__state__":
             return 1.0 if observation[0][1] == state else 0.0
         return float(
@@ -639,7 +643,7 @@ class RDDLKernel:
         action: Mapping[str, Any],
         observation: ObservationKey,
     ) -> Mapping[StateKey, float]:
-        """Apply Algorithm 2's backward operator."""
+        """Apply Algorithm 2's backward operator. / 应用算法 2 的反向算子，累积未来观测的条件似然。"""
         action_id = self._action_id(action)
         result: dict[StateKey, float] = {}
         for state in current_states:
@@ -672,7 +676,7 @@ class RDDLKernel:
         action: Mapping[str, Any],
         observation: ObservationKey,
     ) -> tuple[Mapping[StateKey, float], float]:
-        """Return action-start mass/reward weighted by observation and nontermination."""
+        """Return action-start mass/reward weighted by observation and nontermination. / 返回按观测和未终止事件加权的动作开始状态质量与效用。"""
         action_id = self._action_id(action)
         result: dict[StateKey, float] = {}
         utility = 0.0
@@ -712,7 +716,7 @@ class RDDLKernel:
         state_mass: Mapping[StateKey, float],
         action: Mapping[str, Any],
     ) -> float:
-        """Return ``sum_s mass(s) U(s,a)``."""
+        """Return ``sum_s mass(s) U(s,a)``. / 返回历史概率质量加权的效用贡献，不能再乘一次历史概率。"""
         action_id = self._action_id(action)
         value = sum(
             mass
@@ -728,7 +732,7 @@ class RDDLKernel:
         return value
 
     def expected_reward(self, context: Mapping[str, Any]) -> float:
-        """Return the expectation of finite reward support."""
+        """Return the expectation of finite reward support. / 对奖励的有限取值分布求期望。"""
         reward = getattr(self.grounded_model, "reward", None)
         if reward is None:
             raise KernelError("Grounded model does not expose a reward expression.")
@@ -829,7 +833,7 @@ class RDDLKernel:
         action_id: int,
         action: Mapping[str, Any],
     ) -> float:
-        """Evaluate and cache one reward matrix entry."""
+        """Evaluate and cache one reward matrix entry. / 计算并缓存一个状态动作对的期望奖励。"""
         cache_key = (state_id, action_id)
         cached = self._reward_cache.get(cache_key)
         if cached is not None:
@@ -856,6 +860,7 @@ class RDDLKernel:
     ) -> float:
         """Cache E[R(s,a,s')] without regrouping history-weighted sums.
 
+        Preserve probability multiplication, summation order, and terminal filtering.
         / 仅缓存模型相关的 reward 期望；概率乘法、累加顺序及终止过滤保持不变。
         """
         cache_key = (state_id, action_id, target_id)
@@ -920,7 +925,7 @@ class RDDLKernel:
         return _normalize_distribution(partials)
 
     def _validate_supported(self) -> None:
-        """Validate finite state ranges and a deterministic state-risk predicate."""
+        """Validate finite state ranges and a deterministic state-risk predicate. / 校验有限状态值域与确定性的状态风险谓词。"""
         state_ranges = getattr(self.grounded_model, "state_ranges", {}) or {}
         unsupported = [
             name
@@ -939,7 +944,7 @@ class RDDLKernel:
         self._validate_risk_expression(expression, set())
 
     def _validate_risk_expression(self, expression: Any, resolving: set[str]) -> None:
-        """Reject non-state or stochastic risk dependencies without enumerating states."""
+        """Reject non-state or stochastic risk dependencies without enumerating states. / 无需枚举状态即可拒绝非状态或随机风险依赖。"""
         if not _is_expression(expression):
             return
         expression_type, operator = expression.etype
@@ -991,7 +996,7 @@ def _as_args(value: Any) -> tuple[Any, ...]:
 
 
 def _expression_pvariables(expression: Any) -> set[str]:
-    """Return grounded pvariable names referenced by an expression tree."""
+    """Return grounded pvariable names referenced by an expression tree. / 收集表达式树引用的实例化变量名称。"""
     if not _is_expression(expression):
         return set()
     if expression.etype[0] == "pvar":
@@ -1022,7 +1027,7 @@ def _plain_value(value: Any) -> Hashable:
 def _normalize_distribution(
     distribution: Mapping[Hashable, float],
 ) -> dict[Hashable, float]:
-    """Validate and normalize one finite non-negative distribution."""
+    """Validate and normalize one finite non-negative distribution. / 校验并归一化有限非负分布。"""
     numeric: dict[Hashable, float] = {}
     for key, raw_value in distribution.items():
         value = float(raw_value)
@@ -1047,7 +1052,7 @@ def _normalize_distribution(
 def _normalized_mass(
     distribution: Mapping[StateKey, float],
 ) -> dict[StateKey, float]:
-    """Validate and normalize a non-empty state mass."""
+    """Validate and normalize a non-empty state mass. / 校验并归一化非空状态概率质量。"""
     normalized = _normalize_distribution(distribution)
     if not normalized:
         raise KernelError("Constraint mass requires positive probability mass.")
@@ -1057,12 +1062,12 @@ def _normalized_mass(
 def _mass_belief(
     mass: Mapping[StateKey, float],
 ) -> dict[StateKey, float]:
-    """Normalize an unnormalized state mass, allowing an empty safe flow."""
+    """Normalize an unnormalized state mass, allowing an empty safe flow. / 归一化状态质量，允许安全概率流为空。"""
     return _normalize_distribution(mass)
 
 
 def _non_negative(value: float) -> float:
-    """Validate one finite non-negative coefficient."""
+    """Validate one finite non-negative coefficient. / 校验单个系数为有限非负数。"""
     value = float(value)
     if not isfinite(value):
         raise KernelError("Constraint aggregation produced a non-finite value.")
@@ -1072,7 +1077,7 @@ def _non_negative(value: float) -> float:
 
 
 def _probability(value: float) -> float:
-    """Validate and clamp a floating-point probability to ``[0, 1]``."""
+    """Validate and clamp a floating-point probability to ``[0, 1]``. / 校验浮点概率并将容差内的边界误差截回 [0,1]。"""
     value = _non_negative(value)
     if value <= 0.0:
         return 0.0
@@ -1082,7 +1087,7 @@ def _probability(value: float) -> float:
 
 
 def _expectation(distribution: Mapping[Hashable, float]) -> float:
-    """Return the expectation of finite numeric support."""
+    """Return the expectation of finite numeric support. / 对有限数值分布求期望。"""
     value = sum(
         float(item) * probability
         for item, probability in distribution.items()

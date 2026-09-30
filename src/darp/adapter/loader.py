@@ -1,4 +1,4 @@
-"""RDDL loading through pyRDDLGym."""
+"""RDDL loading through pyRDDLGym. / 通过 pyRDDLGym 加载 RDDL。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ _PARSER_LOCK = Lock()
 
 
 def load_rddl(domain: str | Path, instance: str | Path) -> PyRDDLGymProblem:
-    """Load standard or DARP-extended RDDL through pyRDDLGym."""
+    """Load standard or DARP-extended RDDL through pyRDDLGym. / 加载标准 RDDL 或 DARP 扩展 RDDL。"""
     domain_path = Path(domain).expanduser()
     instance_path = Path(instance).expanduser()
     _ensure_matplotlib_cache_dir()
@@ -59,7 +59,7 @@ def load_rddl(domain: str | Path, instance: str | Path) -> PyRDDLGymProblem:
 
 @lru_cache(maxsize=1)
 def _extended_rddl_parser() -> Any:
-    """Extend pyRDDLGym's top-level grammar for duration and CC-POMDP risk."""
+    """Extend pyRDDLGym's top-level grammar for duration and CC-POMDP risk. / 为时长与 CC-POMDP 风险扩展顶层语法。"""
 
     from ply import yacc
     from pyRDDLGym.core.debug.exception import RDDLParseError
@@ -67,7 +67,7 @@ def _extended_rddl_parser() -> Any:
     from pyRDDLGym.core.parser.parser import RDDLParser
 
     class DARPRDDLParser(RDDLParser):
-        """Reuse the native expression grammar without patching pyRDDLGym."""
+        """Reuse the native expression grammar without patching pyRDDLGym. / 复用原生表达式语法，不修改 pyRDDLGym 源码。"""
 
         def build(self, **kwargs: Any) -> None:
             kwargs.setdefault("start", "rddl")
@@ -76,6 +76,7 @@ def _extended_rddl_parser() -> Any:
         def parse(self, input: str) -> Any:
             # PLY parsers are mutable and retain lexer line numbers between
             # calls, so serialize use of the one cached grammar instance.
+            # PLY 会保留可变状态及词法行号，因此缓存的语法实例必须串行使用。
             with _PARSER_LOCK:
                 self.lexer._lexer.lineno = 1
                 return super().parse(input)
@@ -126,7 +127,7 @@ def _extended_rddl_parser() -> Any:
 
 
 def _constant_probability(expression: Any, name: str) -> float:
-    """Read a literal probability from a parsed RDDL expression."""
+    """Read a literal probability from a parsed RDDL expression. / 从已解析表达式读取概率字面量。"""
 
     if getattr(expression, "etype", (None,))[0] != "constant":
         raise ValueError(f"{name} must be a number.")

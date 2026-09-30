@@ -3,6 +3,8 @@
 The grid domain and instances are local to this experiment's rddl directory.
 The raw CSV is checkpointed after every trial, so ``--resume`` can continue an
 interrupted run.  As in the paper, horizon 6 runs HILP only.
+
+本实验独立保存 Grid 输入，每轮写入 CSV 便于恢复；与论文一致，h=6 仅运行 HILP。
 """
 
 from __future__ import annotations
@@ -58,7 +60,10 @@ FIELDS = (
 
 
 def _manhattan(value: HeuristicInput) -> float:
-    """Paper heuristic: optimistic remaining cost, in reward sign convention."""
+    """Paper's optimistic remaining cost, negated as reward.
+
+    论文的剩余代价乐观估计；取负号以匹配奖励最大化约定。
+    """
 
     row = int(value.state["grid_row"])
     col = int(value.state["grid_col"])
@@ -131,6 +136,7 @@ def _run_trial(
 
     # Duration is part of the RDDL instance/domain extension, so there is no
     # duration sidecar argument here.
+    # Duration 已由 RDDL 扩展描述，不再传入独立 duration 文件。
     instance = _instance(model, horizon)
     env = load_rddl(DOMAIN, instance).env
     try:
@@ -425,6 +431,7 @@ def main() -> int:
                 )
                 row["result_file"] = result_path.relative_to(output.parent).as_posix()
             except Exception as error:  # Keep the rest of the long matrix runnable.
+                # 单配置失败仍记录并继续其余配置，避免长实验被中断。
                 row = _error_row(
                     model, horizon, delta, planner, trial, seed, error
                 )
@@ -438,6 +445,7 @@ def main() -> int:
                 f"trial={trial}: {row['status']}", flush=True,
             )
             # Release large full-tree cycles between independent timed solves.
+            # 独立计时求解之间释放 full-ILP 大树形成的循环引用。
             gc.collect()
 
     _write_markdown(rows, summary)

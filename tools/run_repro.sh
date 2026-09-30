@@ -2,6 +2,7 @@
 set -euo pipefail
 
 # Run DARP vs RAO* using the paper-derived experiment configuration.
+# 按论文配置运行 DARP 与 RAO* 对照实验。
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${VENV_DIR:-${ROOT_DIR}/.venv}"

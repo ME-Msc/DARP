@@ -1,4 +1,4 @@
-"""Run the paired DARP-HILP and external RAO* experiment."""
+"""Run paired DARP-HILP and RAO* trials. 运行 DARP-HILP 与外部 RAO* 对比实验。"""
 
 from __future__ import annotations
 

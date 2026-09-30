@@ -1,4 +1,7 @@
-"""Shared file-based entry point for the CLI and experiments."""
+"""Shared file-based entry point for CLI and experiments.
+
+命令行与实验共用的文件输入求解入口。
+"""
 
 from __future__ import annotations
 
@@ -27,14 +30,14 @@ RootBeliefFactory = Callable[
 
 @dataclass(frozen=True, slots=True)
 class DARPResult:
-    """One DARP decision with the common planner-only timing boundary."""
+    """One decision with planner-only timing. 一个决策及仅含规划阶段的耗时。"""
 
     decision: ActionDecision
     elapsed_s: float
     risk_budget: float | None
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-ready reusable search result."""
+        """Return a JSON-ready result. 返回可保存为 JSON 的可复用求解结果。"""
         return {
             "format": "darp-result",
             "version": 1,
@@ -44,7 +47,7 @@ class DARPResult:
         }
 
     def save(self, path: str | Path) -> Path:
-        """Write this result as portable UTF-8 JSON."""
+        """Write portable UTF-8 JSON. 将结果保存为 UTF-8 JSON 文件。"""
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
@@ -56,7 +59,7 @@ class DARPResult:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> DARPResult:
-        """Restore a result produced by :meth:`to_dict`."""
+        """Restore :meth:`to_dict` output. 从 to_dict 产生的数据恢复结果。"""
         if value.get("format") != "darp-result" or value.get("version") != 1:
             raise ValueError("Unsupported DARP result format or version.")
         budget = value.get("risk_budget")
@@ -71,7 +74,7 @@ class DARPResult:
 
     @classmethod
     def load(cls, path: str | Path) -> DARPResult:
-        """Load a result written by :meth:`save`."""
+        """Load :meth:`save` output. 读取 save 保存的结果文件。"""
         value = json.loads(Path(path).read_text(encoding="utf-8"))
         if not isinstance(value, Mapping):
             raise TypeError("DARP result JSON must contain an object.")
@@ -93,7 +96,7 @@ def solve_rddl(
     full_ilp_max_tree_nodes: int | None = 100_000,
     root_belief_factory: RootBeliefFactory | None = None,
 ) -> DARPResult:
-    """Load one RDDL problem, construct DARP, and run one search."""
+    """Load one RDDL problem and search. 加载一个 RDDL 问题并执行一次搜索。"""
 
     _validate_options(planner, heuristic, terminal_heuristic, timeout_s)
     problem = load_rddl(domain, instance)

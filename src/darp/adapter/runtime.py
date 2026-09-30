@@ -1,4 +1,4 @@
-"""Minimal pyRDDLGym runtime facade required by Algorithm 1."""
+"""Minimal pyRDDLGym runtime facade required by Algorithm 1. / 算法 1 所需的最小 pyRDDLGym 运行接口。"""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ class PyRDDLGymRuntime:
         self.env.reset(seed=seed)
 
     def action_candidates(self) -> tuple[dict[str, Any], ...]:
-        """Enumerate the supported noop and one-active Boolean actions."""
+        """Enumerate the supported noop and one-active Boolean actions. / 枚举支持的空动作与单个激活的布尔动作。"""
 
         base = dict(getattr(self.env, "_noop_actions", None) or {})
         if not base:

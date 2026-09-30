@@ -1,4 +1,4 @@
-"""Paper Algorithm 2 over grounded finite transition kernels."""
+"""Paper Algorithm 2 over grounded finite transition kernels. / 基于有限 grounded 转移核实现论文 Algorithm 2。"""
 
 from __future__ import annotations
 
@@ -89,7 +89,7 @@ def apply_terminal_heuristic(
     interface: ANDORSearchInterface,
     heuristic: UtilityHeuristic,
 ) -> ExpandedAction:
-    """Replace exact utility only on branches stopped by the duration bound."""
+    """Replace exact utility only on branches stopped by the duration bound. / 仅在时长截止分支上替换为终端效用。"""
     terminal = tuple(
         branch for branch in expanded.observation_frontiers if branch.duration_stopped
     )
@@ -219,7 +219,7 @@ def expand_frontier_item(
         )
         observation_keys_qao = item.observation_keys + (
             observation,
-        )  # 完整观测序列 o_1..o_k。
+        )  # Complete observation sequence / 完整观测序列 o_1..o_k。
         ordinary_mass_trace_qao = item.ordinary_mass_trace + (ordinary_mass_qao,)
 
         # Lines 10-20 after the backward messages: compute duration from
@@ -243,6 +243,7 @@ def expand_frontier_item(
             # posterior over augmented states (s, g), g being elapsed duration.
             # State marginals or a scalar expected duration cannot preserve the
             # correlation needed by Pr(G_q < h | q).
+            # 传播状态与累计时长的联合后验；仅用状态边缘分布或平均时长会丢失相关性。
             duration_qao = _advance_augmented_duration_belief(
                 kernel=kernel,
                 model=duration_evaluator.model,
@@ -293,7 +294,8 @@ def expand_frontier_item(
                 observation=observation,
                 child_frontier=child_actions,
                 should_expand=expand_qao,
-                # Model-terminal-only outcomes were retained as leaves above.
+        # Model-terminal-only outcomes were retained as leaves above.
+        # 仅含模型终止状态的观测结果已在上面保留为叶节点。
                 duration_stopped=not expand_qao,
             )
         )
@@ -406,14 +408,9 @@ def _algorithm2_duration_from_smoothed_beliefs(
 
     progress = DurationProgress()
     for index, action_label in enumerate(actions):
-        # Duration contribution for action $$a_i$$:
-
-        # fixed: $$\sum_s \bar b_i(s) c_{a_i}$$
-
-        # stochastic: $$\sum_s \bar b_i(s) \mu_{s,a_i}$$, variance analogously.
-
-        # 动作 $$a_i$$ 的持续时间贡献由 smoothed action-start belief $$\bar b_i$$ 加权得到
-
+        # Action a_i duration: fixed sum_s b_i(s)c_ai; stochastic mean
+        # sum_s b_i(s)mu_s,ai, with variance computed by the duration model.
+        # 动作 a_i 的时长用平滑动作起始 belief 加权；方差由 duration 模型计算。
         estimate_i = duration_evaluator.model.estimate(
             smoothed_beliefs[index],
             action_label,
@@ -446,6 +443,9 @@ def _advance_augmented_duration_belief(
     history and ``done=False``, using ``next_state_support`` from the ordinary
     live posterior. This keeps the duration distribution consistent with the
     episode's continuation, without renormalizing each transition row.
+
+    / 将状态增广为 (s,g)，按 g'=g+D(s,a) 传播，再按观测和未终止条件归一化；
+    保留累计时长分布，不对每条转移行单独归一化。
     """
     if progress.augmented_belief is None:
         state_weights = {

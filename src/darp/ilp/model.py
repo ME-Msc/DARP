@@ -1,4 +1,4 @@
-"""Small binary ILP model schema used before calling Gurobi."""
+"""Small binary ILP model schema used before calling Gurobi. / 提交 Gurobi 前的最小二元 ILP 数据结构。"""
 
 from __future__ import annotations
 

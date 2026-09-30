@@ -1,4 +1,4 @@
-"""pyRDDLGym problem bundle for standard RDDL inputs."""
+"""pyRDDLGym problem bundle for standard RDDL inputs. / 封装标准 RDDL 输入对应的 pyRDDLGym 问题。"""
 
 from __future__ import annotations
 
@@ -17,15 +17,15 @@ class RDDLLoadError(RuntimeError):
 
 @dataclass(frozen=True)
 class PyRDDLGymProblem:
-    """Carry the pyRDDLGym environment and AST needed by DARP."""
+    """Carry the pyRDDLGym environment and AST needed by DARP. / 保存 DARP 所需的 pyRDDLGym 环境与语法树。"""
 
     native_ast: Any
     env: Any
     _grounded_model_cache: Any | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        # An explicit risk predicate requires an explicit budget, even if false.
-        # 显式声明风险时不能替用户决定预算；标准 RDDL 的无风险默认值在 grounding 时补齐。
+        # Explicit risk requires an explicit budget, even if false; grounding supplies no-risk defaults.
+        # 显式风险谓词即使恒为假也需要预算；未声明风险时在 grounding 中补全无风险默认值。
         if hasattr(self.native_ast.domain, "risk") and not hasattr(self.native_ast.instance, "risk_budget"):
             raise RDDLLoadError("An explicit RDDL risk predicate requires 'risk-budget' in the instance.")
 
@@ -99,8 +99,8 @@ def _build_enum_aware_grounded_model(native_ast: Any) -> Any:
 
     grounder = EnumAwareRDDLGrounder(native_ast)
     grounded = grounder.ground()
-    # Normalize defaults here for both file loading and native-env evaluation.
-    # 仅补全 DARP 的 grounded 视图，不修改调用者的 AST 或环境模型。
+    # Supply defaults in DARP's grounded view for loading/evaluation, without changing the caller's AST/env.
+    # 为加载与回放补全 DARP grounded 视图的默认值，不修改调用者的 AST 或环境模型。
     grounded.duration = grounder._scan_expr_tree(
         getattr(native_ast.domain, "duration", Expression(("number", 1.0))), {}
     )

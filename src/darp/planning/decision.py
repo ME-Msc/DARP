@@ -1,4 +1,4 @@
-"""Planner result shared by full-ILP and HILP."""
+"""Planner result shared by full-ILP and HILP. / 两类规划器共享的求解结果。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from darp.planning.policy import ConditionalPolicy, json_ready
 
 @dataclass(frozen=True)
 class ActionDecision:
-    """A selected root action and its conditional policy."""
+    """A selected root action and its conditional policy. / 选中的根动作及对应条件策略。"""
 
     action: Mapping[str, Any]
     label: str
@@ -34,7 +34,7 @@ class ActionDecision:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ActionDecision:
-        """Restore a decision from :meth:`to_dict` output."""
+        """Restore a decision from :meth:`to_dict` output. / 从序列化结果恢复动作决策。"""
         action = value["action"]
         timing = value["timing"]
         policy = value["policy"]

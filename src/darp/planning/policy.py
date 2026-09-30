@@ -1,4 +1,4 @@
-"""Define, serialize and extract conditional policies."""
+"""Define, serialize and extract conditional policies. / 定义、序列化并提取条件策略。"""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ ObservationHistory = tuple[ObservationKey, ...]
 
 @dataclass(frozen=True)
 class PolicyNode:
-    """One action in a finite observation-contingent policy graph."""
+    """One action in a finite observation-contingent policy graph. / 有限观测条件策略图中的一个动作。"""
 
     node_id: str
     stage: int
@@ -51,7 +51,7 @@ class PolicyNode:
 
 @dataclass(frozen=True)
 class ConditionalPolicy:
-    """A deterministic policy and its essential numeric post-checks."""
+    """A deterministic policy and its essential numeric post-checks. / 确定性策略及必要的数值校验结果。"""
 
     root: str
     nodes: tuple[PolicyNode, ...]
@@ -79,7 +79,7 @@ class ConditionalPolicy:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ConditionalPolicy:
-        """Restore policy data from :meth:`to_dict` output."""
+        """Restore policy data from :meth:`to_dict` output. / 从序列化结果恢复策略数据。"""
         if (
             value.get("format") != "darp-policy-graph"
             or value.get("version") != 1
@@ -111,7 +111,7 @@ class ConditionalPolicy:
 
 
 def json_ready(value: Any) -> Any:
-    """Convert numpy-backed action values to plain JSON values."""
+    """Convert numpy-backed action values to plain JSON values. / 将 NumPy 动作值转换为普通 JSON 值。"""
     if isinstance(value, Mapping):
         return {str(key): json_ready(item) for key, item in value.items()}
     if isinstance(value, tuple):
@@ -134,6 +134,9 @@ def extract_conditional_policy(
     The ILP already enforces policy flow. This small post-check protects the
     public result from a partial HILP frontier and disconnected fake
     incumbents, then sums the selected nodes' utility and constraint values.
+
+    / 验证选中的 x_q 是否形成观测闭合的完整策略，再汇总真实效用与风险；
+    不把未展开 frontier 的启发式值当作已经实现的效用。
     """
 
     selected = _selected_variable_ids(result)
@@ -291,7 +294,7 @@ def _build_policy_graph(
     actions: Mapping[ObservationHistory, tuple[str, Mapping[str, Any]]],
     leaves: set[ObservationHistory],
 ) -> tuple[str, tuple[PolicyNode, ...], PolicyInput]:
-    """Turn selected history actions into a compact finite policy tree."""
+    """Turn selected history actions into a compact finite policy tree. / 将选中的历史动作转换为紧凑有限策略树。"""
     histories = sorted(actions, key=lambda item: (len(item), repr(item)))
     node_ids = {history: f"n{index}" for index, history in enumerate(histories)}
     transitions: dict[
@@ -381,7 +384,7 @@ def _observation_values(
 
 
 def policy_input_key(value: Any, input_kind: PolicyInput) -> ObservationKey:
-    """Normalize a grounded observation or state for policy lookup."""
+    """Normalize a grounded observation or state for policy lookup. / 规范化 grounded 观测或状态以查找策略动作。"""
     if not isinstance(value, Mapping):
         raise TypeError("Policy transition observation must be an object.")
     key = tuple(

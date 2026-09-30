@@ -1,5 +1,6 @@
 // The stochastic movement outcome is sampled for the current action and is
 // shared by all next-state CPFs; it is not a persistent belief-state variable.
+// 当前动作只采样一次随机移动结果，所有下一状态 CPF 共享该结果；它不属于持久的信念状态变量。
 domain darp_vs_raostar_grid {
     requirements = { partially-observed };
 
@@ -20,20 +21,24 @@ domain darp_vs_raostar_grid {
         col_mod5 : { state-fluent, int, default = 0 };
 
         // Intended endpoint for the paper's "to or from mud" duration rule.
+        // 用预期终点判断论文中“移入或移出泥地”的时长规则。
         intended_row_mod5 : { interm-fluent, int, level = 1 };
         intended_col_mod5 : { interm-fluent, int, level = 1 };
         mud_contact       : { interm-fluent, bool, level = 2 };
 
         // Sampled once per action and shared by every next-state CPF:
         // 0 = intended direction, 1/2 = the two perpendicular slips.
+        // 每个动作采样一次并供所有下一状态 CPF 共享：0 表示预期方向，1/2 表示两个垂直侧滑方向。
         move_outcome : { interm-fluent, int, level = 3 };
 
         // With max-nondef-actions=1, all false denotes Left.
+        // max-nondef-actions=1 时，所有动作变量均为 false 表示向左移动。
         move_up    : { action-fluent, bool, default = false };
         move_right : { action-fluent, bool, default = false };
         move_down  : { action-fluent, bool, default = false };
 
         // Noisy observation of the number of adjacent boundary walls.
+        // 带噪观测当前位置相邻边界墙的数量。
         obs : { observ-fluent, int };
     };
 
@@ -73,6 +78,7 @@ domain darp_vs_raostar_grid {
             else 2;
 
         // Rows increase downwards, as in Constrained-POMDP's GridInstance.
+        // 行号向下递增，与 Constrained-POMDP 的 GridInstance 保持一致。
         grid_row' =
             if ((grid_row == goal_row) & (grid_col == goal_col)) then grid_row
             else if (move_up) then
@@ -190,6 +196,7 @@ domain darp_vs_raostar_grid {
 
     // D(s,a). F uses equal normal/muddy values, E changes muddy_duration,
     // and S additionally supplies Gaussian variance in its instance.
+    // D(s,a)：F 的普通与泥地时长相同，E 调整泥地时长，S 还在实例中指定高斯方差。
     duration =
         if (normal_duration == muddy_duration) then
             if (duration_noise_variance > 0.0)

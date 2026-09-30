@@ -1,4 +1,4 @@
-"""DARP view over pyRDDLGym grounded models."""
+"""DARP view over pyRDDLGym grounded models. / pyRDDLGym 实例化模型的 DARP 视图。"""
 
 from __future__ import annotations
 

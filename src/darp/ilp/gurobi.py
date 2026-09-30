@@ -326,7 +326,7 @@ def _time_limit_result(
     *,
     runtime_ms: float,
 ) -> ILPSolveResult:
-    """Return an empty result when the wall budget expires before optimize()."""
+    """Return an empty result when the wall budget expires before optimize(). / optimize 前超时时返回空解。"""
     values = {var_id: 0.0 for var_id in spec.variable_ids()}
     return ILPSolveResult(
         status="time_limit",

@@ -11,5 +11,6 @@ dist/
 .codex
 
 # Temporary experiment files.
+# 临时实验文件。
 *.tmp
 /experiments/*/output/regression-*/

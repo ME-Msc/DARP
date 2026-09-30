@@ -1,4 +1,4 @@
-"""Execute solved DARP policies through pyRDDLGym."""
+"""Execute solved DARP policies through pyRDDLGym. / 通过 pyRDDLGym 执行已求解的 DARP 策略。"""
 
 from __future__ import annotations
 
@@ -23,12 +23,12 @@ from darp.planning.policy import (
 
 
 class MissingPolicyTransitionError(LookupError):
-    """Raised when an observation has no edge in a complete policy."""
+    """Raised when an observation has no edge in a complete policy. / 完整策略缺少当前观测对应的边时抛出。"""
 
 
 @dataclass(frozen=True, slots=True)
 class PolicyExecutionResult:
-    """One sampled pyRDDLGym execution of a conditional policy."""
+    """One sampled pyRDDLGym execution of a conditional policy. / 条件策略在 pyRDDLGym 中的一次采样执行结果。"""
 
     elapsed_s: float
     steps: int
@@ -55,7 +55,7 @@ class PolicyExecutionResult:
 
 
 class PolicyExecutor(BaseAgent):
-    """Execute a DARP policy through pyRDDLGym's ``BaseAgent`` interface."""
+    """Execute a DARP policy through pyRDDLGym's ``BaseAgent`` interface. / 通过 BaseAgent 接口执行 DARP 策略。"""
 
     def __init__(self, policy: ConditionalPolicy) -> None:
         if not policy.duration_complete or policy.feasible is not True:
@@ -71,26 +71,26 @@ class PolicyExecutor(BaseAgent):
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> PolicyExecutor:
-        """Build an executor from serialized policy data."""
+        """Build an executor from serialized policy data. / 从序列化策略数据构建执行器。"""
         return cls(ConditionalPolicy.from_dict(value))
 
     @property
     def history(self) -> tuple[ObservationKey, ...]:
-        """Return observations received in the current episode."""
+        """Return observations received in the current episode. / 返回本轮执行已接收的观测历史。"""
         return self._history
 
     @property
     def at_leaf(self) -> bool:
-        """Return whether the current history is a valid policy leaf."""
+        """Return whether the current history is a valid policy leaf. / 判断当前历史是否到达有效策略叶节点。"""
         return self._node_id is None
 
     @property
     def max_steps(self) -> int:
-        """Return the greatest action depth encoded by the policy."""
+        """Return the greatest action depth encoded by the policy. / 返回策略编码的最大动作深度。"""
         return self._max_steps
 
     def reset(self) -> None:
-        """Start a new episode at the policy root."""
+        """Start a new episode at the policy root. / 从策略根节点开始一轮新执行。"""
         self._history: tuple[ObservationKey, ...] = ()
         self._node_id: str | None = self.policy.root
         self._awaiting_observation = False
@@ -100,6 +100,9 @@ class PolicyExecutor(BaseAgent):
 
         DARP uses act-then-observe timing, so the input from ``env.reset()`` is
         ignored. Later calls first consume the outcome of the preceding action.
+
+        / 根据当前观测或状态返回动作；DARP 先行动后观测，故忽略 reset 输入，
+        后续调用先消费上一个动作的结果，再选择下一动作。
         """
 
         if self._awaiting_observation:
@@ -140,7 +143,7 @@ class PolicyExecutor(BaseAgent):
         verbose: bool = False,
         render: bool = False,
     ) -> PolicyExecutionResult:
-        """Run one raw episode; ``evaluate`` also records risk and duration."""
+        """Run one raw episode; ``evaluate`` also records risk and duration. / 直接执行一轮；evaluate 还会记录风险与时长。"""
 
         if bool(getattr(env, "vectorized", False)) != self.use_tensor_obs:
             raise ValueError(
@@ -149,6 +152,7 @@ class PolicyExecutor(BaseAgent):
 
         # pyRDDLGym also treats the RDDL duration threshold as a step cap, but
         # a stochastic-duration policy may require more action transitions.
+        # pyRDDLGym 把 RDDL horizon 作为步数上限，但随机时长策略可能需要更多动作转移。
         original_horizon = int(getattr(env, "horizon", 0) or 0)
         env.horizon = max(original_horizon, self.max_steps)
         try:
@@ -185,6 +189,7 @@ class PolicyExecutor(BaseAgent):
 
         for step in range(self.max_steps):
             # reset() can already terminate the episode; no action is then legal.
+            # reset() 可能已经使环境终止，此时不再执行动作。
             if terminated:
                 stop_reason = "model_terminal"
                 break
@@ -198,6 +203,7 @@ class PolicyExecutor(BaseAgent):
                     kernel.grounded_model.duration, kernel, env.state, action
                 )
                 mean, variance = moments.mean, moments.variance
+                # Independent RNG preserves environment T/O sampling; do not truncate Gaussian negative tails.
                 # 独立 RNG 不改变环境的 T/O 采样；不截断正态分布的负尾部。
                 physical_duration += (
                     duration_rng.gauss(mean, sqrt(variance)) if variance else mean
@@ -259,6 +265,10 @@ class PolicyExecutor(BaseAgent):
     ) -> dict[str, float]:
         """Sample the saved policy and return execution statistics.
 
+        Follow observation branches without recomputing beliefs, ILP values,
+        or stopping rules. Sampled risk/duration do not certify feasibility.
+
+        / 采样执行已保存策略并返回统计结果。
         按策略的 observation 分支执行；不重算 belief、ILP 目标或停止条件。
         风险频率与物理时长来自实际采样，不是模型可行性的证明。
         """
@@ -300,7 +310,7 @@ class PolicyExecutor(BaseAgent):
 
 
 def _validate_policy_graph(nodes: Mapping[str, PolicyNode], root: str) -> int:
-    """Validate one finite graph and return its maximum number of actions."""
+    """Validate one finite graph and return its maximum number of actions. / 校验有限策略图并返回其最大执行动作数。"""
     if nodes[root].stage != 0:
         raise ValueError("Policy root must be at stage zero.")
     memo: dict[str, int] = {}

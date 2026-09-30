@@ -1,4 +1,4 @@
-"""Gurobi full-ILP planner for the paper's policy-tree objective."""
+"""Gurobi full-ILP planner for the paper's policy-tree objective. / 论文完整策略树 ILP 的 Gurobi 规划器。"""
 
 from __future__ import annotations
 
@@ -130,6 +130,7 @@ class FullILPPlanner:
         # A duration-complete incumbent is executable and its selected
         # coefficients are achieved utility even when optimality has not yet
         # been proved (for example at a solver time limit).
+        # 即使尚未证明最优（例如超时），完整策略的效用仍是可实现值且可以执行。
         achieved_utility = policy.achieved_utility
         gurobi_ms = float(ilp_result.runtime_ms)
         flow_nodes = sum(

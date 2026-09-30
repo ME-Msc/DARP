@@ -1,6 +1,8 @@
 """Smoke checks for saved-policy execution, risk counting and duration sampling.
 
 Run without Gurobi: ``python -m unittest discover -s tests -p test_executor_evaluation.py``.
+
+/ 无需 Gurobi，验证保存策略的执行、首次风险统计与持续时间采样。
 """
 
 import unittest
@@ -138,6 +140,7 @@ def _terminal_tree(problem, **options):
     view = problem.build_grounded_view()
     interface = view.build_and_or_interface(runtime)
     # One action makes the entire tree the unique policy; no optimizer needed.
+    # 单动作使整棵树成为唯一策略，不需要优化器。
     interface = ANDORSearchInterface.from_actions_and_observations(
         actions=tuple(action for action in interface.actions if action.label == "noop"),
         observation_scope=interface.observation_scope,
@@ -191,6 +194,7 @@ class ExecutorEvaluationTests(unittest.TestCase):
                 try:
                     policy = _policy((False, True))
                     # Display labels need not uniquely identify RDDL assignments.
+                    # 显示标签不必唯一标识 RDDL 动作赋值。
                     policy = replace(policy, nodes=tuple(replace(node, action_label="move") for node in policy.nodes))
                     agent = PolicyExecutor(policy)
                     statistics = agent.evaluate(env, episodes=10, seed=19)
@@ -397,6 +401,7 @@ class ExecutorEvaluationTests(unittest.TestCase):
 
                 # The two live successor rewards differ; terminal arrivals keep
                 # their reward in the total, but never in continuation branches.
+                # 存活后继的奖励不同；终止到达的奖励计入总量，但不进入后续分支。
                 for slow, seen, probability, expected in (
                     (False, True, .25, .725),
                     (False, False, .25, .65),

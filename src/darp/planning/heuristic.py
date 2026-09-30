@@ -1,4 +1,4 @@
-"""Small public interface for HILP utility heuristics."""
+"""Small public interface for HILP utility heuristics. / HILP 效用启发式的最小公开接口。"""
 
 from __future__ import annotations
 
@@ -19,6 +19,9 @@ class HeuristicInput:
     ``non_fluents`` exposes model constants without coupling the planner to a
     particular domain.  A callback returns a utility-to-go value for DARP's
     maximization objective; a cost-to-go heuristic must therefore be negated.
+
+    / 回调接收单个状态、动作和模型常量，返回从当前动作开始的剩余效用；
+    核心采用最大化目标，因此剩余代价估计需要取负。
     """
 
     state: Mapping[str, Any]
@@ -41,6 +44,9 @@ class UtilityHeuristic:
     Set ``upper_bound`` only when the callback is an admissible upper bound for
     DARP's maximization objective.  The flag affects optimality certification,
     never the ILP solution itself.
+
+    / 核心负责乘历史概率；upper_bound 表示调用者确认启发式是可采纳上界，
+    仅影响最优性认证，不改变传给 ILP 的数值。
     """
 
     name: str
@@ -60,6 +66,9 @@ def load_utility_heuristic(spec: str) -> UtilityHeuristic:
     A bare callable is accepted as a convenient, non-certifying heuristic.
     Exporting ``UtilityHeuristic`` explicitly is recommended because it records
     a stable name and whether the bound is admissible.
+
+    / 从 module:attribute 加载启发式；普通函数可调用但不提供上界认证，
+    显式 UtilityHeuristic 还记录名称和可采纳性声明。
     """
 
     module_name, separator, attribute = spec.partition(":")
@@ -88,6 +97,8 @@ def history_heuristic_coefficient(
 
     ``state_mass`` is already the unnormalised ordinary history mass, so no
     second probability scale or belief normalisation is applied here.
+
+    / 返回论文 h_q^u；state_mass 已包含 rho(q)，不再次加权或归一化。
     """
 
     terms: list[float] = []
@@ -108,7 +119,7 @@ def history_heuristic_coefficient(
 
 
 def _finite_float(value: Real) -> float:
-    """Validate and convert one user heuristic value."""
+    """Validate and convert one user heuristic value. / 校验并转换用户返回的有限实数启发值。"""
 
     if isinstance(value, bool) or not isinstance(value, Real):
         raise TypeError("A utility heuristic must return a finite real number.")

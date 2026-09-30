@@ -572,6 +572,9 @@ def _frontier_leaf_record(
     the leaf. Other configurations retain the eager path because they must
     inspect continuation branches before deciding between :math:`h_q` and
     :math:`u_q`.
+
+    / 终端也使用启发式时，frontier 先只算 h_q 与一步风险，选中后才展开；
+    否则先判断哪些观测继续，再决定使用 h_q 还是 u_q。
     """
     if heuristic is not None and terminal_heuristic:
         return _lazy_frontier_leaf_record(item, interface, heuristic=heuristic)
@@ -590,7 +593,7 @@ def _lazy_frontier_leaf_record(
     *,
     heuristic: UtilityHeuristic,
 ) -> Algorithm1ExpansionRecord:
-    """Evaluate frontier coefficients without observations or children."""
+    """Evaluate frontier coefficients without observations or children. / 不生成观测与后代，仅计算 frontier 系数。"""
     action = item.node.assignment
     if action is None:
         raise ValueError("A frontier action node has no action assignment.")
@@ -644,6 +647,9 @@ def _materialized_frontier_leaf_record(
     observation branches are weighted separately when sibling branches continue.
     The callback must return the intended value (normally zero) for model-terminal
     states. Otherwise leaves retain RDDL reward.
+
+    / 从真实 Expand 结果构建 frontier：继续分支用概率加权 h_q^u 替换 u_q，
+    风险仍用首次失败的一步系数；终端效用遵循实验约定，不改变风险定义。
     """
     var_id = _action_var_id(item)
     policy_expansion = expand_frontier_item(item, interface, duration_evaluator)
@@ -688,6 +694,7 @@ def _materialized_frontier_leaf_record(
         # validation must inspect its observation branches. At a duration
         # boundary, the optional terminal heuristic is the experiment's actual
         # terminal objective and must therefore be included in achieved utility.
+        # 非终止 frontier 尚不可执行；时长终点的启发式则是实验定义的真实终端效用。
         policy_expansion=exact_expansion,
     )
 
