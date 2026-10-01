@@ -33,7 +33,7 @@ def run_darp(
     seed: int,
     timeout_s: float | None,
 ) -> DARPResult:
-    """Run one complete DARP-HILP search."""
+    """Run one complete DARP-HILP search. 返回完整且风险可行的可执行策略。"""
     result = solve_rddl(
         DOMAIN,
         instance,
@@ -45,7 +45,11 @@ def run_darp(
         timeout_s=timeout_s,
     )
     decision = result.decision
-    if not decision.complete or decision.policy.feasible is not True:
+    if (
+        not decision.policy.duration_complete
+        or decision.policy.feasible is not True
+        or not decision.complete
+    ):
         raise RuntimeError(
             "DARP-HILP did not return a complete feasible policy: "
             f"status={decision.policy.solver_status}"

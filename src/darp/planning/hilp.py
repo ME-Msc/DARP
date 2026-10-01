@@ -29,9 +29,9 @@ from darp.planning.heuristic import (
 )
 from darp.planning.ilp_tree import (
     Algorithm1ExpansionRecord,
+    IncrementalPartialTreeILP,
     PolicyTreeILP,
     _action_var_id,
-    build_partial_tree_ilp,
     validate_risk_budget,
 )
 from darp.planning.policy import extract_conditional_policy
@@ -97,7 +97,7 @@ class HILPPlanner:
           leaves: they have heuristic $$h_q$$ and risk $$r_q$$ constants,
           but no child-flow rows yet.
         - The CC-POMDP time budget is the domain horizon inside
-          `duration_evaluator`; it is consumed by action durations through
+        `duration_evaluator`; it is consumed by action durations through
           $$\tau(q)$$.  It is not Python wall-clock runtime.
 
         / 使用 HILP 的 $$E/F$$ frontier 更新框架；heuristic 是 $$F$$ 中节点的
@@ -133,6 +133,12 @@ class HILPPlanner:
         # Algorithm 3：$$E$$ 保存已经调用过 Expand 的 action histories。
         expanded_e: dict[str, Algorithm1ExpansionRecord] = {}
         frontier_records: dict[str, Algorithm1ExpansionRecord] = {}
+        ilp_builder = IncrementalPartialTreeILP(
+            runtime, interface, risk_budget=self.risk_budget, root_belief=root_belief,
+        )
+        # Only these events need encoding at the next solve. / 下一轮只编码这些变动。
+        pending_expanded: list[Algorithm1ExpansionRecord] = []
+        pending_frontier = list(root_frontier)
         partial_tree: PolicyTreeILP | None = None
         partial_result: ILPSolveResult | None = None
         expansion_rounds = 0
@@ -161,13 +167,12 @@ class HILPPlanner:
         ):
             try:
                 candidate_tree, candidate_result = self._solve_partial_policy_ilp(
-                    runtime,
                     interface,
                     duration_evaluator,
-                    expanded_records=tuple(expanded_e.values()),
-                    frontier=tuple(frontier_f.values()),
+                    ilp_builder=ilp_builder,
+                    expanded_records=pending_expanded,
+                    frontier=pending_frontier,
                     frontier_records=frontier_records,
-                    root_belief=root_belief,
                     ilp_session=ilp_session,
                     warm_start=(
                         partial_result.variable_values
@@ -238,22 +243,23 @@ class HILPPlanner:
                     continues=bool(expanded_item.child_frontier),
                     policy_expansion=expanded_item,
                 )
+                pending_expanded.append(expanded_e[var_id])
                 for child in expanded_item.child_frontier:
                     child_var_id = _action_var_id(child)
                     if child_var_id not in expanded_e and child_var_id not in frontier_f:
                         frontier_f[child_var_id] = child
+                        pending_frontier.append(child)
             needs_final_solve = True
 
         if partial_tree is None or partial_result is None or needs_final_solve:
             try:
                 candidate_tree, candidate_result = self._solve_partial_policy_ilp(
-                    runtime,
                     interface,
                     duration_evaluator,
-                    expanded_records=tuple(expanded_e.values()),
-                    frontier=tuple(frontier_f.values()),
+                    ilp_builder=ilp_builder,
+                    expanded_records=pending_expanded,
+                    frontier=pending_frontier,
                     frontier_records=frontier_records,
-                    root_belief=root_belief,
                     ilp_session=ilp_session,
                     warm_start=(
                         partial_result.variable_values
@@ -367,14 +373,13 @@ class HILPPlanner:
 
     def _solve_partial_policy_ilp(
         self,
-        runtime: PyRDDLGymRuntime,
         interface: ANDORSearchInterface,
         duration_evaluator: HistoryDurationEvaluator,
         *,
-        expanded_records: tuple[Algorithm1ExpansionRecord, ...],
-        frontier: tuple[FrontierItem, ...],
+        ilp_builder: IncrementalPartialTreeILP,
+        expanded_records: list[Algorithm1ExpansionRecord],
+        frontier: list[FrontierItem],
         frontier_records: dict[str, Algorithm1ExpansionRecord],
-        root_belief: Mapping[StateKey, float] | None,
         ilp_session: GurobiILPSession,
         warm_start: Mapping[str, float] | None,
         solver_deadline: float | None,
@@ -393,83 +398,51 @@ class HILPPlanner:
         """
 
         build_started_at = perf_counter()
-        current_frontier_records: list[Algorithm1ExpansionRecord] = []
+        new_frontier_records: list[Algorithm1ExpansionRecord] = []
         for item in frontier:
             var_id = _action_var_id(item)
-            record = frontier_records.get(var_id)
-            if record is None:
-                record = _frontier_leaf_record(
-                    item,
-                    interface,
-                    duration_evaluator,
-                    heuristic=self.frontier_heuristic,
-                    terminal_heuristic=self.terminal_heuristic,
-                )
-                frontier_records[var_id] = record
-            current_frontier_records.append(record)
-        # Each round rebuilds only the lightweight ILPModelSpec, which is the
-        # source of truth for the current mathematical problem. It does not
-        # rebuild the Gurobi model: GurobiILPSession compares consecutive specs
-        # and synchronizes only their differences.
-        # 这里每轮重建的只是轻量 ILPModelSpec（当前数学问题的事实来源），
-        # 并非重建 Gurobi model；GurobiILPSession 会比较前后 spec，只同步差量。
-        partial_ilp = build_partial_tree_ilp(
-            runtime=runtime,
-            interface=interface,
+            record = _frontier_leaf_record(
+                item,
+                interface,
+                duration_evaluator,
+                heuristic=self.frontier_heuristic,
+                terminal_heuristic=self.terminal_heuristic,
+            )
+            frontier_records[var_id] = record
+            new_frontier_records.append(record)
+        # Update only changed records; retain a separate immutable-in-use
+        # checkpoint for timeout fallback.
+        # 只增量编码变化的记录；保留不被后续更新修改的独立快照，以便超时回退。
+        ilp_builder.update(
             expanded_records=expanded_records,
-            frontier_records=tuple(current_frontier_records),
-            risk_budget=self.risk_budget,
-            root_belief=root_belief,
+            frontier_records=new_frontier_records,
         )
+        # Model delta means changed coefficients/rows, not the risk budget Delta.
+        # 模型差量是新增行和变化系数，不是论文中的风险预算 Delta。
+        partial_ilp, model_delta = ilp_builder.snapshot()
+        expanded_records.clear()
+        frontier.clear()
         build_ms = (perf_counter() - build_started_at) * 1000.0
         if timing_totals is not None:
             timing_totals["tree_ilp_build_ms"] = (
                 timing_totals.get("tree_ilp_build_ms", 0.0) + build_ms
             )
-        warm_start_started_at = perf_counter()
-        current_var_ids = set(partial_ilp.spec.variable_ids())
-        shared_start = (
-            {
-                var_id: value
-                for var_id, value in warm_start.items()
-                if var_id in current_var_ids
-            }
-            if warm_start
-            else None
-        )
-        warm_start_filter_ms = (perf_counter() - warm_start_started_at) * 1000.0
-        if timing_totals is not None:
-            timing_totals["warm_start_filter_ms"] = (
-                timing_totals.get("warm_start_filter_ms", 0.0)
-                + warm_start_filter_ms
-            )
-        solve_started_at = perf_counter()
-        remaining_solver_ms: float | None = None
+        remaining_solver_ms = None
         if solver_deadline is not None:
-            remaining_solver_ms = (solver_deadline - solve_started_at) * 1000.0
+            remaining_solver_ms = (solver_deadline - perf_counter()) * 1000.0
             if remaining_solver_ms <= 0.0:
                 raise TimeoutError("HILP wall budget expired before the next Gurobi refinement.")
         result = ilp_session.solve(
             partial_ilp.spec,
+            delta=model_delta,
             time_limit_ms=remaining_solver_ms,
-            warm_start=shared_start,
+            warm_start=warm_start,
         )
         if timing_totals is not None:
-            timing_totals["partial_ilp_solves"] = (
-                timing_totals.get("partial_ilp_solves", 0.0) + 1.0
-            )
-            timing_totals["gurobi_solve_ms"] = (
-                timing_totals.get("gurobi_solve_ms", 0.0)
-                + float(result.runtime_ms)
-            )
-            timing_totals["gurobi_model_update_ms"] = (
-                timing_totals.get("gurobi_model_update_ms", 0.0)
-                + float(ilp_session.last_model_update_ms)
-            )
-            timing_totals["gurobi_optimize_ms"] = (
-                timing_totals.get("gurobi_optimize_ms", 0.0)
-                + float(ilp_session.last_optimize_ms)
-            )
+            timing_totals["partial_ilp_solves"] += 1.0
+            timing_totals["gurobi_solve_ms"] += float(result.runtime_ms)
+            timing_totals["gurobi_model_update_ms"] += ilp_session.last_model_update_ms
+            timing_totals["gurobi_optimize_ms"] += ilp_session.last_optimize_ms
         return partial_ilp, result
 
     def _selected_frontier(
@@ -490,11 +463,7 @@ class HILPPlanner:
         该集合内按 heuristic 排序并应用批量宽度。
         """
         frontier_ids = set(partial_tree.frontier_variable_ids)
-        incumbent_ids = {
-            var_id
-            for var_id, value in partial_result.variable_values.items()
-            if float(value) > 0.5
-        }
+        incumbent_ids = set(partial_result.selected_variables)
         incumbent_frontier = [
             (var_id, item)
             for var_id, item in frontier.items()

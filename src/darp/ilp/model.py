@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 ConstraintSense = Literal["==", "<=", ">="]
@@ -24,6 +24,25 @@ class ILPLinearConstraint:
     coefficients: Mapping[str, float]
     sense: ConstraintSense
     rhs: float
+
+
+@dataclass(frozen=True)
+class ILPModelDelta:
+    """Append variables/rows and set changed coefficients, without re-encoding old rows.
+
+    ``variables`` and ``constraints`` contain only new entries. ``objective``
+    and ``coefficients`` specify absolute replacement values, not increments.
+    ``coefficients`` updates existing rows only; zero removes a term.
+
+    / 追加变量和约束，设置变化的系数，不重新编码旧行。
+    variables、constraints 仅包含新增项；objective 与 coefficients 中的值
+    是新的绝对系数，不是增量。coefficients 只能更新已有约束，0 表示移除该项。
+    """
+
+    variables: tuple[ILPVariable, ...] = ()
+    objective: Mapping[str, float] = field(default_factory=dict)
+    constraints: tuple[ILPLinearConstraint, ...] = ()
+    coefficients: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

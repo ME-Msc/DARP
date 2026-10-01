@@ -7,12 +7,13 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from math import isfinite
 
 from darp.adapter.kernel import StateKey
 from darp.adapter.runtime import PyRDDLGymRuntime
-from darp.ilp.model import ILPLinearConstraint, ILPModelSpec, ILPVariable
+from darp.ilp.model import ILPLinearConstraint, ILPModelDelta, ILPModelSpec, ILPVariable
 from darp.model.and_or_tree import ANDORSearchInterface
 from darp.model.duration import HistoryDurationEvaluator
 from darp.planning.expand import (
@@ -184,6 +185,164 @@ def build_partial_tree_ilp(
         model_name="darp_hilp_partial_tree",
         frontier_variable_ids=tuple(record.var_id for record in frontier_records),
     )
+
+
+class IncrementalPartialTreeILP:
+    """Encode only new frontier records and F→E refinements.
+
+    Existing root/flow rows are retained. Snapshots are independent of later
+    updates so timeout fallback still uses the policy matching the last solve.
+
+    / 只编码新 frontier 和本轮 F→E 的节点；旧 root/flow 行保持不变。
+    快照独立于后续更新，保证超时时仍能返回上一轮解对应的策略。
+    """
+
+    def __init__(
+        self,
+        runtime: PyRDDLGymRuntime,
+        interface: ANDORSearchInterface,
+        *,
+        risk_budget: float | None = None,
+        root_belief: Mapping[StateKey, float] | None = None,
+    ) -> None:
+        self._constraint = _constraint_encoding_context(
+            runtime, interface, risk_budget, root_belief,
+        )
+        self._variables: dict[str, ILPVariable] = {}
+        self._objective: dict[str, float] = {}
+        self._rows: dict[str, ILPLinearConstraint] = {}
+        self._items: dict[str, FrontierItem] = {}
+        self._expansions: dict[str, ExpandedAction] = {}
+        self._continues: dict[str, bool] = {}
+        self._frontier: dict[str, None] = {}
+        self._roots: list[str] = []
+        self._risk: dict[str, float] = {}
+        self._risk_initialized = False
+        self._new_variables: list[ILPVariable] = []
+        self._new_rows: list[ILPLinearConstraint] = []
+        self._objective_updates: dict[str, float] = {}
+        self._risk_updates: dict[str, float] = {}
+
+    def update(
+        self,
+        *,
+        expanded_records: Sequence[Algorithm1ExpansionRecord],
+        frontier_records: Sequence[Algorithm1ExpansionRecord],
+    ) -> None:
+        """Apply changed E records and new F records, not the whole E∪F.
+
+        Declare all children in this batch before adding parent flow rows.
+        Replace risk coefficients with their new values rather than adding to
+        old values, preserving first-entry risk semantics.
+
+        / 只处理变化的 E 记录与新 F 记录，不遍历整个 E∪F。
+        先声明本批次全部 child，再添加父节点 flow；risk 系数按新值替换，
+        不累加旧值，也不改变首次进入危险状态的概率语义。
+        """
+        records = tuple(expanded_records) + tuple(frontier_records)
+        for record in records:
+            var_id = record.var_id
+            if var_id not in self._variables:
+                variable = ILPVariable(var_id)
+                self._variables[var_id] = variable
+                self._new_variables.append(variable)
+                if record.item.node.history.depth == 1:
+                    if "root_action" in self._rows:
+                        raise ValueError("All root actions must be declared in the first update.")
+                    self._roots.append(var_id)
+            self._items[var_id] = record.item
+            self._continues[var_id] = bool(record.continues)
+            if record.policy_expansion is not None:
+                self._expansions[var_id] = record.policy_expansion
+            else:
+                self._expansions.pop(var_id, None)
+            utility = record.expanded.metrics.utility
+            if self._objective.get(var_id) != utility:
+                self._objective[var_id] = utility
+                self._objective_updates[var_id] = utility
+            if self._constraint.effective_rhs is not None:
+                risk = record.expanded.metrics.chance_risk
+                if self._risk.get(var_id, 0.0) != risk:
+                    if risk == 0.0:
+                        self._risk.pop(var_id, None)
+                    else:
+                        self._risk[var_id] = risk
+                    self._risk_updates[var_id] = risk
+        for record in expanded_records:
+            self._frontier.pop(record.var_id, None)
+        for record in frontier_records:
+            self._frontier[record.var_id] = None
+
+        if "root_action" not in self._rows:
+            if not self._roots:
+                raise ValueError("Policy tree has no root action variables.")
+            root = ILPLinearConstraint(
+                "root_action", dict.fromkeys(self._roots, 1.0), "==", 1.0,
+            )
+            self._rows[root.name] = root
+            self._new_rows.append(root)
+        for record in records:
+            for row in _definition31_flow_constraints(
+                record.var_id,
+                record.expanded,
+                declared_var_ids=self._variables.keys(),
+                should_encode=record.continues,
+            ):
+                previous = self._rows.get(row.name)
+                if previous is None:
+                    self._rows[row.name] = row
+                    self._new_rows.append(row)
+                elif previous != row:
+                    raise ValueError(f"Refinement changed an existing flow row: {row.name}")
+
+    def snapshot(self) -> tuple[PolicyTreeILP, ILPModelDelta]:
+        """Return a stable policy checkpoint and consume the pending delta.
+
+        Shallow-copy the checkpoint without re-encoding old nodes/flow rows or
+        comparing the complete objective and risk row.
+
+        / 返回独立的策略快照及待传差量，并清空已取出的差量记录。
+        仅浅拷贝策略检查点；不重编码旧节点/flow，也不比较完整目标与 risk 行。
+        """
+        rows = tuple(self._rows.values())
+        new_rows = tuple(self._new_rows)
+        coefficients: dict[str, Mapping[str, float]] = {}
+        if self._constraint.effective_rhs is not None:
+            risk_row = ILPLinearConstraint(
+                "risk_budget", dict(self._risk), "<=", self._constraint.effective_rhs,
+            )
+            rows += (risk_row,)
+            if not self._risk_initialized:
+                new_rows += (risk_row,)
+                self._risk_initialized = True
+            elif self._risk_updates:
+                coefficients["risk_budget"] = dict(self._risk_updates)
+        tree = PolicyTreeILP(
+            spec=ILPModelSpec(
+                name="darp_hilp_partial_tree",
+                variables=tuple(self._variables.values()),
+                objective=dict(self._objective),
+                constraints=rows,
+            ),
+            variable_items=dict(self._items),
+            root_variable_ids=tuple(self._roots),
+            frontier_variable_ids=tuple(self._frontier),
+            variable_expansions=dict(self._expansions),
+            variable_continues=dict(self._continues),
+            constraint_budget=self._constraint.original_budget,
+            initial_chance_risk=self._constraint.initial_chance_risk,
+        )
+        delta = ILPModelDelta(
+            variables=tuple(self._new_variables),
+            objective=dict(self._objective_updates),
+            constraints=new_rows,
+            coefficients=coefficients,
+        )
+        self._new_variables.clear()
+        self._new_rows.clear()
+        self._objective_updates.clear()
+        self._risk_updates.clear()
+        return tree, delta
 
 
 def paper_preprocess(
@@ -439,7 +598,7 @@ def _definition31_flow_constraints(
     parent_var_id: str,
     expanded: ExpandedAction,
     *,
-    declared_var_ids: set[str],
+    declared_var_ids: AbstractSet[str],
     should_encode: bool,
 ) -> tuple[ILPLinearConstraint, ...]:
     r"""Encode Definition 3.1 observation-flow constraint.

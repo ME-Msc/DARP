@@ -93,7 +93,11 @@ def _key(row: dict[str, str]) -> tuple[str, int, float, str, int]:
     )
 
 
-def _read_rows(path: Path, episodes: int) -> list[dict[str, str]]:
+def _read_rows(
+    path: Path,
+    episodes: int,
+    base_seed: int | None = None,
+) -> list[dict[str, str]]:
     if not path.exists():
         return []
     with path.open(newline="", encoding="utf-8") as stream:
@@ -102,6 +106,8 @@ def _read_rows(path: Path, episodes: int) -> list[dict[str, str]]:
             raise ValueError(f"Unexpected CSV schema in {path}")
         rows = list(reader)
     for row in rows:
+        if base_seed is not None and int(row["seed"]) != base_seed + int(row["trial"]) - 1:
+            raise ValueError("Resume CSV uses a different trial seed.")
         if not row["evaluation_episodes"] or int(row["evaluation_episodes"]) != episodes:
             raise ValueError("Resume CSV uses a different evaluation episode count.")
         if row["status"] == "ok" and (
@@ -146,7 +152,11 @@ def _run_trial(
         decision = result.decision
         timing = decision.timing
         policy = decision.policy
-        if not decision.complete or policy.feasible is not True:
+        if (
+            not policy.duration_complete
+            or policy.feasible is not True
+            or not decision.complete
+        ):
             raise RuntimeError(
                 "DARP did not return a complete feasible policy: "
                 f"status={policy.solver_status}"
@@ -396,7 +406,10 @@ def main() -> int:
     if summary.resolve() == output.resolve():
         raise SystemExit("--summary and --output must be different files")
 
-    rows = _read_rows(output, args.episodes) if args.resume else []
+    rows = (
+        _read_rows(output, args.episodes, args.seed)
+        if args.resume else []
+    )
     completed = {_key(row) for row in rows}
     output.parent.mkdir(parents=True, exist_ok=True)
     mode = "a" if args.resume and output.exists() else "w"
@@ -430,7 +443,8 @@ def main() -> int:
                     result_path,
                 )
                 row["result_file"] = result_path.relative_to(output.parent).as_posix()
-            except Exception as error:  # Keep the rest of the long matrix runnable.
+            except Exception as error:
+                # Keep the rest of the long matrix runnable.
                 # 单配置失败仍记录并继续其余配置，避免长实验被中断。
                 row = _error_row(
                     model, horizon, delta, planner, trial, seed, error

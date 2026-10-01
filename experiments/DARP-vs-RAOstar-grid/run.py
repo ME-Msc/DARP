@@ -107,6 +107,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     _validate_args(args)
+    existing = (
+        _load_existing(args.output, args.seed, args.episodes)
+        if args.resume else set()
+    )
     cases = _build_cases(args)
     raostar = RAOStarRunner.create(
         constrained_pomdp_repo=args.constrained_pomdp_repo,
@@ -116,7 +120,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Constrained-POMDP: {raostar.constrained_pomdp_path}")
     print(f"RAOStar: {raostar.raostar_path}")
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    existing = _load_existing(args.output, args.seed, args.episodes) if args.resume else set()
     append = args.resume and args.output.is_file() and args.output.stat().st_size > 0
     with args.output.open("a" if append else "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=FIELDS, lineterminator="\n")
@@ -307,7 +310,7 @@ def _darp_metrics(
             + decision.timing["frontier_nodes"]
         ),
         "iterations": int(decision.timing["partial_ilp_solves"]),
-        "complete": True,
+        "complete": decision.complete,
         "evaluation_episodes": int(statistics["episodes"]),
         "risk_rate": statistics["risk_rate"],
         "physical_duration_mean": statistics["physical_duration_mean"],
@@ -347,6 +350,8 @@ def _load_existing(
                 raise ValueError("Resume CSV uses a different Constrained-POMDP commit")
             if row["raostar_commit"] != RAOSTAR_COMMIT:
                 raise ValueError("Resume CSV uses a different RAOStar commit")
+            if row["complete"].lower() not in ("true", "false"):
+                raise ValueError("Resume CSV has an invalid completeness flag")
             if row["complete"].lower() != "true":
                 raise ValueError("Resume CSV contains an incomplete search")
             if row["algorithm"] == "DARP-HILP":
@@ -389,6 +394,8 @@ def _write_summary(
             seen.add(key)
             if algorithm not in ALGORITHMS:
                 raise ValueError(f"Unexpected algorithm in {csv_path}: {algorithm}")
+            if row["complete"].lower() not in ("true", "false"):
+                raise ValueError(f"Invalid completeness flag in {csv_path}: {key}")
             if row["complete"].lower() != "true":
                 raise ValueError(f"Incomplete result in {csv_path}: {key}")
             if row["constrained_pomdp_commit"] != CONSTRAINED_POMDP_COMMIT:

@@ -8,7 +8,12 @@ from math import isfinite
 from time import perf_counter
 from typing import Any, Self
 
-from darp.ilp.model import ILPLinearConstraint, ILPModelSpec, ILPSolveResult
+from darp.ilp.model import (
+    ILPLinearConstraint,
+    ILPModelDelta,
+    ILPModelSpec,
+    ILPSolveResult,
+)
 
 DEFAULT_MIP_GAP = 1e-6
 
@@ -22,13 +27,15 @@ class GurobiILPSession:
 
     HILP grows one partial policy tree over several refinements. Variables and
     structural rows are retained in one Gurobi model; a refinement adds child
-    variables/flow rows and updates the objective and global budget row. The
-    latest complete ``ILPModelSpec`` remains the source of truth for model
-    synchronization.
+    variables/flow rows and updates the objective and global budget row.
+    Every update uses ``ILPModelDelta``. A fresh session can turn a complete
+    specification into the initial delta; later solves require explicit deltas
+    and never rediscover changes by scanning the complete specification.
 
     / 增量求解一系列只增长的二元 ILP。HILP 的多轮 refinement 共用同一个
     Gurobi model：保留已有变量和结构约束，只加入 child/flow，并更新目标与
-    全局预算行。
+    全局预算行。所有更新统一使用 ``ILPModelDelta``；新会话可将完整模型描述
+    转为首次差量，后续求解必须显式提供差量，不再扫描完整描述来查找变化。
     """
 
     def __init__(self) -> None:
@@ -38,7 +45,7 @@ class GurobiILPSession:
         self._model_name: str | None = None
         self._variables: dict[str, Any] = {}
         self._constraints: dict[str, Any] = {}
-        self._solver_rows: dict[str, ILPLinearConstraint] = {}
+        self._row_coefficients: dict[str, dict[str, float]] = {}
         self._solver_objective: dict[str, float] = {}
         self._objective_initialized = False
         self._start_values: dict[str, float] = {}
@@ -70,7 +77,7 @@ class GurobiILPSession:
             self._model_name = None
             self._variables.clear()
             self._constraints.clear()
-            self._solver_rows.clear()
+            self._row_coefficients.clear()
             self._solver_objective.clear()
             self._objective_initialized = False
             self._start_values.clear()
@@ -81,9 +88,20 @@ class GurobiILPSession:
         *,
         time_limit_ms: float | None = None,
         warm_start: Mapping[str, float] | None = None,
+        delta: ILPModelDelta | None = None,
     ) -> ILPSolveResult:
-        """Apply the ``spec`` delta and re-optimize. / 同步 ``spec`` 差量并重新求解。"""
-        spec.validate()
+        """Initialize from a full spec or apply an explicit delta, then optimize.
+
+        / 首次可从完整描述初始化；后续应用显式差量，再调用求解器。
+        """
+        if delta is None:
+            if self._model is not None:
+                raise ValueError("An initialized ILP session requires an explicit delta.")
+            delta = ILPModelDelta(
+                variables=spec.variables,
+                objective=spec.objective,
+                constraints=spec.constraints,
+            )
         if time_limit_ms is not None and (
             not isfinite(float(time_limit_ms)) or float(time_limit_ms) < 0.0
         ):
@@ -95,7 +113,7 @@ class GurobiILPSession:
             if time_limit_ms is not None
             else None
         )
-        self._synchronize(spec, warm_start=warm_start)
+        self._synchronize_delta(spec, delta, warm_start=warm_start)
         self.last_model_update_ms = (perf_counter() - started_at) * 1000.0
 
         grb = self._grb
@@ -125,14 +143,20 @@ class GurobiILPSession:
             "infeasible_or_unbounded",
             "unbounded",
         } and (solution_count is None or solution_count > 0.0)
-        values = (
-            {
-                var_id: _variable_value(self._variables[var_id])
-                for var_id in spec.variable_ids()
+        variable_ids = spec.variable_ids()
+        if has_incumbent:
+            handles = [self._variables[var_id] for var_id in variable_ids]
+            raw_values = (
+                model.getAttr("X", handles)
+                if hasattr(model, "getAttr")
+                else [_variable_value(variable) for variable in handles]
+            )
+            values = {
+                var_id: _optional_float(value) or 0.0
+                for var_id, value in zip(variable_ids, raw_values, strict=True)
             }
-            if has_incumbent
-            else {var_id: 0.0 for var_id in spec.variable_ids()}
-        )
+        else:
+            values = dict.fromkeys(variable_ids, 0.0)
         selected = tuple(
             var_id for var_id, value in values.items() if value > 0.5
         )
@@ -148,91 +172,92 @@ class GurobiILPSession:
             runtime_ms=(perf_counter() - started_at) * 1000.0,
         )
 
-    def _synchronize(
+    def _synchronize_delta(
         self,
         spec: ILPModelSpec,
+        delta: ILPModelDelta,
         *,
         warm_start: Mapping[str, float] | None,
     ) -> None:
-        """Apply a full spec as a model delta. / 将完整 spec 以差量方式同步到模型。"""
+        """Validate and apply only declared changes, without scanning old rows.
+
+        / 只验证和同步本轮新增或改变的项，不扫描旧行。
+        """
+        new_ids: set[str] = set()
+        for variable in delta.variables:
+            if variable.var_id in self._variables or variable.var_id in new_ids:
+                raise ValueError(f"ILP delta adds an existing variable: {variable.var_id!r}.")
+            new_ids.add(variable.var_id)
+        rows = _constraints_by_name(delta.constraints)
+        if len(spec.variables) != len(self._variables) + len(new_ids):
+            raise ValueError("ILP delta does not account for the full specification's variables.")
+        if len(spec.constraints) != len(self._constraints) + len(rows):
+            raise ValueError("ILP delta does not account for the full specification's constraints.")
+
+        def validate_coefficients(coefficients: Mapping[str, float]) -> None:
+            for var_id, coefficient in coefficients.items():
+                if var_id not in self._variables and var_id not in new_ids:
+                    raise ValueError(f"ILP delta references unknown variable: {var_id!r}.")
+                if not isfinite(float(coefficient)):
+                    raise ValueError(f"ILP coefficient must be finite: {var_id!r}={coefficient!r}.")
+
+        validate_coefficients(delta.objective)
+        for name, row in rows.items():
+            if name in self._constraints:
+                raise ValueError(f"ILP delta adds an existing constraint: {name!r}.")
+            if row.sense not in {"==", "<=", ">="} or not isfinite(float(row.rhs)):
+                raise ValueError(f"Invalid ILP delta constraint: {name!r}.")
+            validate_coefficients(row.coefficients)
+        for name, coefficients in delta.coefficients.items():
+            if name not in self._constraints:
+                raise ValueError(f"ILP delta updates unknown constraint: {name!r}.")
+            validate_coefficients(coefficients)
+
         self._ensure_model(spec.name)
-        gp = self._gp
-        grb = self._grb
-        model = self._model
+        gp, grb, model = self._gp, self._grb, self._model
         if gp is None or grb is None or model is None:
             raise RuntimeError("Gurobi session failed to initialize its model.")
-
-        # HILP 的 E∪F 只增长：已有变量直接复用，只对新 child 调用 addVar；
-        # 若新 spec 删除旧变量，说明 refinement 结构不再等价，应立即报错。
-        variable_ids = spec.variable_ids()
-        if len(set(variable_ids)) != len(variable_ids):
-            raise ValueError("ILP model contains duplicate variable ids.")
-        removed_variables = set(self._variables) - set(variable_ids)
-        if removed_variables:
-            raise ValueError(
-                "Incremental ILP specifications cannot remove variables: "
-                + ", ".join(sorted(removed_variables))
+        for variable in delta.variables:
+            self._variables[variable.var_id] = model.addVar(
+                vtype=grb.BINARY, name=_safe_name(variable.var_id)
             )
-        for variable in spec.variables:
-            if variable.var_id not in self._variables:
-                self._variables[variable.var_id] = model.addVar(
-                    vtype=grb.BINARY,
-                    name=_safe_name(variable.var_id),
-                )
+        if hasattr(model, "update"):
+            model.update()
+        for name, row in rows.items():
+            self._constraints[name] = model.addConstr(
+                _linear_expr(gp, self._variables, row), name=_safe_name(name)
+            )
+            self._row_coefficients[name] = dict(row.coefficients)
+        for name, coefficients in delta.coefficients.items():
+            # Private coefficient dictionaries allow updates and zero removals
+            # without copying/scanning the whole row or mutating old snapshots.
+            # 缓存持有独立的系数字典，只更新变化项或删除零值项；不复制、遍历
+            # 整行，也不修改旧快照。
+            cached = self._row_coefficients[name]
+            for var_id, coefficient in coefficients.items():
+                value = float(coefficient)
+                if float(cached.get(var_id, 0.0)) != value:
+                    model.chgCoeff(self._constraints[name], self._variables[var_id], value)
+                if value:
+                    cached[var_id] = value
+                else:
+                    cached.pop(var_id, None)
+        if not self._objective_initialized:
+            model.setObjective(gp.LinExpr(), grb.MAXIMIZE)
+            self._objective_initialized = True
+        for var_id, coefficient in delta.objective.items():
+            value = float(coefficient)
+            if float(self._solver_objective.get(var_id, 0.0)) != value:
+                _set_objective_coefficient(self._variables[var_id], value)
+            self._solver_objective[var_id] = value
+        self._apply_warm_start(warm_start)
         if hasattr(model, "update"):
             model.update()
 
-        # 约束按稳定原始名称匹配：旧 root/flow 保留，新 flow 追加；全局
-        # risk 行通过同一个 handle 原位更新。
-        rows = _constraints_by_name(spec.constraints)
-        removed_rows = set(self._constraints) - set(rows)
-        if removed_rows:
-            raise ValueError(
-                "Incremental ILP specifications cannot remove constraints: "
-                + ", ".join(sorted(removed_rows))
-            )
-        for name, row in rows.items():
-            if name not in self._constraints:
-                self._constraints[name] = model.addConstr(
-                    _linear_expr(gp, self._variables, row),
-                    name=_safe_name(name),
-                )
-            elif self._solver_rows[name] != row:
-                self._update_row(name, row)
-            self._solver_rows[name] = row
-
-        # Frontier refinement changes h_q to u_q and appends child objective
-        # coefficients. Keep the original floating-point units used by the
-        # paper implementation and update only coefficients whose values
-        # changed. / frontier 展开时原位更新 h_q→u_q，新 child
-        # 直接追加；目标保持论文实现的原始浮点单位。
-        objective = {
-            var_id: float(coefficient)
-            for var_id, coefficient in spec.objective.items()
-        }
-        non_finite = {
-            var_id: coefficient
-            for var_id, coefficient in objective.items()
-            if not isfinite(coefficient)
-        }
-        if non_finite:
-            raise ValueError(
-                f"Objective coefficients must be finite: {non_finite!r}"
-            )
-        if not self._objective_initialized:
-            expression = gp.LinExpr()
-            for var_id, coefficient in objective.items():
-                expression.addTerms(coefficient, self._variables[var_id])
-            model.setObjective(expression, grb.MAXIMIZE)
-            self._objective_initialized = True
-        else:
-            for var_id in set(self._solver_objective) | set(objective):
-                previous = float(self._solver_objective.get(var_id, 0.0))
-                current = float(objective.get(var_id, 0.0))
-                if previous != current:
-                    _set_objective_coefficient(self._variables[var_id], current)
-        self._solver_objective = objective
-
+    def _apply_warm_start(self, warm_start: Mapping[str, float] | None) -> None:
+        """Retain the original partial MIP-start semantics. / 保持原 partial MIP start 语义。"""
+        # Seed existing variables only, clearing stale starts; leave new children
+        # undefined so Gurobi can complete them under the added flow constraints.
         # 上一轮解只给已有变量提供 partial MIP start；不再提供的旧 Start 被
         # 清除，新 child 保持 UNDEFINED，让 Gurobi 根据新增 flow 自动补全。
         next_start = {
@@ -240,7 +265,7 @@ class GurobiILPSession:
             for var_id, value in (warm_start or {}).items()
             if var_id in self._variables
         }
-        undefined = getattr(grb, "UNDEFINED", None)
+        undefined = getattr(self._grb, "UNDEFINED", None)
         if undefined is not None:
             for var_id in set(self._start_values) - set(next_start):
                 _clear_start(self._variables[var_id], undefined)
@@ -248,8 +273,6 @@ class GurobiILPSession:
             if self._start_values.get(var_id) != value:
                 _set_start(self._variables[var_id], value)
         self._start_values = next_start
-        if hasattr(model, "update"):
-            model.update()
 
     def _ensure_model(self, name: str) -> None:
         """Create the model once per session. / 每个 session 只创建一个 model。"""
@@ -270,27 +293,6 @@ class GurobiILPSession:
         # their defaults. / 收紧相对 gap 以稳定跨版本结果；线程数和绝对 gap
         # 仍使用 Gurobi 默认值。
         _set_param(self._model, "MIPGap", DEFAULT_MIP_GAP)
-
-    def _update_row(self, name: str, row: ILPLinearConstraint) -> None:
-        """Update one existing row in place. / 原位更新已存在的约束行。"""
-        model = self._model
-        if model is None:
-            raise RuntimeError("Cannot update a row before creating the model.")
-        previous = self._solver_rows[name]
-        if previous.sense != row.sense:
-            raise ValueError(
-                f"Incremental ILP constraint {name!r} changed sense "
-                f"from {previous.sense!r} to {row.sense!r}."
-            )
-        handle = self._constraints[name]
-        for var_id in set(previous.coefficients) | set(row.coefficients):
-            old = float(previous.coefficients.get(var_id, 0.0))
-            new = float(row.coefficients.get(var_id, 0.0))
-            if old != new:
-                model.chgCoeff(handle, self._variables[var_id], new)
-        if float(previous.rhs) != float(row.rhs):
-            _set_constraint_rhs(handle, float(row.rhs))
-
 
 class GurobiILPSolver:
     """Solve one ILP in a fresh model. / 使用一次性新 model 求解一个 DARP ILP。"""
@@ -401,17 +403,6 @@ def _clear_start(variable: Any, undefined: object) -> None:
         variable.Start = undefined
     except Exception:
         pass
-
-
-def _set_constraint_rhs(constraint: Any, rhs: float) -> None:
-    """Update an existing row RHS. / 兼容不同适配器地更新现有约束右端项。"""
-    try:
-        constraint.RHS = rhs
-    except Exception as exc:
-        if hasattr(constraint, "setAttr"):
-            constraint.setAttr("RHS", rhs)
-            return
-        raise RuntimeError("Gurobi constraint adapter cannot update RHS.") from exc
 
 
 def _status_name(grb: Any, status: object) -> str:

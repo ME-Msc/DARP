@@ -12,7 +12,7 @@ from pathlib import Path
 from random import Random
 from statistics import fmean
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from darp.adapter.duration import build_duration_evaluator
 from darp.adapter.kernel import RDDLKernel
@@ -20,10 +20,17 @@ from darp.adapter.loader import load_rddl
 from darp.adapter.problem import PyRDDLGymProblem, RDDLLoadError
 from darp.adapter.runtime import PyRDDLGymRuntime
 from darp.executor import PolicyExecutor
-from darp.ilp.model import ILPSolveResult
+from darp.ilp.model import (
+    ILPLinearConstraint,
+    ILPModelDelta,
+    ILPModelSpec,
+    ILPSolveResult,
+    ILPVariable,
+)
 from darp.model.and_or_tree import ANDORSearchInterface
 from darp.planning.heuristic import UtilityHeuristic
-from darp.planning.ilp_tree import build_full_tree_ilp
+from darp.planning.hilp import HILPPlanner
+from darp.planning.ilp_tree import PolicyTreeILP, build_full_tree_ilp
 from darp.planning.policy import (
     ConditionalPolicy,
     PolicyNode,
@@ -472,6 +479,44 @@ class ExecutorEvaluationTests(unittest.TestCase):
                         self.assertEqual(third.duration_progress.augmented_belief, {((("pos", 2),), 2.0): 1.0})
                 finally:
                     problem.env.close()
+
+
+class IncrementalHILPTests(unittest.TestCase):
+    """Keep incremental session checks with the existing regressions.
+
+    / 在现有回归文件中保留通用的增量求解会话检查。
+    """
+
+    def test_partial_solve_keeps_session_delta_and_warm_start(self):
+        """Forward the explicit update and incumbent without rebuilding the model.
+
+        / 直接传递显式差量和上一轮解，不关闭或重建模型。
+        """
+        spec = ILPModelSpec(
+            "incremental-test", (ILPVariable("x_q"),), {"x_q": 0.0},
+            (ILPLinearConstraint("root_action", {"x_q": 1.0}, "==", 1.0),),
+        )
+        tree = PolicyTreeILP(spec, {}, ("x_q",))
+        model_delta = ILPModelDelta(spec.variables, spec.objective, spec.constraints)
+        builder = Mock()
+        builder.snapshot.return_value = tree, model_delta
+        session = Mock()
+        incumbent = {"x_q": 1.0}
+        result = ILPSolveResult("optimal", 0.0, incumbent, ("x_q",), 0.0)
+        session.solve.return_value = result
+
+        actual_tree, actual_result = HILPPlanner()._solve_partial_policy_ilp(
+            None, None, ilp_builder=builder, expanded_records=[], frontier=[],
+            frontier_records={}, ilp_session=session, warm_start=incumbent,
+            solver_deadline=None,
+        )
+
+        self.assertIs(actual_tree.spec, tree.spec)
+        self.assertIs(actual_result, result)
+        session.close.assert_not_called()
+        session.solve.assert_called_once_with(
+            tree.spec, delta=model_delta, time_limit_ms=None, warm_start=incumbent,
+        )
 
 
 if __name__ == "__main__":

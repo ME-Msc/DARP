@@ -127,12 +127,16 @@ $$
 
 `planning/hilp.py` 重复执行：
 
-1. 构造并求解当前 partial ILP；
+1. 增量更新并求解当前 partial ILP；
 2. 从 incumbent 读取被策略选择的 frontier；
 3. 只展开这些 frontier；
 4. warm-start 下一轮，直到没有可展开的选中 frontier 或达到显式资源上限。
 
 一次 HILP 搜索在同一个 Gurobi model 上增量维护 p-ILP：保留已有 root、变量和 flow 行；frontier $q$ 展开时把目标系数从 $h_q$ 更新为 $u_q$，加入 child variables、flow 行并扩展同一条全局风险行。上一轮 incumbent 作为下一轮 MIP start，不固定策略前缀。启用外部 heuristic 与 `terminal_heuristic` 时，frontier 可先计算 $h_q$ 和一步风险，待 incumbent 选中后才生成观测、duration 与后继；这些增量和延迟计算保持同一数学模型。
+
+Python 侧的 `IncrementalPartialTreeILP` 同样只编码新 frontier 和本轮 $F\to E$ 的节点，通过 `ILPModelDelta` 向 Gurobi 传递新增变量、约束及改变的系数，不再每轮重编码整个 $E\cup F$ 或扫描完整目标与风险行。风险更新采用绝对新系数（零表示删除该项），不重复累加概率。独立的浅拷贝快照用于策略提取和超时回退；快照、完整解读取及 MIP start 仍有全量操作，因此不声称整轮开销与新增节点数成正比。完整编码器保留给 full-ILP 和逐轮等价测试；选点、停止条件与求解容差未改变。
+
+Gurobi 同步只保留 `_synchronize_delta`：full-ILP 在新会话中把完整描述转为首次差量，HILP 每轮传入显式差量。已初始化的会话不接受省略差量的全量同步；无模型变化时可传空 `ILPModelDelta()`。等价测试将增量模型与每轮从完整编码重新创建的模型比较。
 
 领域启发式通过 [`UtilityHeuristic`](../README.md#自定义-heuristic) 外部注入。核心负责论文规定的 history 概率加权，其中 $b_q$ 是动作开始前的普通 belief：
 
@@ -145,6 +149,22 @@ $$
 `terminal_heuristic` 按 observation branch 评价 duration 边界：用该分支概率加权的动作开始前状态 heuristic 替换最后一步 utility；继续分支和模型终止分支保留真实 RDDL utility。同一 action 的停止／继续分支可以共存。
 
 `complete` 要求 Gurobi 在容差内返回 `OPTIMAL`、当前策略的 frontier 已完成 refinement、策略 duration-complete 且风险可行、没有 solver time 截断，并且全局已无可展开 frontier 或外部 heuristic 提供可采纳上界。因 expansion round 上限留下未完成 refinement 的结果保持 incomplete。一个策略可以已有 achieved utility，但仍因未选分支缺少上界而无法认证搜索完成。
+
+### 阅读代码时的符号对应
+
+| 论文符号 | 代码中的位置与变量 |
+| --- | --- |
+| $E$ | `hilp.py: expanded_e`，已展开的动作历史记录 |
+| $F$ | `hilp.py: frontier_f`，尚未展开的动作历史；`frontier_records` 保存其估值 |
+| $N$ | 尚未生成的后代，隐式存在，不额外维护完整集合 |
+| $q$ | `FrontierItem.node.history`；`var_id` 是该历史对应的 $x_q$ 的唯一标识，不是状态 ID |
+| $u_q,r_q$ | `ExpandedAction.metrics.utility/chance_risk`，已加权的即时效用／首次失败贡献 |
+| $h_q^u,h_q^r$ | frontier 的 `spec.objective[var_id]` 与 risk row 系数；当前 $h_q^r$ 是一步风险下界 |
+| $\mathbf{x}$ | `ILPSolveResult.variable_values`；`selected_variables` 是其中值大于 0.5 的变量 |
+| p-ILP$(E,F)$ | `PolicyTreeILP.spec`：目标、二元变量和 root/flow/risk 约束 |
+| $\Delta$ | `risk_budget`；代码中的 `ILPModelDelta` 则表示模型差量，与风险预算无关 |
+
+保持 `hilp.py` 管理 E/F 与停止条件，`expand.py` 负责 belief/duration 的数值传播，`ilp_tree.py` 负责模型编码，`gurobi.py` 负责求解器生命周期。使用这些职责边界及符号注释对应原文，避免把所有工程变量强行改成单字母。
 
 ## 7. 规划、执行与实验边界
 
