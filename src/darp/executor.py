@@ -76,8 +76,8 @@ class PolicyExecutor(BaseAgent):
 
     @property
     def history(self) -> tuple[ObservationKey, ...]:
-        """Return observations received in the current episode. / 返回本轮执行已接收的观测历史。"""
-        return self._history
+        """Return an immutable snapshot of this episode's observations. / 返回本轮观测历史的不可变快照。"""
+        return tuple(self._history)
 
     @property
     def at_leaf(self) -> bool:
@@ -91,7 +91,7 @@ class PolicyExecutor(BaseAgent):
 
     def reset(self) -> None:
         """Start a new episode at the policy root. / 从策略根节点开始一轮新执行。"""
-        self._history: tuple[ObservationKey, ...] = ()
+        self._history: list[ObservationKey] = []
         self._node_id: str | None = self.policy.root
         self._awaiting_observation = False
 
@@ -131,7 +131,7 @@ class PolicyExecutor(BaseAgent):
             raise MissingPolicyTransitionError(
                 f"No transition from {node.node_id!r} for observation {key!r}."
             ) from error
-        self._history += (key,)
+        self._history.append(key)
         self._node_id = next_node
         self._awaiting_observation = False
 
@@ -282,19 +282,23 @@ class PolicyExecutor(BaseAgent):
             raise ValueError("RDDL domain must define duration.")
         kernel = RDDLKernel.from_grounded_model(grounded)
         duration_rng = Random(seed)
-        executions = []
+        returns = []
+        durations = []
+        failures = 0
         original_horizon = env.horizon
         env.horizon = max(original_horizon, self.max_steps)
         started = perf_counter()
         try:
             for episode in range(episodes):
-                executions.append(self._run_episode(
+                result = self._run_episode(
                     env, seed if episode == 0 else None, verbose, render,
                     kernel=kernel, duration_rng=duration_rng,
-                ))
+                )
+                returns.append(result.discounted_return)
+                durations.append(result.physical_duration)
+                failures += result.failed
         finally:
             env.horizon = original_horizon
-        returns = [result.discounted_return for result in executions]
         statistics = {
             "mean": fmean(returns),
             "median": float(median(returns)),
@@ -302,8 +306,8 @@ class PolicyExecutor(BaseAgent):
             "max": max(returns),
             "std": pstdev(returns),
             "episodes": episodes,
-            "risk_rate": fmean(result.failed for result in executions),
-            "physical_duration_mean": fmean(result.physical_duration for result in executions),
+            "risk_rate": failures / episodes,
+            "physical_duration_mean": fmean(durations),
             "rollout_time_s": perf_counter() - started,
         }
         return statistics
@@ -323,10 +327,10 @@ def _validate_policy_graph(nodes: Mapping[str, PolicyNode], root: str) -> int:
         node = nodes[node_id]
         if not node.transitions:
             raise ValueError(f"Policy node {node_id!r} has no outcomes.")
-        child_depths: list[int] = []
+        active.add(node_id)
+        maximum = 1
         for next_node in node.transitions.values():
             if next_node is None:
-                child_depths.append(1)
                 continue
             child = nodes.get(next_node)
             if child is None:
@@ -335,8 +339,9 @@ def _validate_policy_graph(nodes: Mapping[str, PolicyNode], root: str) -> int:
                 )
             if child.stage != node.stage + 1:
                 raise ValueError("A policy transition must advance exactly one stage.")
-            child_depths.append(1 + depth(child.node_id, active | {node_id}))
-        memo[node_id] = max(child_depths)
+            maximum = max(maximum, 1 + depth(child.node_id, active))
+        active.remove(node_id)
+        memo[node_id] = maximum
         return memo[node_id]
 
     maximum = depth(root, set())

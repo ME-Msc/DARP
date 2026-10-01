@@ -1,25 +1,37 @@
-"""Smoke checks for saved-policy execution, risk counting and duration sampling.
+"""Regression checks for RDDL semantics, incremental ILP and policy execution.
 
 Run without Gurobi: ``python -m unittest discover -s tests -p test_executor_evaluation.py``.
 
-/ 无需 Gurobi，验证保存策略的执行、首次风险统计与持续时间采样。
+/ 无需 Gurobi，验证 RDDL 语义、增量 ILP、策略回放及风险与时长统计。
 """
 
+import csv
 import unittest
-from dataclasses import replace
+from dataclasses import asdict, replace
+from importlib import import_module
 from math import sqrt
 from pathlib import Path
 from random import Random
 from statistics import fmean
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from darp.adapter.duration import build_duration_evaluator
+from darp.adapter.grounded import GroundedRDDLView
 from darp.adapter.kernel import RDDLKernel
 from darp.adapter.loader import load_rddl
 from darp.adapter.problem import PyRDDLGymProblem, RDDLLoadError
 from darp.adapter.runtime import PyRDDLGymRuntime
 from darp.executor import PolicyExecutor
+from darp.ilp.gurobi import (
+    GurobiILPSession,
+    _optional_attr,
+    _optional_float,
+    _set_objective_coefficient,
+    _set_param,
+    _set_start,
+)
 from darp.ilp.model import (
     ILPLinearConstraint,
     ILPModelDelta,
@@ -28,14 +40,24 @@ from darp.ilp.model import (
     ILPVariable,
 )
 from darp.model.and_or_tree import ANDORSearchInterface
+from darp.planning.expand import apply_terminal_heuristic, expand_frontier_item
 from darp.planning.heuristic import UtilityHeuristic
-from darp.planning.hilp import HILPPlanner
-from darp.planning.ilp_tree import PolicyTreeILP, build_full_tree_ilp
+from darp.planning.hilp import (
+    HILPPlanner,
+    _frontier_leaf_record,
+)
+from darp.planning.ilp_tree import (
+    IncrementalPartialTreeILP,
+    PolicyTreeILP,
+    build_full_tree_ilp,
+    build_partial_tree_ilp,
+)
 from darp.planning.policy import (
     ConditionalPolicy,
     PolicyNode,
     extract_conditional_policy,
 )
+from darp.planning.preprocess import initialize_root_frontier, resolve_root_belief
 from darp.solve import DARPResult
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -141,7 +163,7 @@ instance terminal_instance {{
     return load_rddl(domain, instance)
 
 
-def _terminal_tree(problem, **options):
+def _terminal_search(problem):
     runtime = PyRDDLGymRuntime(problem.env)
     runtime.reset(seed=0)
     view = problem.build_grounded_view()
@@ -150,10 +172,16 @@ def _terminal_tree(problem, **options):
     # 单动作使整棵树成为唯一策略，不需要优化器。
     interface = ANDORSearchInterface.from_actions_and_observations(
         actions=tuple(action for action in interface.actions if action.label == "noop"),
-        observation_scope=interface.observation_scope,
+        observation_mode=interface.observation_mode,
         kernel=interface.kernel,
     )
     evaluator = build_duration_evaluator(interface.kernel, interface.actions, horizon=runtime.horizon)
+    return runtime, interface, evaluator
+
+
+def _terminal_tree(problem, **options):
+    runtime, interface, evaluator = _terminal_search(problem)
+    view = problem.build_grounded_view()
     return build_full_tree_ilp(runtime, interface, evaluator, risk_budget=view.grounded_model.risk_budget, **options)
 
 
@@ -166,6 +194,57 @@ def _only_policy(tree):
 
 
 class ExecutorEvaluationTests(unittest.TestCase):
+    def test_observation_mode_preserves_root_belief_source(self):
+        declared = {(("pos", 0),): 1.0}
+        observed = {(("pos", 7),): 1.0}
+        for fluents, mode, expected in (
+            ({"seen": False}, "pomdp-observation", declared),
+            ({}, "mdp-state", observed),
+        ):
+            with self.subTest(mode=mode):
+                view = GroundedRDDLView(Mock(observ_fluents=fluents))
+                self.assertEqual(view.observation_mode(), mode)
+                kernel = Mock()
+                kernel.initial_belief_from_model.return_value = declared
+                kernel.initial_belief_from_state.return_value = observed
+                interface = ANDORSearchInterface.from_actions_and_observations(
+                    actions=(), observation_mode=view.observation_mode(), kernel=kernel,
+                )
+                runtime = Mock(state={"pos": 7})
+                self.assertEqual(resolve_root_belief(runtime, interface, None), expected)
+                if mode == "pomdp-observation":
+                    kernel.initial_belief_from_model.assert_called_once_with()
+                    kernel.initial_belief_from_state.assert_not_called()
+                else:
+                    kernel.initial_belief_from_state.assert_called_once_with(runtime.state)
+                    kernel.initial_belief_from_model.assert_not_called()
+                self.assertEqual(resolve_root_belief(runtime, interface, declared), declared)
+
+    def test_policy_graph_depth_and_validation(self):
+        policy = _policy((False, False, False, False))
+        root, left, right, leaf = policy.nodes
+        unseen, seen = (("seen", False),), (("seen", True),)
+        policy = replace(policy, nodes=(
+            replace(root, transitions={unseen: left.node_id, seen: right.node_id}),
+            replace(left, transitions={unseen: leaf.node_id, seen: None}),
+            replace(right, stage=1, transitions={unseen: leaf.node_id}),
+            replace(leaf, stage=2),
+        ))
+        self.assertEqual(PolicyExecutor(policy).max_steps, 3)
+        root, left, right, leaf = policy.nodes
+        for invalid, message in (
+            (replace(policy, root="missing"), "root does not name"),
+            (replace(policy, nodes=policy.nodes + (leaf,)), "duplicate node ids"),
+            (replace(policy, nodes=(replace(root, stage=1), left, right, leaf)), "stage zero"),
+            (replace(policy, nodes=(replace(root, transitions={}), left, right, leaf)), "no outcomes"),
+            (replace(policy, nodes=(root, replace(left, transitions={unseen: "missing"}), right, leaf)), "unknown node"),
+            (replace(policy, nodes=(root, left, replace(right, stage=2), leaf)), "advance exactly one stage"),
+            (replace(policy, nodes=(root, left, right, replace(leaf, transitions={unseen: root.node_id}))), "advance exactly one stage"),
+            (replace(policy, nodes=policy.nodes + (replace(leaf, node_id="unreachable"),)), "unreachable"),
+        ):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                PolicyExecutor(invalid)
+
     def test_saved_f_e_s_policies_execute(self):
         for model in ("f", "e", "s"):
             with self.subTest(model=model):
@@ -278,6 +357,17 @@ class ExecutorEvaluationTests(unittest.TestCase):
             env = pyRDDLGym.make(str(directory / "domain.rddl"), str(directory / "instance.rddl"))
             try:
                 executor = PolicyExecutor(_policy((False, True)))
+                self.assertEqual(executor.history, ())
+                self.assertEqual(executor.sample_action(None), {"slow": False})
+                self.assertEqual(executor.sample_action({"seen": False}), {"slow": True})
+                history = executor.history
+                self.assertEqual(history, ((("seen", False),),))
+                self.assertIsNone(executor.sample_action({"seen": False}))
+                self.assertEqual(executor.history, history + history)
+                self.assertEqual(history, ((("seen", False),),))
+                executor.reset()
+                self.assertEqual(executor.history, ())
+                self.assertEqual(history, ((("seen", False),),))
                 steps = executor.run_episode(env, seed=19).steps
                 self.assertEqual(steps, 2)
                 for _ in range(2):
@@ -439,7 +529,8 @@ class ExecutorEvaluationTests(unittest.TestCase):
             try:
                 tree = _terminal_tree(problem, root_belief={(("pos", 0),): .75, (("pos", 3),): .25})
                 policy = _only_policy(tree)
-                self.assertEqual(tree.initial_chance_risk, .25)
+                self.assertEqual(tree.risk_budget, 1.0)
+                self.assertEqual(tree.initial_risk, .25)
                 self.assertAlmostEqual(policy.achieved_utility, 1.125)
                 self.assertAlmostEqual(policy.active_constraint_value, .8125)
                 row = next(row for row in tree.spec.constraints if row.name == "risk_budget")
@@ -487,6 +578,292 @@ class IncrementalHILPTests(unittest.TestCase):
     / 在现有回归文件中保留通用的增量求解会话检查。
     """
 
+    def test_refinement_matches_full_encoding_and_preserves_snapshots(self):
+        with TemporaryDirectory() as temporary:
+            problem = _terminal_problem(Path(temporary), risk="pos == 3")
+            try:
+                runtime, interface, evaluator = _terminal_search(problem)
+                heuristic = UtilityHeuristic("test", lambda _: 10.0)
+
+                def leaf(item):
+                    return _frontier_leaf_record(
+                        item, interface, evaluator,
+                        heuristic=heuristic, terminal_heuristic=True,
+                    )
+
+                frontier = [leaf(item) for item in initialize_root_frontier(runtime, interface)]
+                builder = IncrementalPartialTreeILP(runtime, interface, risk_budget=1.0)
+                builder.update(expanded_records=[], frontier_records=frontier)
+                expanded = []
+                checkpoints = []
+                while True:
+                    tree, delta = builder.snapshot()
+                    rebuilt = build_partial_tree_ilp(
+                        runtime=runtime, interface=interface,
+                        expanded_records=expanded, frontier_records=frontier,
+                        risk_budget=1.0,
+                    )
+                    self.assertEqual(tree, rebuilt)
+                    for old_tree, old_delta, saved_tree, saved_delta in checkpoints:
+                        self.assertEqual(asdict(old_tree), saved_tree)
+                        self.assertEqual(asdict(old_delta), saved_delta)
+                    if not frontier:
+                        break
+                    checkpoints.append((tree, delta, asdict(tree), asdict(delta)))
+                    changed = []
+                    children = []
+                    for record in frontier:
+                        expansion = expand_frontier_item(record.item, interface, evaluator)
+                        expansion = apply_terminal_heuristic(
+                            record.item, expansion, interface, heuristic,
+                        )
+                        changed.append(replace(
+                            record, ilp_metrics=expansion.metrics,
+                            continues=bool(expansion.child_frontier),
+                            policy_expansion=expansion,
+                        ))
+                        children.extend(leaf(item) for item in expansion.child_frontier)
+                    expanded.extend(changed)
+                    frontier = children
+                    builder.update(expanded_records=changed, frontier_records=frontier)
+
+                first_tree, first_delta, _, _ = checkpoints[0]
+                root = first_tree.root_variable_ids[0]
+                self.assertEqual(first_tree.spec.objective[root], 10.0)
+                self.assertEqual(tree.spec.objective[root], 1.0)
+                self.assertEqual(first_delta.variables, first_tree.spec.variables)
+                self.assertEqual(checkpoints[1][1].objective[root], 1.0)
+                risk = next(row for row in tree.spec.constraints if row.name == "risk_budget")
+                self.assertEqual(sorted(risk.coefficients.values()), [.25, .5])
+                self.assertTrue(_only_policy(tree).duration_complete)
+            finally:
+                problem.env.close()
+
+    def test_selected_frontier_skips_rescoring_but_keeps_terminal_utility(self):
+        """Score new F leaves and actual terminal utility, not F→E again.
+
+        / 仅计算新 F 的估值及实际终端效用，F→E 时不重复计算将被丢弃的估值。
+        """
+        for rounds, calls, solves in ((1, 2, 2), (None, 3, 3)):
+            with self.subTest(rounds=rounds), TemporaryDirectory() as temporary:
+                problem = _terminal_problem(Path(temporary), transition="0", horizon=2)
+                try:
+                    runtime, interface, evaluator = _terminal_search(problem)
+                    callback = Mock(return_value=10.0)
+                    session = Mock(last_model_update_ms=0.0, last_optimize_ms=0.0)
+
+                    def solve(spec, **options):
+                        variables = spec.variable_ids()
+                        return ILPSolveResult(
+                            "optimal", sum(spec.objective.values()),
+                            dict.fromkeys(variables, 1.0), variables, 0.0,
+                        )
+
+                    session.solve.side_effect = solve
+                    planner = HILPPlanner(
+                        expansion_rounds=rounds,
+                        frontier_heuristic=UtilityHeuristic("test", callback, upper_bound=True),
+                        terminal_heuristic=True, risk_budget=1.0,
+                        solver_time_limit_ms=None,
+                    )
+                    decision = planner._choose_action(runtime, interface, evaluator, session)
+                    self.assertEqual(callback.call_count, calls)
+                    self.assertEqual(session.solve.call_count, solves)
+                    objectives = [tuple(call.args[0].objective.values()) for call in session.solve.call_args_list]
+                    self.assertEqual(objectives, [(10.0,)] + [(1.0, 10.0)] * (solves - 1))
+                    self.assertEqual(decision.value, 11.0)
+                    self.assertEqual(decision.complete, rounds is None)
+                    self.assertEqual(decision.policy.duration_complete, rounds is None)
+                    self.assertEqual(decision.policy.achieved_utility, 11.0 if rounds is None else None)
+                finally:
+                    problem.env.close()
+
+    def test_warm_start_preserves_binary_values_and_undefined(self):
+        """Normalize starts once and clear stale values without binarizing UNDEFINED.
+
+        / 初始值只二值化一次；清除旧值时保持 UNDEFINED，不将其误转为 0 或 1。
+        """
+        session = GurobiILPSession()
+        undefined = 1e101
+        session._grb = SimpleNamespace(UNDEFINED=undefined)
+        session._variables = {
+            name: SimpleNamespace(Start=undefined) for name in ("x_q", "x_qa", "x_qb")
+        }
+        session._apply_warm_start({"x_q": .9, "x_qa": .1})
+        self.assertEqual(session._variables["x_q"].Start, 1.0)
+        self.assertEqual(session._variables["x_qa"].Start, 0.0)
+        self.assertEqual(session._variables["x_qb"].Start, undefined)
+        session._apply_warm_start({"x_qa": 1.0})
+        self.assertEqual(session._variables["x_q"].Start, undefined)
+        self.assertEqual(session._variables["x_qa"].Start, 1.0)
+        self.assertEqual(session._variables["x_qb"].Start, undefined)
+        self.assertEqual(session._start_values, {"x_qa": 1.0})
+
+    def test_suppressed_gurobi_errors_are_logged(self):
+        """Keep fallback behavior while reporting suppressed solver exceptions.
+
+        / 记录被容错处理的求解器异常，同时保持原来的回退行为。
+        """
+        session = GurobiILPSession()
+        session._model = Mock(dispose=Mock(side_effect=RuntimeError("dispose failed")))
+        with self.assertLogs("darp.ilp.gurobi", level="WARNING") as logs:
+            session.__del__()
+        self.assertIn("finalization", logs.output[0])
+        self.assertIsInstance(logs.records[0].exc_info[1], RuntimeError)
+        self.assertIsNone(session._model)
+
+        with self.assertLogs("darp.ilp.gurobi", level="WARNING") as logs:
+            _set_start(object(), 1.0)
+        self.assertIn("MIP start to 1.0", logs.output[0])
+        self.assertIsInstance(logs.records[0].exc_info[1], AttributeError)
+
+        with self.assertLogs("darp.ilp.gurobi", level="DEBUG") as logs:
+            self.assertIsNone(_optional_attr(object(), "ObjVal"))
+        self.assertEqual(logs.records[0].levelname, "DEBUG")
+        self.assertIn("ObjVal", logs.output[0])
+        self.assertIsInstance(logs.records[0].exc_info[1], AttributeError)
+
+        class AttributeOnlyVariable:
+            """Simulate an adapter requiring setAttr. / 模拟必须用 setAttr 的适配器。"""
+
+            __slots__ = ("setAttr",)
+
+            def __init__(self):
+                self.setAttr = Mock()
+
+        variable = AttributeOnlyVariable()
+        with self.assertLogs("darp.ilp.gurobi", level="DEBUG") as logs:
+            _set_objective_coefficient(variable, 2.0)
+        variable.setAttr.assert_called_once_with("Obj", 2.0)
+        self.assertIn("fallback succeeded", logs.output[0])
+        self.assertIsInstance(logs.records[0].exc_info[1], AttributeError)
+
+        with self.assertLogs("darp.ilp.gurobi", level="DEBUG") as logs:
+            self.assertIsNone(_optional_float("invalid"))
+            self.assertIsNone(_optional_float(float("nan")))
+        self.assertIsInstance(logs.records[0].exc_info[1], ValueError)
+        self.assertIsNone(logs.records[1].exc_info)
+
+        with self.assertLogs("darp.ilp.gurobi", level="WARNING") as logs:
+            _set_param(object(), "TimeLimit", 1.0)
+        self.assertIn("TimeLimit=1.0", logs.output[0])
+
+        with self.assertNoLogs("darp.ilp.gurobi", level="DEBUG"):
+            variable = SimpleNamespace()
+            _set_start(variable, 1.0)
+            self.assertEqual(_optional_attr(variable, "Start"), 1.0)
+            _set_objective_coefficient(variable, 2.0)
+            self.assertEqual(variable.Obj, 2.0)
+            model = SimpleNamespace(Params=SimpleNamespace(TimeLimit=0.0))
+            _set_param(model, "TimeLimit", 1.0)
+            self.assertEqual(model.Params.TimeLimit, 1.0)
+            self.assertEqual(_optional_float(2.0), 2.0)
+            self.assertIsNone(_optional_float(None))
+            session.close()
+
+    def test_lazy_frontier_has_no_executable_expansion(self):
+        with TemporaryDirectory() as temporary:
+            problem = _terminal_problem(Path(temporary))
+            try:
+                runtime, interface, evaluator = _terminal_search(problem)
+                item, = initialize_root_frontier(runtime, interface)
+                with patch("darp.planning.hilp.expand_frontier_item") as expand:
+                    record = _frontier_leaf_record(
+                        item, interface, evaluator,
+                        heuristic=UtilityHeuristic("test", lambda _: 10.0),
+                        terminal_heuristic=True,
+                    )
+                expand.assert_not_called()
+                self.assertIsNone(record.policy_expansion)
+                tree = build_partial_tree_ilp(
+                    runtime=runtime, interface=interface,
+                    expanded_records=[], frontier_records=[record], risk_budget=1.0,
+                )
+                self.assertEqual(tree.variable_expansions, {})
+                policy = _only_policy(tree)
+                self.assertEqual(policy.nodes[0].assignment, {"slow": False})
+                self.assertFalse(policy.duration_complete)
+                self.assertIsNone(policy.achieved_utility)
+                self.assertIsNone(policy.active_constraint_value)
+                self.assertIsNone(policy.feasible)
+            finally:
+                problem.env.close()
+
+    def test_round_caps_and_timeout_keep_the_last_solved_policy(self):
+        for limit, failure, expected_solves, expected_expanded in (
+            (0, None, 1, 0),
+            (1, None, 2, 1),
+            (None, "exception", 2, 0),
+            (None, "no-incumbent", 2, 0),
+            (None, "infeasible", 2, 0),
+            (1, "nonoptimal", 2, 1),
+            (None, "no-selected-frontier", 1, 0),
+        ):
+            with self.subTest(limit=limit, failure=failure), TemporaryDirectory() as temporary:
+                problem = _terminal_problem(Path(temporary))
+                try:
+                    runtime, interface, evaluator = _terminal_search(problem)
+                    session = Mock(last_model_update_ms=0.0, last_optimize_ms=0.0)
+
+                    def solve(spec, **options):
+                        status = "optimal"
+                        if session.solve.call_count == 2:
+                            if failure == "exception":
+                                raise TimeoutError("test refinement timeout")
+                            if failure in ("no-incumbent", "infeasible"):
+                                status = "time_limit" if failure == "no-incumbent" else "infeasible"
+                                return ILPSolveResult(status, None, {}, (), 0.0)
+                            if failure == "nonoptimal":
+                                status = "interrupted"
+                        variables = spec.variable_ids()
+                        return ILPSolveResult(
+                            status, sum(spec.objective.values()),
+                            dict.fromkeys(variables, 1.0), variables, 0.0,
+                        )
+
+                    session.solve.side_effect = solve
+                    session.__enter__ = Mock(return_value=session)
+                    session.__exit__ = Mock(return_value=False)
+                    planner = HILPPlanner(
+                        expansion_rounds=limit,
+                        frontier_heuristic=UtilityHeuristic("test", lambda _: 10.0, upper_bound=True),
+                        terminal_heuristic=True, risk_budget=1.0,
+                        solver_time_limit_ms=None,
+                    )
+                    with patch("darp.planning.hilp.GurobiILPSession", return_value=session), patch.object(
+                        planner, "_selected_frontier", wraps=planner._selected_frontier,
+                    ) as selected, patch("darp.planning.hilp.logger") as logger:
+                        if failure == "no-selected-frontier":
+                            selected.return_value = ()
+                        if failure == "infeasible":
+                            with self.assertRaisesRegex(RuntimeError, "status=infeasible"):
+                                planner.choose_action(runtime, interface, evaluator)
+                            self.assertEqual(session.solve.call_count, expected_solves)
+                            continue
+                        decision = planner.choose_action(runtime, interface, evaluator)
+                    self.assertEqual(session.solve.call_count, expected_solves)
+                    self.assertEqual(decision.timing["expanded_nodes"], expected_expanded)
+                    self.assertEqual(decision.timing["expansion_rounds"], expected_expanded)
+                    self.assertEqual(decision.timing["ilp_variables"], expected_expanded + 1)
+                    self.assertEqual(decision.timing["solver_time_limit_hit"], float(failure in ("exception", "no-incumbent")))
+                    self.assertEqual(len(decision.policy.nodes), expected_expanded + 1)
+                    self.assertEqual(decision.policy.solver_status, "interrupted" if failure == "nonoptimal" else "optimal")
+                    self.assertFalse(decision.complete)
+                    self.assertFalse(decision.policy.duration_complete)
+                    self.assertEqual(decision.value_kind, "heuristic_objective")
+                    if failure in ("exception", "no-incumbent"):
+                        self.assertEqual(decision.value, 10.0)
+                        logger.warning.assert_called_once()
+                        self.assertIn("last solved policy", logger.warning.call_args.args[0])
+                        self.assertEqual(bool(logger.warning.call_args.kwargs.get("exc_info")), failure == "exception")
+                    else:
+                        logger.warning.assert_not_called()
+                    if failure == "no-selected-frontier":
+                        self.assertEqual(decision.timing["frontier_nodes"], 1)
+                        self.assertEqual(decision.timing["frontier_refinement_exhausted"], 1)
+                finally:
+                    problem.env.close()
+
     def test_partial_solve_keeps_session_delta_and_warm_start(self):
         """Forward the explicit update and incumbent without rebuilding the model.
 
@@ -517,6 +894,65 @@ class IncrementalHILPTests(unittest.TestCase):
         session.solve.assert_called_once_with(
             tree.spec, delta=model_delta, time_limit_ms=None, warm_start=incumbent,
         )
+
+
+class ExperimentLoggingTests(unittest.TestCase):
+    """Verify experiment fallbacks log their context without changing results.
+
+    / 验证实验回退记录上下文，但不改变结果格式和后续执行。
+    """
+
+    def test_table1_trial_error_is_logged_and_the_matrix_continues(self):
+        experiment = import_module("experiments.DARP-table1-grid.run")
+        with TemporaryDirectory() as temporary:
+            output = Path(temporary) / "trials.csv"
+            args = experiment._parser().parse_args([
+                "--models", "F", "--horizons", "3", "--deltas", "0.1",
+                "--planners", "hilp", "--trials", "2", "--episodes", "1",
+                "--output", str(output),
+            ])
+            successful = dict.fromkeys(experiment.FIELDS, "")
+            successful.update(model="F", horizon=3, delta=.1, planner="hilp", trial=2, seed=2024, status="ok")
+            with patch.object(experiment, "_parser") as parser, patch.object(
+                experiment, "_run_trial", side_effect=[RuntimeError("trial failed"), successful],
+            ) as run_trial, patch.object(experiment, "_write_markdown"), patch("builtins.print"), self.assertLogs(
+                experiment.__name__, level="ERROR",
+            ) as logs:
+                parser.return_value.parse_args.return_value = args
+                self.assertEqual(experiment.main(), 1)
+            self.assertEqual(run_trial.call_count, 2)
+            self.assertEqual(len(logs.records), 1)
+            self.assertIsInstance(logs.records[0].exc_info[1], RuntimeError)
+            for context in ("model=F", "horizon=3", "delta=0.1", "planner=hilp", "trial=1", "seed=2023"):
+                self.assertIn(context, logs.output[0])
+            with output.open(newline="", encoding="utf-8") as stream:
+                reader = csv.DictReader(stream)
+                self.assertEqual(tuple(reader.fieldnames), experiment.FIELDS)
+                rows = list(reader)
+            self.assertEqual([row["status"] for row in rows], ["error", "ok"])
+            self.assertEqual(rows[0]["error"], "RuntimeError: trial failed")
+
+    def test_raostar_cache_fallback_logs_and_verifies_destination(self):
+        runner = import_module("experiments.DARP-vs-RAOstar-grid.raostar_runner")
+        with TemporaryDirectory() as temporary:
+            cache = Path(temporary)
+            source = runner.RAOSTAR
+            destination = cache / f"{source.name}-{source.commit[:12]}"
+
+            def concurrent_checkout(candidate, target):
+                target.mkdir()
+                raise FileExistsError("another checkout already exists")
+
+            with patch.object(runner, "_command"), patch.object(runner, "_git"), patch.object(
+                runner, "_verify", side_effect=lambda path, source: path,
+            ) as verify, patch.object(Path, "rename", autospec=True, side_effect=concurrent_checkout), self.assertLogs(
+                runner.__name__, level="DEBUG",
+            ) as logs:
+                self.assertEqual(runner._resolve(source, None, cache), destination)
+            self.assertEqual(verify.call_count, 2)
+            verify.assert_called_with(destination, source)
+            self.assertIn(str(destination), logs.output[0])
+            self.assertIsInstance(logs.records[0].exc_info[1], FileExistsError)
 
 
 if __name__ == "__main__":

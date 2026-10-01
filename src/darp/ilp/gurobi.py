@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 from collections.abc import Mapping
 from math import isfinite
 from time import perf_counter
@@ -16,6 +17,7 @@ from darp.ilp.model import (
 )
 
 DEFAULT_MIP_GAP = 1e-6
+logger = logging.getLogger(__name__)
 
 
 class GurobiUnavailableError(RuntimeError):
@@ -23,7 +25,7 @@ class GurobiUnavailableError(RuntimeError):
 
 
 class GurobiILPSession:
-    """Incrementally solve a monotone sequence of binary ILP specifications.
+    """Solve one binary ILP or incrementally solve a monotone sequence.
 
     HILP grows one partial policy tree over several refinements. Variables and
     structural rows are retained in one Gurobi model; a refinement adds child
@@ -32,8 +34,8 @@ class GurobiILPSession:
     specification into the initial delta; later solves require explicit deltas
     and never rediscover changes by scanning the complete specification.
 
-    / 增量求解一系列只增长的二元 ILP。HILP 的多轮 refinement 共用同一个
-    Gurobi model：保留已有变量和结构约束，只加入 child/flow，并更新目标与
+    / 求解单个二元 ILP，或增量求解一系列只增长的二元 ILP。HILP 的多轮
+    refinement 共用同一个 Gurobi model：保留已有变量和结构约束，只加入 child/flow，并更新目标与
     全局预算行。所有更新统一使用 ``ILPModelDelta``；新会话可将完整模型描述
     转为首次差量，后续求解必须显式提供差量，不再扫描完整描述来查找变化。
     """
@@ -62,7 +64,7 @@ class GurobiILPSession:
         try:
             self.close()
         except Exception:
-            pass
+            logger.warning("Failed to release Gurobi resources during session finalization.", exc_info=True)
 
     def close(self) -> None:
         """Release the persistent model. / 结束会话并释放持久 Gurobi model。"""
@@ -268,7 +270,7 @@ class GurobiILPSession:
         undefined = getattr(self._grb, "UNDEFINED", None)
         if undefined is not None:
             for var_id in set(self._start_values) - set(next_start):
-                _clear_start(self._variables[var_id], undefined)
+                _set_start(self._variables[var_id], undefined)
         for var_id, value in next_start.items():
             if self._start_values.get(var_id) != value:
                 _set_start(self._variables[var_id], value)
@@ -293,24 +295,6 @@ class GurobiILPSession:
         # their defaults. / 收紧相对 gap 以稳定跨版本结果；线程数和绝对 gap
         # 仍使用 Gurobi 默认值。
         _set_param(self._model, "MIPGap", DEFAULT_MIP_GAP)
-
-class GurobiILPSolver:
-    """Solve one ILP in a fresh model. / 使用一次性新 model 求解一个 DARP ILP。"""
-
-    def solve(
-        self,
-        spec: ILPModelSpec,
-        *,
-        time_limit_ms: float | None = None,
-        warm_start: Mapping[str, float] | None = None,
-    ) -> ILPSolveResult:
-        """Build, solve, then release. / 创建、求解并释放一次性 Gurobi model。"""
-        with GurobiILPSession() as session:
-            return session.solve(
-                spec,
-                time_limit_ms=time_limit_ms,
-                warm_start=warm_start,
-            )
 
 
 def _gurobipy() -> Any:
@@ -376,14 +360,22 @@ def _set_param(model: Any, name: str, value: float) -> None:
         return
     if hasattr(model, "setParam"):
         model.setParam(name, value)
+        return
+    logger.warning(
+        "Cannot set solver parameter %s=%r on %s; no supported setter is available.",
+        name, value, type(model).__name__,
+    )
 
 
-def _set_start(variable: Any, value: float) -> None:
-    """Set a binary MIP start. / 在适配器支持时设置二元 MIP 初始值。"""
+def _set_start(variable: Any, value: object) -> None:
+    """Assign a normalized MIP start or UNDEFINED. / 设置已归一化的 MIP 初始值或 UNDEFINED。"""
     try:
-        variable.Start = 1.0 if value > 0.5 else 0.0
+        variable.Start = value
     except Exception:
-        pass
+        logger.warning(
+            "Failed to set MIP start to %r on %s; skipping this update.",
+            value, type(variable).__name__, exc_info=True,
+        )
 
 
 def _set_objective_coefficient(variable: Any, value: float) -> None:
@@ -393,16 +385,12 @@ def _set_objective_coefficient(variable: Any, value: float) -> None:
     except Exception as exc:
         if hasattr(variable, "setAttr"):
             variable.setAttr("Obj", value)
+            logger.debug(
+                "Direct objective assignment failed on %s; setAttr fallback succeeded.",
+                type(variable).__name__, exc_info=True,
+            )
             return
         raise RuntimeError("Gurobi variable adapter cannot update objective.") from exc
-
-
-def _clear_start(variable: Any, undefined: object) -> None:
-    """Clear a stale MIP start. / 应用最新 partial start 前清除过期初始值。"""
-    try:
-        variable.Start = undefined
-    except Exception:
-        pass
 
 
 def _status_name(grb: Any, status: object) -> str:
@@ -432,8 +420,15 @@ def _optional_float(value: object) -> float | None:
     try:
         numeric = float(value)
     except (TypeError, ValueError):
+        logger.debug(
+            "Solver value of type %s cannot be converted to float; returning None.",
+            type(value).__name__, exc_info=True,
+        )
         return None
-    return numeric if isfinite(numeric) else None
+    if not isfinite(numeric):
+        logger.debug("Solver value %r is not finite; returning None.", numeric)
+        return None
+    return numeric
 
 
 def _optional_attr(obj: object, name: str) -> object | None:
@@ -441,6 +436,11 @@ def _optional_attr(obj: object, name: str) -> object | None:
     try:
         return getattr(obj, name)
     except Exception:
+        # Optional attributes may be unavailable without a solution. / 尚无解时，可选属性可能不可读。
+        logger.debug(
+            "Solver attribute %s is unavailable on %s; returning None.",
+            name, type(obj).__name__, exc_info=True,
+        )
         return None
 
 

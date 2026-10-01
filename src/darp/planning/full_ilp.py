@@ -9,7 +9,7 @@ from time import perf_counter
 
 from darp.adapter.kernel import StateKey
 from darp.adapter.runtime import PyRDDLGymRuntime
-from darp.ilp.gurobi import GurobiILPSolver
+from darp.ilp.gurobi import GurobiILPSession
 from darp.ilp.model import ILPSolveResult
 from darp.model.and_or_tree import ANDORSearchInterface
 from darp.model.duration import HistoryDurationEvaluator
@@ -83,10 +83,12 @@ class FullILPPlanner:
         - Author ``solver.ILP(...)`` creates binary variables ``x[q]`` for
           action histories, then adds ``tree_c1``, ``tree_c{q}``, and
           ``capacity_c``. DARP encodes the same rows as ``root_action``,
-          ``flow_*``, and ``risk_budget`` before calling `GurobiILPSolver`.
+          ``flow_*``, and ``risk_budget`` before solving in a fresh
+          `GurobiILPSession`.
 
         / 作者代码中的 `preprocess` 与 `ILP` 在 DARP 中分别对应 tree generation
-        与 ILP encoding 两步；变量和约束名称不同，但数学结构相同。
+        与 ILP encoding 两步；变量和约束名称不同，但数学结构相同，随后在新的
+        `GurobiILPSession` 中求解。
         """
 
         validate_risk_budget(self.risk_budget)
@@ -107,10 +109,11 @@ class FullILPPlanner:
             terminal_heuristic=self.terminal_heuristic,
         )
         tree_ilp_build_ms = (perf_counter() - build_started_at) * 1000.0
-        ilp_result = GurobiILPSolver().solve(
-            ilp_tree.spec,
-            time_limit_ms=self.solver_time_limit_ms,
-        )
+        with GurobiILPSession() as session:
+            ilp_result = session.solve(
+                ilp_tree.spec,
+                time_limit_ms=self.solver_time_limit_ms,
+            )
         selected_root = _selected_root_variable(ilp_result, ilp_tree)
         if selected_root is None:
             if ilp_result.status == "time_limit":

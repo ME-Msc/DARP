@@ -47,42 +47,41 @@ class PolicyTreeILP:
     # 选中前故意缺席，使提前停止的 policy 被判为 incomplete。
     variable_expansions: Mapping[str, ExpandedAction] = field(default_factory=dict)
     variable_continues: Mapping[str, bool] = field(default_factory=dict)
-    constraint_budget: float | None = None
-    initial_chance_risk: float = 0.0
+    risk_budget: float | None = None  # Delta: total risk budget. / Δ：总风险预算。
+    initial_risk: float = 0.0  # r(b_0): risk before any action. / r(b₀)：执行动作前的初态风险。
 
 
 @dataclass(frozen=True)
-class Algorithm1ExpansionRecord:
-    """Store one Algorithm-1 action history and its current expansion state.
+class HistoryRecord:
+    """Keep a history's ILP coefficients separate from its concrete expansion.
 
-    / 保存动作历史 q 的展开记录；expanded.metrics.utility 在 E 中为 u_q，
-    在启发式 frontier 记录中为 h_q^u；policy_expansion 保留真实执行语义。
+    ``ilp_metrics`` holds (u_q, r_q) in E and (h_q^u, h_q^r) in F.
+    ``policy_expansion`` holds the actual branches and achieved utility; it is
+    None for an unmaterialized lazy leaf, not an empty terminal expansion.
+
+    / 动作历史 q 的 ILP 系数：E 中为 (u_q, r_q)，F 中为 (h_q^u, h_q^r)。
+    policy_expansion 单独保存实际分支和实现效用；None 表示尚未生成，
+    不能把它当作没有后继的终止叶。当前 h_q^r 使用一步首次失败概率下界。
     """
 
     var_id: str
     item: FrontierItem
-    expanded: ExpandedAction
+    ilp_metrics: ExpansionMetrics
+    # Flow rows are enabled after F -> E. / F 移入 E 后才加入后续观测 flow 行。
     continues: bool
-    # HILP can score a frontier with a modified utility coefficient. Retain
-    # the unmodified expansion for executable-policy validation.
-    # frontier 可以使用修改后的 heuristic utility 评分，但必须另外保留未经
-    # 修改的展开，用于可执行策略验证。
-    # ``None`` marks a lazy HILP leaf whose observation branches are postponed
-    # until the incumbent selects it.
-    # None 表示延迟展开的 frontier；直到当前解选中它才生成观测分支。
     policy_expansion: ExpandedAction | None = None
 
 
 @dataclass(frozen=True)
-class _ConstraintEncodingContext:
-    """Values shared by full- and partial-tree constraint encoders.
+class _RiskEncodingContext:
+    """Risk constants shared by full- and partial-tree encoders.
 
-    / 保存两类编码器共享的原始预算和有效 RHS。
+    / 保存两类编码器共享的风险常数 Delta、R 和 r(b_0)。
     """
 
-    original_budget: float | None
-    effective_rhs: float | None
-    initial_chance_risk: float
+    risk_budget: float | None  # Delta / 总预算 Δ。
+    remaining_risk_budget: float | None  # R = Delta - r(b_0) / 扣除初态风险后的预算。
+    initial_risk: float  # r(b_0) / 初态风险。
 
 
 def build_full_tree_ilp(
@@ -135,17 +134,17 @@ def build_full_tree_ilp(
         max_nodes=max_nodes,
         terminal_heuristic=terminal_heuristic,
     )
-    constraint = _constraint_encoding_context(
+    risk_context = _risk_encoding_context(
         runtime,
         interface,
         risk_budget,
         root_belief,
     )
-    return _encode_algorithm1_records_as_full_ilp(
+    return _encode_policy_tree_records(
         records,
-        risk_budget=constraint.effective_rhs,
-        original_constraint_budget=constraint.original_budget,
-        initial_chance_risk=constraint.initial_chance_risk,
+        remaining_risk_budget=risk_context.remaining_risk_budget,
+        risk_budget=risk_context.risk_budget,
+        initial_risk=risk_context.initial_risk,
         model_name="darp_full_tree",
     )
 
@@ -154,8 +153,8 @@ def build_partial_tree_ilp(
     *,
     runtime: PyRDDLGymRuntime,
     interface: ANDORSearchInterface,
-    expanded_records: Sequence[Algorithm1ExpansionRecord],
-    frontier_records: Sequence[Algorithm1ExpansionRecord],
+    expanded_records: Sequence[HistoryRecord],
+    frontier_records: Sequence[HistoryRecord],
     risk_budget: float | None = None,
     root_belief: Mapping[StateKey, float] | None = None,
 ) -> PolicyTreeILP:
@@ -171,17 +170,17 @@ def build_partial_tree_ilp(
     """
 
     records = tuple(expanded_records) + tuple(frontier_records)
-    constraint = _constraint_encoding_context(
+    risk_context = _risk_encoding_context(
         runtime,
         interface,
         risk_budget,
         root_belief,
     )
-    return _encode_algorithm1_records_as_full_ilp(
+    return _encode_policy_tree_records(
         records,
-        risk_budget=constraint.effective_rhs,
-        original_constraint_budget=constraint.original_budget,
-        initial_chance_risk=constraint.initial_chance_risk,
+        remaining_risk_budget=risk_context.remaining_risk_budget,
+        risk_budget=risk_context.risk_budget,
+        initial_risk=risk_context.initial_risk,
         model_name="darp_hilp_partial_tree",
         frontier_variable_ids=tuple(record.var_id for record in frontier_records),
     )
@@ -205,7 +204,7 @@ class IncrementalPartialTreeILP:
         risk_budget: float | None = None,
         root_belief: Mapping[StateKey, float] | None = None,
     ) -> None:
-        self._constraint = _constraint_encoding_context(
+        self._risk_context = _risk_encoding_context(
             runtime, interface, risk_budget, root_belief,
         )
         self._variables: dict[str, ILPVariable] = {}
@@ -226,8 +225,8 @@ class IncrementalPartialTreeILP:
     def update(
         self,
         *,
-        expanded_records: Sequence[Algorithm1ExpansionRecord],
-        frontier_records: Sequence[Algorithm1ExpansionRecord],
+        expanded_records: Sequence[HistoryRecord],
+        frontier_records: Sequence[HistoryRecord],
     ) -> None:
         """Apply changed E records and new F records, not the whole E∪F.
 
@@ -256,12 +255,12 @@ class IncrementalPartialTreeILP:
                 self._expansions[var_id] = record.policy_expansion
             else:
                 self._expansions.pop(var_id, None)
-            utility = record.expanded.metrics.utility
+            utility = record.ilp_metrics.utility
             if self._objective.get(var_id) != utility:
                 self._objective[var_id] = utility
                 self._objective_updates[var_id] = utility
-            if self._constraint.effective_rhs is not None:
-                risk = record.expanded.metrics.chance_risk
+            if self._risk_context.remaining_risk_budget is not None:
+                risk = record.ilp_metrics.chance_risk
                 if self._risk.get(var_id, 0.0) != risk:
                     if risk == 0.0:
                         self._risk.pop(var_id, None)
@@ -284,7 +283,7 @@ class IncrementalPartialTreeILP:
         for record in records:
             for row in _definition31_flow_constraints(
                 record.var_id,
-                record.expanded,
+                record.policy_expansion,
                 declared_var_ids=self._variables.keys(),
                 should_encode=record.continues,
             ):
@@ -307,9 +306,9 @@ class IncrementalPartialTreeILP:
         rows = tuple(self._rows.values())
         new_rows = tuple(self._new_rows)
         coefficients: dict[str, Mapping[str, float]] = {}
-        if self._constraint.effective_rhs is not None:
+        if self._risk_context.remaining_risk_budget is not None:
             risk_row = ILPLinearConstraint(
-                "risk_budget", dict(self._risk), "<=", self._constraint.effective_rhs,
+                "risk_budget", dict(self._risk), "<=", self._risk_context.remaining_risk_budget,
             )
             rows += (risk_row,)
             if not self._risk_initialized:
@@ -329,10 +328,10 @@ class IncrementalPartialTreeILP:
             frontier_variable_ids=tuple(self._frontier),
             variable_expansions=dict(self._expansions),
             variable_continues=dict(self._continues),
-            constraint_budget=self._constraint.original_budget,
-            initial_chance_risk=self._constraint.initial_chance_risk,
+            risk_budget=self._risk_context.risk_budget,
+            initial_risk=self._risk_context.initial_risk,
         )
-        delta = ILPModelDelta(
+        model_delta = ILPModelDelta(
             variables=tuple(self._new_variables),
             objective=dict(self._objective_updates),
             constraints=new_rows,
@@ -342,7 +341,7 @@ class IncrementalPartialTreeILP:
         self._new_rows.clear()
         self._objective_updates.clear()
         self._risk_updates.clear()
-        return tree, delta
+        return tree, model_delta
 
 
 def paper_preprocess(
@@ -353,7 +352,7 @@ def paper_preprocess(
     root_belief: Mapping[StateKey, float] | None,
     max_nodes: int | None = 100_000,
     terminal_heuristic: UtilityHeuristic | None = None,
-) -> tuple[Algorithm1ExpansionRecord, ...]:
+) -> tuple[HistoryRecord, ...]:
     r"""Run paper Algorithm 1 `Preprocess` and return expanded action records.
 
     Original Algorithm 1 alternates between observation histories
@@ -378,7 +377,7 @@ def paper_preprocess(
         raise ValueError("max_nodes must be positive when provided")
     root_frontier = initialize_root_frontier(runtime, interface, root_belief=root_belief)
     queue = deque(root_frontier)
-    records: list[Algorithm1ExpansionRecord] = []
+    records: list[HistoryRecord] = []
     seen: set[str] = set()
 
     while queue:
@@ -406,10 +405,10 @@ def paper_preprocess(
         # 创建后继 frontier。
         continues = bool(expanded.child_frontier)
         records.append(
-            Algorithm1ExpansionRecord(
+            HistoryRecord(
                 var_id=var_id,
                 item=item,
-                expanded=expanded,
+                ilp_metrics=expanded.metrics,
                 continues=continues,
                 policy_expansion=expanded,
             )
@@ -430,12 +429,12 @@ def validate_risk_budget(risk_budget: float | None) -> None:
         )
 
 
-def _constraint_encoding_context(
+def _risk_encoding_context(
     runtime: PyRDDLGymRuntime,
     interface: ANDORSearchInterface,
     risk_budget: float | None,
     root_belief: Mapping[StateKey, float] | None,
-) -> _ConstraintEncodingContext:
+) -> _RiskEncodingContext:
     r"""Resolve the shared Lemma 3.3 encoding constants once.
 
     Lemma 3.3 rewrites the chance constraint as:
@@ -462,27 +461,27 @@ def _constraint_encoding_context(
                 )
             initial_risk = float(belief_risk(resolved_belief))
 
-    effective_rhs = None if risk_budget is None else float(risk_budget)
-    if effective_rhs is not None:
-        effective_rhs -= initial_risk
+    remaining_risk_budget = None if risk_budget is None else float(risk_budget)
+    if remaining_risk_budget is not None:
+        remaining_risk_budget -= initial_risk
 
-    return _ConstraintEncodingContext(
-        original_budget=risk_budget,
-        effective_rhs=effective_rhs,
-        initial_chance_risk=initial_risk,
+    return _RiskEncodingContext(
+        risk_budget=risk_budget,
+        remaining_risk_budget=remaining_risk_budget,
+        initial_risk=initial_risk,
     )
 
 
-def _encode_algorithm1_records_as_full_ilp(
-    records: Sequence[Algorithm1ExpansionRecord],
+def _encode_policy_tree_records(
+    records: Sequence[HistoryRecord],
     *,
+    remaining_risk_budget: float | None,
     risk_budget: float | None,
-    original_constraint_budget: float | None,
-    initial_chance_risk: float = 0.0,
+    initial_risk: float = 0.0,
     model_name: str = "darp_full_tree",
     frontier_variable_ids: tuple[str, ...] = (),
 ) -> PolicyTreeILP:
-    r"""Encode Algorithm 1/2 records as the paper full-ILP.
+    r"""Encode history records as full-ILP or p-ILP.
 
     For each action history $$q\in\tilde A$$, Algorithm 2 supplies
     constants $$u_q$$ and $$r_q$$. The encoder creates one binary
@@ -503,8 +502,11 @@ def _encode_algorithm1_records_as_full_ilp(
     where $$R=\Delta-r(b_0)$$ and $$r_q$$ uses the safe-conditioned
     occurrence probability and belief.
 
-    / 将 Algorithm 1/2 得到的 action histories 编码成论文 full-ILP；
-    风险行使用 Lemma 3.3 的 safe-belief 线性化形式。
+    For p-ILP, frontier coefficients are (h_q^u, h_q^r) instead of (u_q, r_q).
+    ``remaining_risk_budget`` is R, not the original budget Delta.
+
+    / 共用 full-ILP/p-ILP 编码器；frontier 系数使用 (h_q^u, h_q^r)。
+    remaining_risk_budget 是已扣除初态风险的 R，不是原始预算 Delta。
     """
 
     variables: dict[str, ILPVariable] = {}
@@ -519,29 +521,25 @@ def _encode_algorithm1_records_as_full_ilp(
 
     for record in records:
         item = record.item
-        expanded = record.expanded
 
         # Definition 3.1 variable: $$x_q=1$$ means this action-history is selected
         # in the deterministic policy tree. / Definition 3.1 变量：$$x_q=1$$
         # 表示 deterministic policy tree 选择该 action history。
         variables[record.var_id] = ILPVariable(var_id=record.var_id)
         variable_items[record.var_id] = item
-        variable_metrics[record.var_id] = expanded.metrics
-        # A time/round limit may leave an incumbent on a lazy frontier. Omit
-        # its placeholder from the executable-policy map so policy validation
-        # reports ``missing-expansion`` instead of a false terminal leaf.
-        # 若搜索在 lazy frontier 上提前停止，不把空壳当作终止叶；policy
-        # validation 会将其明确标为尚未完整展开。
+        variable_metrics[record.var_id] = record.ilp_metrics
+        # Lazy F records have coefficients but no executable expansion yet.
+        # / lazy F 只有估值，不能当作已完成的策略叶节点。
         if record.policy_expansion is not None:
             variable_expansions[record.var_id] = record.policy_expansion
         variable_continues[record.var_id] = bool(record.continues)
-        objective[record.var_id] = expanded.metrics.utility
+        objective[record.var_id] = record.ilp_metrics.utility
         if item.node.history.depth == 1:
             root_ids.append(record.var_id)
         constraints.extend(
             _definition31_flow_constraints(
                 record.var_id,
-                expanded,
+                record.policy_expansion,
                 declared_var_ids=declared_var_ids,
                 should_encode=record.continues,
             )
@@ -561,7 +559,7 @@ def _encode_algorithm1_records_as_full_ilp(
             rhs=1.0,
         ),
     )
-    if risk_budget is not None:
+    if remaining_risk_budget is not None:
         # Lemma 3.3 uses safe-flow first-entry coefficients and
         # R=Delta-r(b0). / 使用安全概率流的首次进入风险系数。
         constraints.append(
@@ -573,7 +571,7 @@ def _encode_algorithm1_records_as_full_ilp(
                     if metrics.chance_risk != 0.0
                 },
                 sense="<=",
-                rhs=float(risk_budget),
+                rhs=float(remaining_risk_budget),
             )
         )
     spec = ILPModelSpec(
@@ -589,14 +587,14 @@ def _encode_algorithm1_records_as_full_ilp(
         frontier_variable_ids=frontier_variable_ids,
         variable_expansions=variable_expansions,
         variable_continues=variable_continues,
-        constraint_budget=original_constraint_budget,
-        initial_chance_risk=float(initial_chance_risk),
+        risk_budget=risk_budget,
+        initial_risk=float(initial_risk),
     )
 
 
 def _definition31_flow_constraints(
     parent_var_id: str,
-    expanded: ExpandedAction,
+    expanded: ExpandedAction | None,
     *,
     declared_var_ids: AbstractSet[str],
     should_encode: bool,
@@ -620,6 +618,10 @@ def _definition31_flow_constraints(
     / 只对非叶子 action history 编码 observation-flow；duration 停止的叶子
     不应引用未声明的子变量。
     """
+    if expanded is None:
+        if should_encode:
+            raise ValueError("Cannot encode child flow before expanding the history.")
+        return ()
     constraints: list[ILPLinearConstraint] = []
     has_nonterminal_deadend = any(
         observation_frontier.should_expand

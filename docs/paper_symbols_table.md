@@ -1,5 +1,7 @@
 # Appendix
 
+本文保留论文主要符号，并在末尾对应当前实现。完整算法边界见 [论文—代码映射](ALGORITHM_MAPPING.md)；DARP 当前求解 CC-POMDP，下面的 expected-cost C-POMDP 公式仅作为论文符号背景。
+
 ## POMDP
 
 | 顺序 | 符号 | 原文英文解释 | 中文解释 |
@@ -48,14 +50,14 @@
 | ---: | --- | --- | --- |
 | 1 | $D(s,a)$ | duration function | 动作持续时间函数 |
 | 2 | $c_a\in\mathbb{R}_+$ | execution time of action $a$ under fixed duration | 固定持续时间模型中动作 $a$ 的执行时间 |
-| 3 | $L^\pi \subseteq\tilde{A}$ | set of leaf nodes of policy $\pi$ | 策略 $\pi$ 的叶节点集合，$L^\pi$ 内的点构成的策略分支耗时不超过horizon |
+| 3 | $L^\pi \subseteq\tilde{A}$ | set of leaf nodes of policy $\pi$ | 策略 $\pi$ 的动作叶节点集合；是否继续由 duration stopping 条件决定 |
 
 ### Stochastic duration with percentile risk criteria
 
 | 顺序 | 符号 | 原文英文解释 | 中文解释 |
 | ---: | --- | --- | --- |
 | 1 | $\tau(q)$ | duration-related probability / durative constraint function | 与持续时间相关的概率或约束函数 |
-| 2 | $\tau(q')\triangleq \Pr\left(\mathbb{E}\left[\sum\limits_{q\in\tilde{O}^{\pi}:q<q'}D(S_q,\pi(q))\mid q'\right]<h\right)\le \varsigma$ | Stochastic duration with percentile risk criteria | 动作持续时间随机时，在q'历史路径下，总持续时间的期望小于horizon的概率小于等于阈值 $\varsigma$。<br> 即，约束是，没走够时间的概率不能太大。在控制“由于时长不确定，任务可能来不及完成”的风险。<br> 以车载无人机协同场景为例，无人机和车分别执行任务后，无人机要花horizon的时长与车会合， 我们在控制无人机提前到达的概率不能超过 $\varsigma$|
+| 2 | $\tau(q')\triangleq \Pr\left(\mathbb{E}\left[\sum\limits_{q\in\tilde{O}^{\pi}:q<q'}D(S_q,\pi(q))\mid q'\right]<h\right)\le \varsigma$ | Stochastic duration with percentile risk criteria | 用累计 duration 的分布评价尚未达到时间阈值 $h$ 的概率；$\tau(q')\le\varsigma$ 时停止，严格大于阈值时继续 |
 | 3 | $\tau(q)=(\tau^1(q),\tau^2(q),\ldots)$ | multiple criteria encoded in formulation | 多个持续性 / 资源类约束指标 |
 | 4 | $\varsigma=(\varsigma^1,\varsigma^2,\ldots)$ | multiple thresholds | 多个约束阈值 |
 
@@ -64,7 +66,7 @@
 | 顺序 | 符号 | 原文英文解释 | 中文解释 |
 | ---: | --- | --- | --- |
 | 1 | $D(s,a) \in \mathbb{R}_+$ | deterministic duration | 确定的动作持续时间 |
-| 2 | $\tau(q')\triangleq\Pr\left(\sum_{q\in\tilde{O}:q<q'}D(S_q,\pi(q))<h\mid q'\right)\le \varsigma$ | goal of Chance-constrained deteministic duration | 持续时间违反时间约束（提前到达）的概率要小于 $\varsigma$。没有期望是因为持续时间是固定的，没有概率可言 |
+| 2 | $\tau(q')\triangleq\Pr\left(\sum_{q\in\tilde{O}:q<q'}D(S_q,\pi(q))<h\mid q'\right)\le \varsigma$ | goal of chance-constrained deterministic duration | 给定状态与动作后 duration 确定，但隐状态路径仍随机；用累计时长小于 $h$ 的条件概率判定停止，不能用平均时长替代其分布 |
 | 3 | $\max\limits_{\pi}\mathbb{E}\left[\sum\limits_{q\in\tilde{O}_{\pi}:\tau(q)>\varsigma}U(S_q,\pi(q))\mid \pi\right]$ <br> $\text{subject to }\mathbb{E}\left[\sum_{q\in\tilde{O}^{\pi}:\tau(q)>\varsigma}P(S_q,\pi(q))\mid \pi\right]\le C$ | replace $\|q\|<h$ with $\tau(q)>\varsigma$ in [POMDP-line30](#POMDP), durative C-POMDP $[M', \varsigma]$ | 可持续动作的 C-POMDP 的优化目标及约束 |
 | 4 | $\max\limits_{\pi}\mathbb{E}\left[\sum\limits_{q\in\tilde{O}_{\pi}:\tau(q)>\varsigma}U(S_q,\pi(q))\mid \pi\right]$ <br> $\text{subject to }\Pr\left(\bigvee\limits_{q\in\tilde{O}^{\pi}:\tau(q-1)>\varsigma}S_q\in R\mid \pi\right)\le \Delta$ | replace $\|q\|<h$ with $\tau(q)>\varsigma$ in [POMDP-line31](#POMDP), duractive CC-POMDP $[M'', \varsigma]$ | 可持续动作的 CC-POMDP 的优化目标及约束 |
 
@@ -86,60 +88,16 @@
 
 ### Utility and Penalty for C-POMDP
 
-```pseudo
-Algorithm 1: Preprocess[M', ς]
-
-Input:
-    C-POMDP model M' = M || <P, C> 
-                     = <S, A, 𝒪 , T, O, U, b_0, h, P, C>
-    Percentile threshold ς
-
-Output:
-    ILP constants (u_q, r_q) for q ∈ Ã such that τ(q - 1) > ς
-    Constraint bound R
-    Durative function τ(·)
-
-Initialize:
-    G ← ∅
-    N ← {0}
-    F ← ∅
-    b̃₀ ← 0
-    b₀ ← 0
-    ρ̃(q) ← 0
-    R ← C
-
-do:
-    q ← Pick an arbitrary element from N
-    N ← N \ {q}
-
-    for a ∈ A do:
-        Obtain:
-            u_qa, r_qa, b_qa,
-            (b̃_qao, τ(qao), ρ(qao)) for all o ∈ O
-
-        by calling:
-            Expand[qa, b_q, (b̃_q^i) for i ∈ T(q), ρ(q), M']
-
-        for o ∈ O do:
-            if τ(qao) > ς then:
-                N ← N ∪ {qao}
-                F ← F ∪ {qa}
-while N ≠ ∅
-
-return:
-    (u_q, r_q) for q ∈ F
-    R
-    τ(·)
-```
+Algorithm 1 从观测历史 $N=\{0\}$ 开始：取出 $q$，为可行动作构造 $qa$，调用 Algorithm 2 计算系数与观测后继 $qao$；仍满足 $\tau(qao)>\varsigma$ 的观测历史进入后续处理。代码从这些观测直接生成下一层动作 frontier，不额外存储一个完整 $N$ 集合。根 belief 是模型的 $b_0$，根 history 概率为 $1$。
 
 | 顺序 | 符号 | 原文英文解释 | 中文解释 |
 | ---: | --- | --- | --- |
-| 1 | $G$ | maybe the root | 应该是根节点 |
-| 2 | $N$ | set of nodes to be expanded / new nodes | 待扩展节点集合 |
-| 3 | $F$ | frontier nodes / search frontier | 搜索边界节点集合 |
+| 1 | $G$ | history tree | 动作—观测历史树；代码由 `interface.root` 及其后继节点表示 |
+| 2 | $N$ | observation histories awaiting expansion | 待处理的观测历史集合，不是全部尚未生成的未来后代 |
+| 3 | $F$ in Algorithm 1 | action histories collected by preprocessing | 预处理收集的动作历史；勿与 Algorithm 3 的未细化 frontier 混用 |
 | 4 | $u_q \triangleq \rho(q)\cdot \sum_{s\in S}\tilde{b}_{q-1}(s)U(s,a_q)$ | utility is the product of the probability of sequence q occurring, denoted by $\rho(q)$,<br> and the expected uitility of the last action $a_q$ in the history sequece $q$ | 奖赏，是历史序列q出现的概率，与最后一个动作$a_q$的期望奖赏 <br>（处于s时的后验概率，乘以，处于s且采取$a_q$动作的奖赏，的累积和）的乘积 |
-| **5?** | $r_q \triangleq \rho(q)\cdot \sum_{s\in S}\tilde{b}_{q-1}(s)P(s,a_q)$ | risk for every history $q\in \tilde{A}$ such that $\tau(q-1) > \varsigma$ |  |
-| **6?** | $\tau(q)$ | duration of history $q$ | 历史q的持续时间 |
+| 5 | $r_q \triangleq \rho(q)\cdot \sum_{s\in S}\tilde{b}_{q-1}(s)P(s,a_q)$ | cost coefficient for C-POMDP | expected-cost 模型的加权成本；CC-POMDP 使用下文的首次失败系数 |
+| 6 | $\tau(q)$ | duration continuation function | 历史 $q$ 的 duration continuation 指标，不是物理累计时长本身 |
 | 7 | $\rho(q)\triangleq \Pr\left(\bigwedge\limits_{i\in\mathcal{T}(q)}o_q^i\ \middle\|\ b_0,\bigwedge\limits_{j\in\mathcal{T}(q)}a_q^j\right)$ <br><br> $=\prod\limits_{i\in\mathcal{T}(q)}\Pr\left(o_q^i \,\middle\|\, b_0,\bigwedge\limits_{\substack{j\in\mathcal{T}(q)\\ j<i}}(a_q^j,o_q^j),a_q^i\right)$ <br><br> $=\prod\limits_{i\in\mathcal{T}(q)}\Pr(o_q^i\mid \bar{b}_q^i)$ | probability of sequence $q$ occurring | $\rho(q)$ 是在初始信念 $b_0$下，按照历史 $q$ 中的动作执行并观测到对应观测序列的概率。<br> 它可以分解为每一步观测概率的乘积。|
 | 8 | $\bar{b}_q^i(s)\triangleq \sum_{s'\in S} T(s',a_q^i,s)\cdot \tilde{b}_q^{i-1}(s')$ | prior belief stat after action $a_q^i$ in $q$ | $\bar{b}_q^i$ 是历史q中动作$a_q^i$之后的先验信念状态 |
 | 9 | $\tilde{b}_q^i(s)\triangleq \frac{O(o_q^i,s,a_q^i)\cdot \bar{b}_q^i(s)}{\Pr(o_q^i\mid \bar{b}_q^i)},\quad \forall s\in S$ | posterior belief | 后验信念 |
@@ -149,9 +107,9 @@ return:
 
 | 顺序 | 符号 | 原文英文解释 | 中文解释 |
 | ---: | --- | --- | --- |
-| 1？ | $r(b) \triangleq \sum_{s\in R}{b(s)}$ | probability of being in a risky state for belief $b$ | 给定信念b的风险概率r(b)就是，所有处于风险状态R中的状态s的信念b(s)的累积加和 |
+| 1 | $r(b) \triangleq \sum_{s\in R}{b(s)}$ | probability of being in a risky state for belief $b$ | 给定信念b的风险概率r(b)就是，所有处于风险状态R中的状态s的信念b(s)的累积加和 |
 | 2 | $\bar{b}_q(s)\triangleq \frac{ \sum_{s'\in S\setminus R}T(s',a_q,s)\tilde{b}_{q-1}(s') }{1-r(\tilde{b}_{q-1}) }$ | safe prior belief in CC-POMDP recursion | CC-POMDP 风险递推中的安全先验信念。分母是上一时刻信念下不在风险状态的概率，用于归一化。分子是，在上一时刻非风险的各种状态s'下，基于其后验信念b(s')执行动作 $a_q$ 后到达状态 s 的条件概率分布 |
-| 3 | $\tilde{b}_q(s)\triangleq\frac{O(o_q,s,a_q)\cdot \bar{b}_q(s)}{\eta}$ | safe posterior belief in CC-POMDP recursion | CC-POMDP 风险递推中的安全后验信念。在“前面都安全”的前提下，再结合当前观测 $o_q$，更新得到新的安全信念。$\eta$是归一化参数 |
+| 3 | $\tilde{b}_q(s)\triangleq\frac{O(o_q,s,a_q)\cdot \bar{b}_q(s)}{\eta}$ | posterior belief in CC-POMDP risk recursion | 在安全前缀条件下用当前观测更新的 posterior；它仍可包含当前风险状态，下一次预测才对来源状态作 $s'\notin R$ 筛选。$\eta$ 是归一化参数 |
 
 ### Lemma 3.3
 
@@ -161,8 +119,8 @@ CC-POMDP 也可以被等价地写成 ILP。它的关键是把原来复杂的“�
 | 顺序 | 符号 | 原文英文解释 | 中文解释 |
 | ---: | --- | --- | --- |
 | 1 | $R\triangleq \Delta-r(b_0)$ |  | ILP 中真正还能使用的，剩余风险预算 $R$，就是总风险预算 $\Delta$ (允许进入 risky states 的最大概率) 减去，<br> 初始 belief $b_0$ 本身可能已经有一部分概率在 risky states 里，这部分风险就是 $r(b_0)$ |
-| 2 | $r_q\triangleq \tilde{\rho}(q)\cdot r(\bar{b}_q),\quad q\in\tilde{A}$ | | 动作历史节点 q 对总执行风险的贡献，等于，安全到达历史 q 的概率$\tilde{\rho}(q)$（在之前没有进入 risky states 的条件下走到 q 的概率），乘以，在节点 q 的 safe prior belief 下进入 risky states 的概率 $r(\bar{b}_q)$，就是“安全走到 q，然后在 q 这里发生风险”的概率贡献 |
-| 3 | $u_q\triangleq \rho^\star(q)\cdot \sum\limits_{s\in S}\tilde{b}_{q-1}^*(s)U(s,a_q),\quad q\in\tilde{A}$ |  | 动作历史节点 q 对总期望效用的贡献。这里上标 $\star$ 表示所求策略下的量；论文明确说明 $\rho^\star$ 与 $\tilde b^\star$ 分别由普通 belief 的 Eq. (9)、(10) 给出，并不表示 safe-conditioned flow。安全前缀概率是另一个符号 $\tilde\rho(q)$，仅进入风险系数 $r_q$。 |
+| 2 | $r_q\triangleq \tilde{\rho}(q)\cdot r(\bar{b}_q),\quad q\in\tilde{A}$ | first-failure risk coefficient | 安全前缀与对应 history 的联合概率 $\tilde\rho(q)$，乘以本次动作后进入风险状态的条件概率 $r(\bar b_q)$；因此仅计算第一次失败，不重复计入已经失败的路径 |
+| 3 | $u_q\triangleq \rho^\star(q)\cdot \sum\limits_{s\in S}\tilde{b}_{q-1}^*(s)U(s,a_q),\quad q\in\tilde{A}$ | ordinary-flow utility coefficient | 动作历史 $q$ 对总期望效用的贡献。$\rho^\star$ 与 $\tilde b^\star$ 由普通 belief 的 Eq. (9)、(10) 给出，不是安全条件流；效用仍包括已经发生失败的路径。$\tilde\rho(q)$ 仅用于首次失败风险 $r_q$。 |
 
 ### Stochastic Duration Model
 
@@ -174,24 +132,34 @@ Algorithm 2 每扩展一条历史 qao，都要计算这条历史的 belief、发
 | 顺序 | 符号 | 原文英文解释 | 中文解释 |
 | ---: | --- | --- | --- |
 | 1 | $E$ | expanded action nodes | 已扩展动作节点集合 |
-| 2 | $F$ | frontier nodes | 未展开的节点边界 |
+| 2 | $F$ | frontier action nodes | 尚未作为展开节点编码的动作历史；可已有缓存的 Expand 结果 |
 | 3 | $h_q^u$ | admissible heuristic for utility | 奖赏的可采纳启发式上界 |
 | 4 | $h_q^r$ | admissible heuristic for risk | 风险的可采纳启发式下界 |
 
-DARP 当前支持两个 frontier utility heuristic 模式。`one-step-greedy` 直接使用 Algorithm 2 已经计算出的当前 action 常量 $u_q$ 作为 $h_q^u$，并用同一个值排序选择下一批要展开的 frontier；root action 平局时也用该值做 deterministic tie-break：
+当前核心通过 `UtilityHeuristic` 接收外部 $h(s,a)$，对于观测历史 $q$ 后的动作 $qa$，计算
 
-对于 frontier action history $q$，DARP 使用：
+$$h_{qa}^u=\sum_s\rho^*(q)\tilde b_q^*(s)h(s,a).$$
 
-$$h_q^u := u_q = \rho(q)\sum_s b_q(s)U(s,a_q).$$
+未提供回调时使用一步 utility。只有回调确实是最大化 utility 的可采纳上界时，才应设置 `upper_bound=True`。风险启发式 $h_{qa}^r$ 保持为一步首次失败概率 $r_{qa}$，是未来总风险的下界。`terminal_heuristic` 的 duration 边界规则见 [算法映射](ALGORITHM_MAPPING.md#6-algorithm-3hilp)。
 
-`reachable-bellman` 使用当前 frontier action 的后继状态 support 作为种子，只在可达状态集合上做 fully observable Bellman backup。无 domain tail 时允许以 0 提前停止，保持对负 reward 问题的乐观上界；有 admissible tail 时以该 tail 初始化 $V_0$：
+## 当前代码中的存储与索引
 
-$$V_0(s)=H_{tail}(s)\;\text{or}\;0,\qquad V_t(s)=\max_a\left[U(s,a)+\sum_{s'}T(s,a,s')V_{t-1}(s')\right].$$
+`FrontierItem.node.history` 是动作历史 $qa$；它携带的 belief、`ordinary_mass` 与 `safe_mass` 属于动作开始前的观测历史 $q$。
 
-对应 frontier action history $q$：
+| 代码 | 论文对应与含义 |
+| --- | --- |
+| `ordinary_mass[s]` | 普通联合质量 $\rho^*(q)\tilde b_q^*(s)$，并保留分支仍继续执行的概率权重 |
+| `safe_mass[s]` | history $q$、当前状态 $s$ 与全部已访问状态（包括当前状态）均安全的联合质量 |
+| `belief` / `kernel.normalize_mass` | 从普通联合质量导出的归一化 posterior，供动作可行性和 duration 计算使用 |
+| `HistoryRecord.ilp_metrics` | $E$ 中的 $u_q,r_q$，或 $F$ 中的 $h_q^u,h_q^r$ |
+| `HistoryRecord.policy_expansion` | 实际 observation/child 结构及 achieved utility 指标；lazy frontier 为 `None` |
+| `expanded_e` / `frontier_f` | Algorithm 3 的 $E$ 动作历史 ID 集合 / $F$ 动作历史映射；树节点由 `interface.root` 所属树保存 |
+| `pending_frontier` | 从待处理观测历史生成、等待下一次 ILP 编码的动作；实现不另存 $N$ |
+| `ILPSolveResult.variable_values` | 策略二元向量 $\mathbf{x}$；`selected_variables` 保存值大于 0.5 的变量 |
+| `risk_budget` / `remaining_risk_budget` | 总预算 $\Delta$（包含 `PolicyTreeILP.risk_budget`）/ 扣除初态风险后的 $R=\Delta-r(b_0)$ |
+| `initial_risk` | 初态风险 $r(b_0)$；构造风险行时从 $\Delta$ 中扣除，提取策略时加回总风险 |
+| `_encode_policy_tree_records` | 从 history 记录编码完整 ILP；HILP 用 `IncrementalPartialTreeILP` 编码每轮变化 |
 
-$$h_q^u=\rho(q)\sum_s b_q(s)\left[U(s,a_q)+\sum_{s'}T(s,a_q,s')V_{d-1}(s')\right].$$
+这些 mass 是论文概率乘积的直接存储，不增加模型状态。例如 history 概率 $0.2$ 乘 posterior $0.6$ 得到质量 $0.12$；归一化恢复 belief，却会丢掉 history 权重，因此不能把 belief 直接代入效用或风险系数。`safe_mass` 还已剔除当前风险状态，不等于未经筛选的论文安全 posterior 与 history 概率的乘积。
 
-当前核心不内置特定领域的 heuristic。用户通过 `UtilityHeuristic` 提供 $h(s,a)$，核心计算 $h_q^u=\sum_s\rho(q)b_q(s)h(s,a_q)$。只有回调确实是最大化 utility 的 admissible upper bound 时，才应设置 `upper_bound=True`；否则仍可用于搜索，但不能据此声称未展开 subtree 已被最优性界排除。
-
-风险启发式 $h_q^r$ 当前保持为一步 safe-belief 风险 $r_q$，作为未来风险的可采纳下界；更强的风险启发式留给后续 benchmark 优化。
+HILP 每轮先求解并保存接受的结果快照，再判断是否继续 refinement。round 上限为 0 仍求解初始模型；最后一次展开后仍求解更新后的模型。超时回退使用上一次接受的树、解和计数，避免把未成功求解的新 frontier 混入已返回策略。

@@ -35,17 +35,23 @@ HeuristicFunction = Callable[[HeuristicInput], Real]
 
 @dataclass(frozen=True, slots=True)
 class UtilityHeuristic:
-    """Describe an external state utility heuristic used at HILP frontiers.
+    r"""Describe an external state utility heuristic used at HILP frontiers.
 
     The planner applies the paper's history-probability weighting itself:
 
-    ``h_q = sum_s ordinary_mass_q[s] * value(s, a_q)``.
+    ``h_qa = sum_s ordinary_mass_q[s] * value(s, a)``.
+
+    The frontier action history is qa; its ordinary mass is the paper's
+    :math:`\rho^*(q)\tilde b^*_q(s)` at preceding observation history q,
+    with the continuing-event restriction retained in the mass.
 
     Set ``upper_bound`` only when the callback is an admissible upper bound for
     DARP's maximization objective.  The flag affects optimality certification,
     never the ILP solution itself.
 
-    / 核心负责乘历史概率；upper_bound 表示调用者确认启发式是可采纳上界，
+    / frontier 是动作历史 qa；ordinary_mass_q 是此前观测历史 q 的
+    rho*(q)·tilde b*_q，保留继续执行事件的权重；核心负责乘历史概率。
+    upper_bound 表示调用者确认启发式是可采纳上界，
     仅影响最优性认证，不改变传给 ILP 的数值。
     """
 
@@ -93,12 +99,14 @@ def history_heuristic_coefficient(
     action: Mapping[str, Any],
     non_fluents: Mapping[str, Any],
 ) -> float:
-    """Return the paper coefficient ``rho(q) E[h(S,a) | q]``.
+    r"""Return the history-weighted heuristic coefficient for action qa.
 
-    ``state_mass`` is already the unnormalised ordinary history mass, so no
-    second probability scale or belief normalisation is applied here.
+    ``state_mass[s]`` already stores :math:`\rho^*(q)\tilde b^*_q(s)`
+    with the continuing-event restriction, so no second probability scale or
+    belief normalisation is applied here.
 
-    / 返回论文 h_q^u；state_mass 已包含 rho(q)，不再次加权或归一化。
+    / 返回候选动作 qa 的启发系数；state_mass[s] 已保存 rho*(q)·tilde b*_q(s)，
+    保留继续执行事件的权重，不再次加权或归一化。
     """
 
     terms: list[float] = []

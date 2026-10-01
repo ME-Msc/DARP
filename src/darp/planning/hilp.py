@@ -5,8 +5,9 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from math import isfinite
 from time import perf_counter
 
@@ -18,9 +19,8 @@ from darp.model.and_or_tree import ANDORSearchInterface
 from darp.model.duration import HistoryDurationEvaluator
 from darp.planning.decision import ActionDecision
 from darp.planning.expand import (
-    ExpandedAction,
+    ExpansionMetrics,
     apply_terminal_heuristic,
-    evaluate_frontier_leaf_metrics,
     expand_frontier_item,
 )
 from darp.planning.heuristic import (
@@ -28,7 +28,7 @@ from darp.planning.heuristic import (
     history_heuristic_coefficient,
 )
 from darp.planning.ilp_tree import (
-    Algorithm1ExpansionRecord,
+    HistoryRecord,
     IncrementalPartialTreeILP,
     PolicyTreeILP,
     _action_var_id,
@@ -36,6 +36,8 @@ from darp.planning.ilp_tree import (
 )
 from darp.planning.policy import extract_conditional_policy
 from darp.planning.preprocess import FrontierItem, initialize_root_frontier
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -82,29 +84,19 @@ class HILPPlanner:
         *,
         root_belief: Mapping[StateKey, float] | None = None,
     ) -> ActionDecision:
-        r"""Choose an action with HILP-style partial-tree expansion.
+        r"""Run Algorithm 3 with E/F histories and solution vector x.
 
-        Paper correspondence:
+        E holds refined action histories; F holds p-ILP frontier histories.
+        ``solution.variable_values`` is x. Only selected F histories enter E.
+        The paper's N holds observation histories awaiting action generation;
+        DARP generates their actions immediately and queues those in
+        ``pending_frontier``. It does not store the ungenerated whole tree.
+        Duration uses tau(q) and the model horizon, not solver wall time.
 
-        - Algorithm 3 keeps three sets: expanded action histories $$E$$,
-          frontier action histories $$F$$, and not-yet-generated descendants
-          $$N$$.
-        - Each iteration solves a partial ILP over $$E \cup F$$, then expands
-          only incumbent frontier histories with $$x_q>0$$. An external
-          heuristic supplies the objective coefficient of histories in $$F$$.
-        - DARP's partial ILP keeps the same Definition 3.1 root/flow rows as
-          full-ILP for histories in $$E$$. Histories in $$F$$ are frontier
-          leaves: they have heuristic $$h_q$$ and risk $$r_q$$ constants,
-          but no child-flow rows yet.
-        - The CC-POMDP time budget is the domain horizon inside
-        `duration_evaluator`; it is consumed by action durations through
-          $$\tau(q)$$.  It is not Python wall-clock runtime.
-
-        / 使用 HILP 的 $$E/F$$ frontier 更新框架；heuristic 是 $$F$$ 中节点的
-        p-ILP 目标系数，每轮只展开 incumbent 中 $$x_q>0$$ 的 frontier，最终
-        root action 也必须来自 incumbent。规划问题
-        中的时间预算由 `duration_evaluator` 的 action duration 和 $$\tau(q)$$
-        表示，不使用 Python 运行时间。
+        / E 保存已细化动作历史，F 保存 p-ILP frontier，solution.variable_values
+        对应 x。只把当前解选中的 F 节点移入 E。论文 N 是待生成后续动作的
+        观测历史；代码直接生成其动作放入 pending_frontier，不另外维护 N。
+        duration 按 tau(q) 与问题 horizon 判断，不使用求解器运行时间。
         """
 
         started_at = perf_counter()
@@ -129,20 +121,19 @@ class HILPPlanner:
             _action_var_id(item): item
             for item in root_frontier
         }
-        # Algorithm 3: $$E$$ stores histories that have already been expanded.
-        # Algorithm 3：$$E$$ 保存已经调用过 Expand 的 action histories。
-        expanded_e: dict[str, Algorithm1ExpansionRecord] = {}
-        frontier_records: dict[str, Algorithm1ExpansionRecord] = {}
+        # E holds refined history ids; cached Expand alone does not move F to E.
+        # E 保存已细化历史的 id；为估值预计算 Expand 不等于已经从 F 移入 E。
+        expanded_e: set[str] = set()
+        frontier_records: dict[str, HistoryRecord] = {}
         ilp_builder = IncrementalPartialTreeILP(
             runtime, interface, risk_budget=self.risk_budget, root_belief=root_belief,
         )
         # Only these events need encoding at the next solve. / 下一轮只编码这些变动。
-        pending_expanded: list[Algorithm1ExpansionRecord] = []
+        pending_expanded: list[HistoryRecord] = []
         pending_frontier = list(root_frontier)
-        partial_tree: PolicyTreeILP | None = None
-        partial_result: ILPSolveResult | None = None
+        partial_ilp: PolicyTreeILP | None = None
+        solution: ILPSolveResult | None = None
         expansion_rounds = 0
-        needs_final_solve = True
         solver_limit_hit = False
         # Keep the state corresponding to the most recently solved p-ILP. A
         # later frontier build may consume the remaining wall budget; in that
@@ -161,12 +152,13 @@ class HILPPlanner:
             "partial_ilp_solves": 0.0,
         }
 
-        while frontier_f and (
-            self.expansion_rounds is None
-            or expansion_rounds < self.expansion_rounds
-        ):
+        # Algorithm 3: solve -> select x_q=1 in F -> Expand -> update E/F.
+        # 论文主循环：求解 p-ILP -> 读取被选 frontier -> 展开 -> 更新 E/F。
+        # Always solve the last refinement, even at the expansion-round limit.
+        # 即使达到展开轮数上限，也要先求解最后一次展开后的模型。
+        while True:
             try:
-                candidate_tree, candidate_result = self._solve_partial_policy_ilp(
+                candidate_tree, candidate_solution = self._solve_partial_policy_ilp(
                     interface,
                     duration_evaluator,
                     ilp_builder=ilp_builder,
@@ -175,153 +167,148 @@ class HILPPlanner:
                     frontier_records=frontier_records,
                     ilp_session=ilp_session,
                     warm_start=(
-                        partial_result.variable_values
-                        if partial_result is not None
+                        solution.variable_values
+                        if solution is not None
                         else None
                     ),
                     solver_deadline=solver_deadline,
                     timing_totals=timing_totals,
                 )
             except TimeoutError:
-                if partial_tree is None or partial_result is None:
+                if partial_ilp is None or solution is None:
                     raise
+                logger.warning(
+                    "HILP refinement timed out; returning the last solved policy "
+                    "(rounds=%d, expanded_nodes=%d).",
+                    solved_expansion_rounds, solved_expanded_nodes, exc_info=True,
+                )
                 solver_limit_hit = True
-                needs_final_solve = False
                 break
             if (
-                candidate_result.status == "time_limit"
-                and _selected_root_variable(candidate_result, candidate_tree) is None
-                and partial_tree is not None
-                and partial_result is not None
+                candidate_solution.status == "time_limit"
+                and _selected_root_variable(candidate_solution, candidate_tree) is None
+                and partial_ilp is not None
+                and solution is not None
             ):
+                logger.warning(
+                    "HILP solve reached its time limit without a root incumbent; "
+                    "returning the last solved policy (rounds=%d, expanded_nodes=%d).",
+                    solved_expansion_rounds, solved_expanded_nodes,
+                )
                 solver_limit_hit = True
-                needs_final_solve = False
                 break
-            partial_tree, partial_result = candidate_tree, candidate_result
+            partial_ilp, solution = candidate_tree, candidate_solution
             solved_frontier_f = dict(frontier_f)
             solved_expanded_nodes = len(expanded_e)
             solved_expansion_rounds = expansion_rounds
-            needs_final_solve = False
-            if partial_result.status == "time_limit":
+            if solution.status == "time_limit":
                 solver_limit_hit = True
                 break
-            # Algorithm 3: solve over E U F, then refine only incumbent leaves.
-            # Descendants behind F are the implicit N set until materialized.
-            # Algorithm 3 每轮在 E∪F 上求解，只细化 incumbent 选中的 frontier；
-            # F 后尚未实体化的后代就是隐式集合 N。
+            if not frontier_f or (
+                self.expansion_rounds is not None
+                and expansion_rounds >= self.expansion_rounds
+            ):
+                break
+            # Algorithm 3, lines 12-17: refine selected frontier histories.
+            # / 论文第 12-17 行：只细化当前解选中的 frontier 历史。
             selected = self._selected_frontier(
-                partial_tree,
-                partial_result,
+                partial_ilp,
+                solution,
                 frontier_f,
             )
             if not selected:
                 break
             expansion_rounds += 1
             for var_id, item in selected:
-                frontier_record = frontier_records[var_id]
-                if frontier_record.policy_expansion is None:
+                expanded_item = frontier_records[var_id].policy_expansion
+                if expanded_item is None:
                     # The p-ILP selected this lazy leaf. Only now run the full
                     # Algorithm-2 observation/duration expansion and publish
                     # its children. / incumbent 选中后才完整生成 observation、
                     # duration 分支和 children。
-                    frontier_record = _materialized_frontier_leaf_record(
-                        item,
-                        interface,
-                        duration_evaluator,
-                        heuristic=self.frontier_heuristic,
-                        terminal_heuristic=self.terminal_heuristic,
+                    expanded_item = expand_frontier_item(
+                        item, interface, duration_evaluator,
                     )
-                    frontier_records[var_id] = frontier_record
-                expanded_item = frontier_record.policy_expansion
-                if expanded_item is None:
-                    raise RuntimeError("Selected frontier was not materialized.")
+                    if self.terminal_heuristic and self.frontier_heuristic is not None:
+                        expanded_item = apply_terminal_heuristic(
+                            item, expanded_item, interface, self.frontier_heuristic,
+                        )
+                # F -> E: replace (h_q^u, h_q^r) by (u_q, r_q).
+                # / 从 F 移入 E：用实际系数替换估值，随后编码各观测的后续动作。
                 del frontier_f[var_id]
-                expanded_e[var_id] = Algorithm1ExpansionRecord(
+                expanded_record = HistoryRecord(
                     var_id=var_id,
                     item=item,
-                    expanded=expanded_item,
+                    ilp_metrics=expanded_item.metrics,
                     continues=bool(expanded_item.child_frontier),
                     policy_expansion=expanded_item,
                 )
-                pending_expanded.append(expanded_e[var_id])
+                frontier_records[var_id] = expanded_record
+                expanded_e.add(var_id)
+                pending_expanded.append(expanded_record)
                 for child in expanded_item.child_frontier:
                     child_var_id = _action_var_id(child)
                     if child_var_id not in expanded_e and child_var_id not in frontier_f:
                         frontier_f[child_var_id] = child
                         pending_frontier.append(child)
-            needs_final_solve = True
 
-        if partial_tree is None or partial_result is None or needs_final_solve:
-            try:
-                candidate_tree, candidate_result = self._solve_partial_policy_ilp(
-                    interface,
-                    duration_evaluator,
-                    ilp_builder=ilp_builder,
-                    expanded_records=pending_expanded,
-                    frontier=pending_frontier,
-                    frontier_records=frontier_records,
-                    ilp_session=ilp_session,
-                    warm_start=(
-                        partial_result.variable_values
-                        if partial_result is not None
-                        else None
-                    ),
-                    solver_deadline=solver_deadline,
-                    timing_totals=timing_totals,
-                )
-            except TimeoutError:
-                if partial_tree is None or partial_result is None:
-                    raise
-                solver_limit_hit = True
-            else:
-                if (
-                    candidate_result.status == "time_limit"
-                    and _selected_root_variable(candidate_result, candidate_tree) is None
-                    and partial_tree is not None
-                    and partial_result is not None
-                ):
-                    solver_limit_hit = True
-                else:
-                    partial_tree, partial_result = candidate_tree, candidate_result
-                    solved_frontier_f = dict(frontier_f)
-                    solved_expanded_nodes = len(expanded_e)
-                    solved_expansion_rounds = expansion_rounds
-                    solver_limit_hit = (
-                        solver_limit_hit or partial_result.status == "time_limit"
-                    )
-        solved_frontier = (
-            solved_frontier_f if solved_frontier_f is not None else frontier_f
+        return self._build_decision(
+            partial_ilp,
+            solution,
+            solved_frontier=solved_frontier_f if solved_frontier_f is not None else frontier_f,
+            frontier_records=frontier_records,
+            solved_expanded_nodes=solved_expanded_nodes,
+            solved_expansion_rounds=solved_expansion_rounds,
+            solver_limit_hit=solver_limit_hit,
+            timing_totals=timing_totals,
         )
-        selected_root = _selected_root_variable(partial_result, partial_tree)
+
+    def _build_decision(
+        self,
+        partial_ilp: PolicyTreeILP,
+        solution: ILPSolveResult,
+        *,
+        solved_frontier: Mapping[str, FrontierItem],
+        frontier_records: Mapping[str, HistoryRecord],
+        solved_expanded_nodes: int,
+        solved_expansion_rounds: int,
+        solver_limit_hit: bool,
+        timing_totals: Mapping[str, float],
+    ) -> ActionDecision:
+        """Extract the last solved policy and report its search certificate.
+
+        / 从最后一次已求解的树提取策略、判断完整性；不改变搜索或 ILP。
+        """
+        selected_root = _selected_root_variable(solution, partial_ilp)
         if selected_root is None:
-            if partial_result.status == "time_limit":
+            if solution.status == "time_limit":
                 raise TimeoutError(
                     "Gurobi reached the HILP wall budget before finding "
                     "a root incumbent."
                 )
             raise RuntimeError(
                 "Gurobi HILP partial-tree ILP did not select a root action. "
-                f"status={partial_result.status}"
+                f"status={solution.status}"
             )
-        selected_item = partial_tree.variable_items[selected_root]
+        selected_item = partial_ilp.variable_items[selected_root]
         selected_frontier = self._selected_frontier(
-            partial_tree,
-            partial_result,
+            partial_ilp,
+            solution,
             solved_frontier,
         )
         refinement_exhausted = not selected_frontier
-        globally_expandable = self._globally_expandable_frontier(
-            partial_tree,
+        globally_expandable_count = self._count_globally_expandable_frontier(
+            partial_ilp,
             solved_frontier,
             frontier_records,
         )
         certifying_utility_bound = (
-            not globally_expandable
+            not globally_expandable_count
             or bool(self.frontier_heuristic and self.frontier_heuristic.upper_bound)
         )
-        policy = extract_conditional_policy(partial_tree, partial_result)
+        policy = extract_conditional_policy(partial_ilp, solution)
         search_complete = (
-            partial_result.status == "optimal"
+            solution.status == "optimal"
             and not solver_limit_hit
             and refinement_exhausted
             and certifying_utility_bound
@@ -342,7 +329,7 @@ class HILPPlanner:
             value=float(
                 achieved_utility
                 if achieved_utility is not None
-                else (partial_result.objective_value or 0.0)
+                else (solution.objective_value or 0.0)
             ),
             complete=search_complete,
             value_kind=(
@@ -358,13 +345,13 @@ class HILPPlanner:
                 "gurobi_model_update_ms": timing_totals["gurobi_model_update_ms"],
                 "gurobi_optimize_ms": timing_totals["gurobi_optimize_ms"],
                 "partial_ilp_solves": timing_totals["partial_ilp_solves"],
-                "ilp_variables": float(len(partial_tree.spec.variables)),
-                "ilp_constraints": float(len(partial_tree.spec.constraints)),
+                "ilp_variables": float(len(partial_ilp.spec.variables)),
+                "ilp_constraints": float(len(partial_ilp.spec.constraints)),
                 "expanded_nodes": float(solved_expanded_nodes),
                 "frontier_nodes": float(len(solved_frontier)),
                 "expansion_rounds": float(solved_expansion_rounds),
                 "frontier_refinement_exhausted": 1.0 if refinement_exhausted else 0.0,
-                "global_expandable_frontier": float(len(globally_expandable)),
+                "global_expandable_frontier": float(globally_expandable_count),
                 "certifying_utility_bound": 1.0 if certifying_utility_bound else 0.0,
                 "solver_time_limit_hit": 1.0 if solver_limit_hit else 0.0,
             },
@@ -377,9 +364,9 @@ class HILPPlanner:
         duration_evaluator: HistoryDurationEvaluator,
         *,
         ilp_builder: IncrementalPartialTreeILP,
-        expanded_records: list[Algorithm1ExpansionRecord],
+        expanded_records: list[HistoryRecord],
         frontier: list[FrontierItem],
-        frontier_records: dict[str, Algorithm1ExpansionRecord],
+        frontier_records: dict[str, HistoryRecord],
         ilp_session: GurobiILPSession,
         warm_start: Mapping[str, float] | None,
         solver_deadline: float | None,
@@ -398,7 +385,7 @@ class HILPPlanner:
         """
 
         build_started_at = perf_counter()
-        new_frontier_records: list[Algorithm1ExpansionRecord] = []
+        new_frontier_records: list[HistoryRecord] = []
         for item in frontier:
             var_id = _action_var_id(item)
             record = _frontier_leaf_record(
@@ -447,8 +434,8 @@ class HILPPlanner:
 
     def _selected_frontier(
         self,
-        partial_tree: PolicyTreeILP,
-        partial_result: ILPSolveResult,
+        partial_ilp: PolicyTreeILP,
+        solution: ILPSolveResult,
         frontier: Mapping[str, FrontierItem],
     ) -> tuple[tuple[str, FrontierItem], ...]:
         r"""Return every frontier history selected by the current p-ILP.
@@ -462,8 +449,8 @@ class HILPPlanner:
         / 严格对应 Algorithm 3：先筛选 p-ILP 中 ``x_q>0`` 的 frontier，再在
         该集合内按 heuristic 排序并应用批量宽度。
         """
-        frontier_ids = set(partial_tree.frontier_variable_ids)
-        incumbent_ids = set(partial_result.selected_variables)
+        frontier_ids = set(partial_ilp.frontier_variable_ids)
+        incumbent_ids = set(solution.selected_variables)
         incumbent_frontier = [
             (var_id, item)
             for var_id, item in frontier.items()
@@ -477,7 +464,7 @@ class HILPPlanner:
             # The p-ILP objective coefficient is $$h_q^u$$ for frontier leaves,
             # so it is also the greedy expansion score. / frontier 的目标系数就是
             # $$h_q^u$$，也是贪心展开分数。
-            score = float(partial_tree.spec.objective.get(var_id, 0.0))
+            score = float(partial_ilp.spec.objective.get(var_id, 0.0))
             selected.append((score, _is_noop_item(item), var_id, item))
         # Expand the frontier with the largest heuristic utility.  A
         # deterministic tie-break keeps no-op after real actions when scores are
@@ -495,26 +482,26 @@ class HILPPlanner:
         return tuple((var_id, item) for _, _, var_id, item in selected)
 
     @staticmethod
-    def _globally_expandable_frontier(
-        partial_tree: PolicyTreeILP,
+    def _count_globally_expandable_frontier(
+        partial_ilp: PolicyTreeILP,
         frontier: Mapping[str, FrontierItem],
-        frontier_records: Mapping[str, Algorithm1ExpansionRecord],
-    ) -> tuple[tuple[str, FrontierItem], ...]:
-        """Return every frontier with materializable descendants.
+        frontier_records: Mapping[str, HistoryRecord],
+    ) -> int:
+        """Count frontier histories with materializable descendants.
 
-        This set is deliberately independent of the incumbent. It is used for
+        This count is deliberately independent of the incumbent. It is used for
         completeness certification and therefore also ignores an explicit
         decision-step cap: a duration-feasible child beyond that cap remains
         part of the paper's problem.
 
-        / 返回所有仍有可生成后代的 frontier。该集合与 incumbent 无关，用于
+        / 统计所有仍有可生成后代的 frontier。该计数与 incumbent 无关，用于
         完整性认证；即使显式 decision-step cap 之外仍有 duration-feasible
         child，它仍属于论文所定义的问题。
         """
-        frontier_ids = set(partial_tree.frontier_variable_ids)
-        return tuple(
-            (var_id, item)
-            for var_id, item in frontier.items()
+        frontier_ids = set(partial_ilp.frontier_variable_ids)
+        return sum(
+            1
+            for var_id in frontier
             if var_id in frontier_ids
             and (
                 frontier_records[var_id].policy_expansion is None
@@ -532,139 +519,61 @@ def _frontier_leaf_record(
     *,
     heuristic: UtilityHeuristic | None,
     terminal_heuristic: bool,
-) -> Algorithm1ExpansionRecord:
-    """Return a p-ILP leaf, deferring children when its heuristic is unconditional.
+) -> HistoryRecord:
+    r"""Build one F record with coefficients (h_q^u, h_q^r).
 
-    With ``terminal_heuristic=True`` every frontier leaf uses :math:`h_q`, so
-    the p-ILP needs only that objective coefficient and the one-step risk.
-    Full Algorithm-2 materialization is postponed until the incumbent selects
-    the leaf. Other configurations retain the eager path because they must
-    inspect continuation branches before deciding between :math:`h_q` and
-    :math:`u_q`.
+    When terminal leaves also use the heuristic, defer Expand until x_q=1.
+    Otherwise inspect the branches now: continuing leaves use h_q^u, stopped
+    leaves keep u_q. The one-step first-failure coefficient bounds future risk.
+    Without a heuristic, u_q is a non-certifying fallback for h_q^u.
 
-    / 终端也使用启发式时，frontier 先只算 h_q 与一步风险，选中后才展开；
-    否则先判断哪些观测继续，再决定使用 h_q 还是 u_q。
+    / 生成 F 中的一条记录：终端也使用启发式时，只计算估值，待 x_q=1
+    后才展开；否则先检查分支，继续节点用 h_q^u，停止节点保留 u_q。
+    一步首次失败概率作为风险下界；没有启发式时，u_q 不保证是效用上界。
     """
-    if heuristic is not None and terminal_heuristic:
-        return _lazy_frontier_leaf_record(item, interface, heuristic=heuristic)
-    return _materialized_frontier_leaf_record(
-        item,
-        interface,
-        duration_evaluator,
-        heuristic=heuristic,
-        terminal_heuristic=terminal_heuristic,
-    )
+    var_id = _action_var_id(item)
+    policy_expansion = None
+    if heuristic is None or not terminal_heuristic:
+        policy_expansion = expand_frontier_item(item, interface, duration_evaluator)
+        if heuristic is None or not any(
+            branch.should_expand for branch in policy_expansion.observation_frontiers
+        ):
+            return HistoryRecord(
+                var_id=var_id,
+                item=item,
+                ilp_metrics=policy_expansion.metrics,
+                continues=False,
+                policy_expansion=policy_expansion,
+            )
 
-
-def _lazy_frontier_leaf_record(
-    item: FrontierItem,
-    interface: ANDORSearchInterface,
-    *,
-    heuristic: UtilityHeuristic,
-) -> Algorithm1ExpansionRecord:
-    """Evaluate frontier coefficients without observations or children. / 不生成观测与后代，仅计算 frontier 系数。"""
     action = item.node.assignment
     if action is None:
         raise ValueError("A frontier action node has no action assignment.")
     kernel = interface.kernel
     if kernel is None:
         raise ValueError("An external HILP heuristic requires a finite kernel.")
-    utility = history_heuristic_coefficient(
+    h_u_q = history_heuristic_coefficient(
         heuristic,
         state_mass=item.ordinary_mass,
         action_label=item.action_label,
         action=action,
         non_fluents=kernel.non_fluents,
     )
-    metrics = evaluate_frontier_leaf_metrics(
-        item,
-        interface,
-        utility=utility,
+    metrics = ExpansionMetrics(
+        utility=h_u_q,
+        chance_risk=(
+            kernel.first_failure_coefficient(item.safe_mass, action)
+            if policy_expansion is None
+            else policy_expansion.metrics.chance_risk
+        ),
     )
-    placeholder = ExpandedAction(
-        child_frontier=(),
-        observation_frontiers=(),
-        metrics=metrics,
-    )
-    return Algorithm1ExpansionRecord(
-        var_id=_action_var_id(item),
-        item=item,
-        expanded=placeholder,
-        continues=False,
-    )
-
-
-def _materialized_frontier_leaf_record(
-    item: FrontierItem,
-    interface: ANDORSearchInterface,
-    duration_evaluator: HistoryDurationEvaluator,
-    *,
-    heuristic: UtilityHeuristic | None,
-    terminal_heuristic: bool,
-) -> Algorithm1ExpansionRecord:
-    r"""Return one p-ILP frontier record.
-
-    An external callback supplies a state utility-to-go.  DARP owns the paper's
-    probability weighting and replaces the frontier objective coefficient with
-
-    $$h_q^u=\sum_s \rho(q)b_q(s)h(s,a_q).$$
-
-    Risk remains Algorithm 2's one-step coefficient. Without a callback,
-    the one-step utility is a deliberately simple, non-certifying fallback.
-    ``terminal_heuristic`` reproduces the paper Grid experiment's convention of
-    using the same heuristic at a leaf. For stochastic duration, terminal
-    observation branches are weighted separately when sibling branches continue.
-    The callback must return the intended value (normally zero) for model-terminal
-    states. Otherwise leaves retain RDDL reward.
-
-    / 从真实 Expand 结果构建 frontier：继续分支用概率加权 h_q^u 替换 u_q，
-    风险仍用首次失败的一步系数；终端效用遵循实验约定，不改变风险定义。
-    """
-    var_id = _action_var_id(item)
-    policy_expansion = expand_frontier_item(item, interface, duration_evaluator)
-    continuation_flags = tuple(
-        branch.should_expand for branch in policy_expansion.observation_frontiers
-    )
-    exact_expansion = (
-        apply_terminal_heuristic(item, policy_expansion, interface, heuristic)
-        if terminal_heuristic and heuristic is not None
-        else policy_expansion
-    )
-    expanded = exact_expansion
-    has_continuation = any(continuation_flags)
-    use_heuristic = heuristic is not None and has_continuation
-    if use_heuristic:
-        action = item.node.assignment
-        if action is None:
-            raise ValueError("A frontier action node has no action assignment.")
-        kernel = interface.kernel
-        if kernel is None:
-            raise ValueError("An external HILP heuristic requires a finite kernel.")
-        utility = history_heuristic_coefficient(
-            heuristic,
-            state_mass=item.ordinary_mass,
-            action_label=item.action_label,
-            action=action,
-            non_fluents=kernel.non_fluents,
-        )
-        expanded = replace(
-            exact_expansion,
-            metrics=replace(
-                exact_expansion.metrics,
-                utility=utility,
-            ),
-        )
-    return Algorithm1ExpansionRecord(
+    return HistoryRecord(
         var_id=var_id,
         item=item,
-        expanded=expanded,
+        ilp_metrics=metrics,
         continues=False,
-        # A nonterminal frontier is not an executable policy leaf, so policy
-        # validation must inspect its observation branches. At a duration
-        # boundary, the optional terminal heuristic is the experiment's actual
-        # terminal objective and must therefore be included in achieved utility.
-        # 非终止 frontier 尚不可执行；时长终点的启发式则是实验定义的真实终端效用。
-        policy_expansion=exact_expansion,
+        # Keep actual branches separate from the ILP estimate. / 真实分支与 ILP 估值分开保存。
+        policy_expansion=policy_expansion,
     )
 
 

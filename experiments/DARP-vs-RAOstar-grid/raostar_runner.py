@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 import subprocess
 import sys
@@ -17,6 +18,8 @@ from math import inf
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 CONSTRAINED_POMDP_URL = "https://github.com/ME-Msc/Constrained-POMDP.git"
 CONSTRAINED_POMDP_COMMIT = "d84d099493b973a63d879255d2221c1930d649aa"
@@ -126,6 +129,13 @@ def _resolve(source: _Source, explicit: Path | None, cache_root: Path) -> Path:
         except OSError:
             if not destination.exists():
                 raise
+            logger.debug(
+                "Baseline checkout rename failed; fallback will verify existing cache: "
+                "candidate=%s destination=%s",
+                candidate,
+                destination,
+                exc_info=True,
+            )
     return _verify(destination, source)
 
 

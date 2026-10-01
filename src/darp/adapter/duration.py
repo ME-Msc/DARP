@@ -228,8 +228,8 @@ def _state_mapping(state: Hashable) -> Mapping[str, Any]:
     if isinstance(state, tuple):
         try:
             return dict(state)
-        except (TypeError, ValueError):
-            pass
+        except (TypeError, ValueError) as error:
+            raise DurationExpressionError(f"Unsupported duration state key: {state!r}.") from error
     raise DurationExpressionError(f"Unsupported duration state key: {state!r}.")
 
 

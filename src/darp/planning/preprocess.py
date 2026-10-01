@@ -14,17 +14,28 @@ from darp.model.duration import DurationProgress
 
 @dataclass(frozen=True, eq=False)
 class FrontierItem:
-    """Track history q and its ordinary/safe probability flow.
+    r"""Hold action history qa with belief and masses at preceding history q.
 
-    / 保存动作历史 q；ordinary_mass 对应 rho(q)b_q，constraint_mass 对应
-    此前一直安全的联合概率质量。两者不应混用或再次乘历史概率。
+    ``ordinary_mass`` stores the paper's ordinary product
+    :math:`\rho^*(q)\tilde b^*_q(s)`, restricted to continuing episodes.
+    Its sum is the history/continuation probability; normalizing gives belief.
+    Safe mass additionally requires no failure up to and including q's state.
+
+    / 节点是动作历史 qa，belief 和概率质量属于此前观测历史 q。
+    ordinary_mass 保存论文普通概率乘积 rho*(q)·tilde b*_q(s)，并保留
+    继续执行事件的权重；归一化后才是 belief。safe_mass 还要求直到
+    q 的当前状态为止从未失败。
     """
 
     node: ANDORNode
     belief: Mapping[StateKey, float]
+    # History probability times ordinary posterior. / 历史概率乘普通后验。
     ordinary_mass: Mapping[StateKey, float]
-    constraint_mass: Mapping[StateKey, float]
+    # Joint mass of history and safety through q's state. / 此历史与直到 q 当前状态均安全的联合质量。
+    safe_mass: Mapping[StateKey, float]
+    # Root mass, then one continuing mass per observation. / 根质量及每次观测后仍继续的质量。
     ordinary_mass_trace: tuple[Mapping[StateKey, float], ...] = ()
+    # Observations leading to q, aligned with the mass trace. / 通向 q、与质量轨迹对齐的观测。
     observation_keys: tuple[ObservationKey, ...] = ()
     duration_progress: DurationProgress = field(default_factory=DurationProgress)
 
@@ -68,13 +79,13 @@ def initialize_root_frontier(
 
     # Unnormalised mass directly stores the history occurrence probability.
     # 未归一化概率质量直接保留历史发生概率。
-    root_ordinary_mass = kernel.continuing_mass(kernel.initial_constraint_mass(root_belief))
-    root_constraint_mass = kernel.continuing_mass(kernel.initial_safe_mass(root_belief))
+    root_ordinary_mass = kernel.continuing_mass(kernel.initial_ordinary_mass(root_belief))
+    root_safe_mass = kernel.continuing_mass(kernel.initial_safe_mass(root_belief))
     if not root_ordinary_mass:
         raise ValueError("The initial belief is already terminal; no action policy is required.")
     # Initial risk is still computed from the complete b0 by the ILP encoder.
     # / 根动作仅在尚未终止时执行，但初始风险仍按完整 b0 计入。
-    root_belief = kernel.constraint_mass_belief(root_ordinary_mass)
+    root_belief = kernel.normalize_mass(root_ordinary_mass)
 
     # Algorithm 1 lines 3-6: pop q=root from N and create qa for every action.
     # 论文第 3-6 行：从 N 取出 root observation history，并为每个 action 创建 qa。
@@ -84,7 +95,7 @@ def initialize_root_frontier(
             node=node,
             belief=root_belief,
             ordinary_mass=root_ordinary_mass,
-            constraint_mass=root_constraint_mass,
+            safe_mass=root_safe_mass,
             ordinary_mass_trace=(root_ordinary_mass,),
             observation_keys=(),
             duration_progress=DurationProgress(),
@@ -113,7 +124,7 @@ def resolve_root_belief(
         return None
     if root_belief is not None:
         return _normalize_root_belief(root_belief)
-    if interface.observation_scope.mode == "pomdp-observation":
+    if interface.observation_mode == "pomdp-observation":
         return _normalize_root_belief(
             interface.kernel.initial_belief_from_model()
         )

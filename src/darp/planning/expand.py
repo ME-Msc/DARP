@@ -20,20 +20,23 @@ from darp.planning.preprocess import FrontierItem
 
 @dataclass(frozen=True)
 class ExpansionMetrics:
-    r"""Store Algorithm 2 utility and CC-POMDP risk constants.
+    r"""Store utility/risk coefficients: actual values or frontier estimates.
 
     ``chance_risk`` is Lemma 3.3's safe-flow first-entry coefficient.
-    / ``chance_risk`` 是 Lemma 3.3 的安全概率流首次进入风险集系数。
+    ExpandedAction keeps actual values; HistoryRecord may hold F estimates.
+    / 保存效用与风险系数；chance_risk 是 Lemma 3.3 的首次失败系数。
+    ExpandedAction 保存实际值，HistoryRecord 中可以是 F 的估值。
     """
 
-    utility: float
-    chance_risk: float
+    utility: float  # u_q in E, h_u_q in F / 已展开效用或 frontier 估值。
+    chance_risk: float  # r_q in E, h_r_q in F / 首次失败风险或 frontier 下界。
 
 
 @dataclass(frozen=True)
 class ExpandedAction:
     """Store one expanded action node and child frontiers. / 保存展开后的 action 节点和子 frontier。"""
 
+    # Next action layer, reached through observations. / 经观测分支到达的下一层动作。
     child_frontier: tuple[FrontierItem, ...]
     metrics: ExpansionMetrics
     observation_frontiers: tuple[ObservationFrontier, ...] = ()
@@ -44,43 +47,10 @@ class ObservationFrontier:
     """Store one qao observation branch and its child actions. / 保存一个 qao observation 分支及其子 action。"""
 
     observation: ObservationKey
+    # Actions after this observation, not direct children of qa. / 此观测之后的动作，并非 qa 的直接子节点。
     child_frontier: tuple[FrontierItem, ...]
     should_expand: bool
     duration_stopped: bool
-
-
-def evaluate_frontier_leaf_metrics(
-    item: FrontierItem,
-    interface: ANDORSearchInterface,
-    *,
-    utility: float,
-) -> ExpansionMetrics:
-    """Combine a leaf utility with its risk without materializing children.
-
-    The caller supplies the frontier utility (normally :math:`h_q`); this
-    function computes only the active constraint coefficient. Observation
-    posteriors, duration branches, AND-OR nodes, one-step utility and child
-    actions are deliberately postponed until the incumbent selects the leaf.
-
-    / 调用方提供 frontier utility（通常为 :math:`h_q`）；这里只计算
-    risk，observation、duration、一步 utility 和 children 均延迟。
-    """
-    kernel = interface.kernel
-    if kernel is None:
-        raise ValueError("Paper frontier evaluation requires a finite kernel.")
-    action = item.node.assignment
-    if action is None:
-        raise ValueError("AND-OR action node has no action assignment.")
-
-    chance_risk = kernel.safe_constraint_coefficient_for_mass(
-        item.constraint_mass,
-        action,
-    )
-
-    return ExpansionMetrics(
-        utility=utility,
-        chance_risk=chance_risk,
-    )
 
 
 def apply_terminal_heuristic(
@@ -146,64 +116,49 @@ def expand_frontier_item(
 
     Line correspondence:
 
-    - Lines 1-4 compute ordinary observation support and CC-POMDP constants,
-      keeping the ordinary and safe-conditioned probability flows distinct:
-        $$
-            b_{qa}(s')=\sum_sT(s,a,s')b_q(s),\quad
-            u_{qa}=\rho(q)\,\mathbb E_{b_q}[U(s,a)],\quad
-            r_{qa}=\tilde\rho(q)\,r(b^{\mathrm{safe}}_q,a).
-        $$
-      DARP evaluates these values from pyRDDLGym grounded CPFs through its
-      finite kernel; ordinary beliefs support smoothing, while safe
-      beliefs support the chance constraint.
-
-    - Lines 5-9 compute observation branches and their occurrence probability:
-
-      $$\rho(qao)=\rho(q)Pr(o\mid q,a)$$
-
-      for utility, and
-
-      $$\tilde\rho(qao)=\tilde\rho(q)(1-r(b^{\mathrm{safe}}_q,a))
-        Pr(o\mid q,a,\mathrm{safe})$$
-
-      for chance risk.
-
-      DARP enumerates all finite observation outcomes and posterior beliefs.
-
-    - Lines 10-20 compute backward messages, smoothed beliefs, and the
-      durative stopping value $$\tau(qao)$$.
-
-    - Line 21 returns the ILP constants and child histories.
+    - Lines 1-4: compute u_qa from ordinary_mass and r_qa from safe_mass.
+      Equations 9-11's ordinary product $$\rho^*(q)\tilde b^*_q(s)$$ is
+      stored directly, with continuing-event restriction. For state-action
+      reward, ``u_qa = sum_s ordinary_mass[s] * U(s,a)``; the kernel also
+      handles successor-dependent RDDL rewards. Lemma 3.3's first-failure
+      coefficient is ``r_qa = sum_s safe_mass[s] * sum_risky_s' T(s,a,s')``;
+      safe_mass requires safety through q's current state.
+    - Lines 5-9: propagate ordinary/safe mass through each observation.
+      Retain continuing states without rescaling either mass; normalize
+      ordinary mass to obtain b_qao. Safe propagation also removes failures.
+    - Lines 10-20: update duration, using backward smoothing where needed,
+      and decide whether the qao branch continues.
+    - Line 21: return the ILP constants and the next action layer through qao.
 
     / 显式实现论文 Algorithm 2：从 grounded CPF 枚举 transition 与
-    observation；函数会计算 full-ILP 所需的 $$u_q$$、$$r_q$$、$$\rho(qao)$$、$$\tilde\rho(qao)$$ 与 $$\tau(qao)$$
+    observation；普通质量保存历史概率乘后验，安全质量还要求直到当前
+    状态均未失败；两者均保留继续执行权重，计算 $$u_{qa}$$、$$r_{qa}$$ 与 $$\tau(qao)$$。
     """
     kernel = interface.kernel
     if kernel is None:
         raise ValueError("Paper Expand requires a finite kernel.")
 
-    b_q = item.belief
+    # item.node is qa; its belief and masses still describe the preceding q.
+    # / item.node 是 qa，belief 和概率质量仍属于此前观测历史 q。
     ordinary_mass_q = item.ordinary_mass
-    constraint_mass_q = item.constraint_mass
-    a_q = item.node.assignment
-    if a_q is None:
+    safe_mass_q = item.safe_mass
+    action = item.node.assignment
+    if action is None:
         raise ValueError("AND-OR action node has no action assignment.")
-    u_qa = kernel.utility_coefficient_for_mass(ordinary_mass_q, a_q)
-    ordinary_mass_qa = kernel.expand_ordinary_mass(ordinary_mass_q, a_q)
-    constraint_qa = kernel.expand_safe_constraint_mass(
-        constraint_mass_q, a_q
-    )
-    r_qa = constraint_qa.coefficient
+    u_qa = kernel.utility_coefficient_for_mass(ordinary_mass_q, action)
+    ordinary_qa = kernel.expand_ordinary_mass(ordinary_mass_q, action)
+    safe_qa = kernel.expand_safe_mass(safe_mass_q, action)
+    r_qa = safe_qa.coefficient
 
-    constraint_outcomes = {
-        outcome.observation: outcome for outcome in constraint_qa.observations
+    safe_outcomes = {
+        outcome.observation: outcome for outcome in safe_qa.observations
     }
 
     # Lines 5-20: enumerate every qao branch and attach the next action frontier.
     # 第 5-20 行：枚举每个 $$qao$$ 分支，分别传播普通/安全概率、计算 smoothed belief 和 $$\tau(qao)$$。
     branches: list[ObservationFrontier] = []
     next_frontier: list[FrontierItem] = []
-    for ordinary_outcome in ordinary_mass_qa.observations:
+    for ordinary_outcome in ordinary_qa.observations:
         observation = ordinary_outcome.observation
         qao_node = interface.observation_node(item.node, ordinary_outcome.label)
         ordinary_mass_qao = kernel.continuing_mass(ordinary_outcome.state_mass)
@@ -212,69 +167,28 @@ def expand_frontier_item(
             # / 环境已结束：保留叶边和最后一步 reward/risk，不再要求累计 duration 达到 h。
             branches.append(ObservationFrontier(observation, (), False, False))
             continue
-        b_qao = kernel.constraint_mass_belief(ordinary_mass_qao)
-        constraint_outcome = constraint_outcomes.get(observation)
-        constraint_mass_qao = kernel.continuing_mass(
-            constraint_outcome.state_mass if constraint_outcome is not None else {}
+        b_qao = kernel.normalize_mass(ordinary_mass_qao)
+        safe_outcome = safe_outcomes.get(observation)
+        safe_mass_qao = kernel.continuing_mass(
+            safe_outcome.state_mass if safe_outcome is not None else {}
         )
         observation_keys_qao = item.observation_keys + (
             observation,
         )  # Complete observation sequence / 完整观测序列 o_1..o_k。
         ordinary_mass_trace_qao = item.ordinary_mass_trace + (ordinary_mass_qao,)
 
-        # Lines 10-20 after the backward messages: compute duration from
-        # smoothed action-start beliefs.  For action a_i, D(S_i,a_i) uses
-        # $$Pr(S_i | qao)$$, not just the forward belief before observing $$q_{>i}$$.
-        # 第 10-20 行后半段：用 smoothed action-start belief 计算 duration；
-        # 对动作 $$a_i$$，应使用 $$Pr(S_i | qao)$$，即已吸收未来观测信息后的 belief。
-        if isinstance(duration_evaluator.model, FixedDurationModel):
-            # Fixed duration is history-independent, so Algorithm 2's
-            # backward smoothing cannot change tau. Carry one sufficient
-            # statistic instead of recomputing the whole history per outcome.
-            # 固定时长只需 O(1) 累加，无需为每个 observation 重跑整段 backward smoothing。
-            duration_qao = item.duration_progress.add(
-                duration_evaluator.model.estimate(
-                    b_q,
-                    item.action_label,
-                )
-            )
-        elif isinstance(duration_evaluator.model, ChanceConstrainedDurationModel):
-            # Paper Sec. 3 chance-constrained duration: propagate the
-            # posterior over augmented states (s, g), g being elapsed duration.
-            # State marginals or a scalar expected duration cannot preserve the
-            # correlation needed by Pr(G_q < h | q).
-            # 传播状态与累计时长的联合后验；仅用状态边缘分布或平均时长会丢失相关性。
-            duration_qao = _advance_augmented_duration_belief(
-                kernel=kernel,
-                model=duration_evaluator.model,
-                progress=item.duration_progress,
-                current_state_mass=ordinary_mass_q,
-                action_label=item.action_label,
-                action_assignment=a_q,
-                observation=observation,
-                next_state_support=ordinary_mass_qao,
-            )
-        else:
-            actions_qa = item.node.history.actions
-            action_assignments_qa = _action_assignments_for_history(
-                interface, actions_qa
-            )
-            smoothed_beliefs_qao = _algorithm2_backward_and_smoothed_beliefs(
-                kernel=kernel,
-                actions=actions_qa,
-                action_assignments=action_assignments_qa,
-                observations=observation_keys_qao,
-                filtered_masses=ordinary_mass_trace_qao,
-            )
-            duration_qao = _algorithm2_duration_from_smoothed_beliefs(
-                actions=actions_qa,
-                smoothed_beliefs=smoothed_beliefs_qao,
-                duration_evaluator=duration_evaluator,
-            )
-        expand_qao = duration_evaluator.model.should_continue(
-            duration_qao,
-            duration_evaluator.horizon,
-            duration_evaluator.zeta,
+        # Lines 10-20: duration and continuation for this qao branch.
+        # / 第 10-20 行：计算此 qao 分支的时长及是否继续。
+        duration_qao, expand_qao = _duration_continuation(
+            item=item,
+            interface=interface,
+            kernel=kernel,
+            duration_evaluator=duration_evaluator,
+            action=action,
+            observation=observation,
+            ordinary_mass_qao=ordinary_mass_qao,
+            ordinary_mass_trace_qao=ordinary_mass_trace_qao,
+            observation_keys_qao=observation_keys_qao,
         )
         # Only live trajectories reach the next decision; their belief includes done=False.
         # / 下一次决策已知环境未结束；只归一化 belief，不归一化 history mass。
@@ -284,7 +198,7 @@ def expand_frontier_item(
             should_expand=expand_qao,
             belief=b_qao,
             ordinary_mass=ordinary_mass_qao,
-            constraint_mass=constraint_mass_qao,
+            safe_mass=safe_mass_qao,
             ordinary_mass_trace=ordinary_mass_trace_qao,
             observation_keys=observation_keys_qao,
             duration_progress=duration_qao,
@@ -294,8 +208,8 @@ def expand_frontier_item(
                 observation=observation,
                 child_frontier=child_actions,
                 should_expand=expand_qao,
-        # Model-terminal-only outcomes were retained as leaves above.
-        # 仅含模型终止状态的观测结果已在上面保留为叶节点。
+                # Model-terminal-only outcomes were retained as leaves above.
+                # 仅含模型终止状态的观测结果已在上面保留为叶节点。
                 duration_stopped=not expand_qao,
             )
         )
@@ -310,6 +224,72 @@ def expand_frontier_item(
         metrics=metrics,
         observation_frontiers=tuple(branches),
     )
+
+
+def _duration_continuation(
+    *,
+    item: FrontierItem,
+    interface: ANDORSearchInterface,
+    kernel: RDDLKernel,
+    duration_evaluator: HistoryDurationEvaluator,
+    action: Mapping[str, Any],
+    observation: ObservationKey,
+    ordinary_mass_qao: Mapping[StateKey, float],
+    ordinary_mass_trace_qao: tuple[Mapping[StateKey, float], ...],
+    observation_keys_qao: tuple[ObservationKey, ...],
+) -> tuple[DurationProgress, bool]:
+    """Compute duration and continuation after observing qao.
+
+    Fixed duration carries an O(1) sum; chance duration carries the joint
+    state/elapsed-time posterior; other models use smoothed action-start
+    beliefs Pr(S_i | qao).
+
+    / 固定时长按 O(1) 累加；机会约束时长传播状态与累计时长的联合后验；
+    其他模型用吸收后续观测的动作起始平滑信念 Pr(S_i | qao)。
+    """
+    if isinstance(duration_evaluator.model, FixedDurationModel):
+        duration_qao = item.duration_progress.add(
+            duration_evaluator.model.estimate(
+                item.belief,
+                item.action_label,
+            )
+        )
+    elif isinstance(duration_evaluator.model, ChanceConstrainedDurationModel):
+        # Preserve state/time correlation for Pr(G_q < h | q).
+        # / 保留 Pr(G_q < h | q) 所需的状态与累计时长相关性。
+        duration_qao = _advance_augmented_duration_belief(
+            kernel=kernel,
+            model=duration_evaluator.model,
+            progress=item.duration_progress,
+            current_state_mass=item.ordinary_mass,
+            action_label=item.action_label,
+            action_assignment=action,
+            observation=observation,
+            next_state_support=ordinary_mass_qao,
+        )
+    else:
+        actions_qa = item.node.history.actions
+        action_assignments_qa = _action_assignments_for_history(
+            interface, actions_qa
+        )
+        smoothed_beliefs_qao = _algorithm2_backward_and_smoothed_beliefs(
+            kernel=kernel,
+            actions=actions_qa,
+            action_assignments=action_assignments_qa,
+            observations=observation_keys_qao,
+            filtered_masses=ordinary_mass_trace_qao,
+        )
+        duration_qao = _algorithm2_duration_from_smoothed_beliefs(
+            actions=actions_qa,
+            smoothed_beliefs=smoothed_beliefs_qao,
+            duration_evaluator=duration_evaluator,
+        )
+    expand_qao = duration_evaluator.model.should_continue(
+        duration_qao,
+        duration_evaluator.horizon,
+        duration_evaluator.zeta,
+    )
+    return duration_qao, expand_qao
 
 
 def _algorithm2_backward_and_smoothed_beliefs(
@@ -533,7 +513,7 @@ def _child_frontier(
     should_expand: bool,
     belief: Mapping[Any, float],
     ordinary_mass: Mapping[StateKey, float],
-    constraint_mass: Mapping[StateKey, float],
+    safe_mass: Mapping[StateKey, float],
     ordinary_mass_trace: tuple[Mapping[StateKey, float], ...],
     observation_keys: tuple[ObservationKey, ...],
     duration_progress: DurationProgress,
@@ -547,7 +527,7 @@ def _child_frontier(
             node=child,
             belief=belief,
             ordinary_mass=ordinary_mass,
-            constraint_mass=constraint_mass,
+            safe_mass=safe_mass,
             ordinary_mass_trace=ordinary_mass_trace,
             observation_keys=observation_keys,
             duration_progress=duration_progress,
@@ -560,8 +540,8 @@ def _action_assignments_for_history(
     interface: ANDORSearchInterface,
     action_labels: Sequence[str],
 ) -> tuple[Mapping[str, Any], ...]:
-    """Return action assignments aligned with history labels. / 返回与 history action 标签对齐的 action assignment。"""
-    by_label = {choice.label: dict(choice.assignment) for choice in interface.actions}
+    """Reuse read-only action assignments in history order. / 按 history 标签顺序复用只读 action assignment。"""
+    by_label = {choice.label: choice.assignment for choice in interface.actions}
     assignments: list[Mapping[str, Any]] = []
     for label in action_labels:
         if label not in by_label:

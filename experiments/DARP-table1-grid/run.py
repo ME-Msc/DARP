@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import csv
 import gc
+import logging
 from itertools import product
 from pathlib import Path
 from statistics import fmean
@@ -21,6 +22,8 @@ from darp.adapter.loader import load_rddl
 from darp.executor import PolicyExecutor
 from darp.planning.heuristic import HeuristicInput, UtilityHeuristic
 from darp.solve import DARPResult, solve_rddl
+
+logger = logging.getLogger(__name__)
 
 EXPERIMENT_DIR = Path(__file__).resolve().parent
 RDDL_DIR = EXPERIMENT_DIR / "rddl"
@@ -444,6 +447,17 @@ def main() -> int:
                 )
                 row["result_file"] = result_path.relative_to(output.parent).as_posix()
             except Exception as error:
+                logger.exception(
+                    "Table 1 trial failed; continuing matrix: model=%s horizon=%s "
+                    "delta=%s planner=%s trial=%s seed=%s result_path=%s",
+                    model,
+                    horizon,
+                    delta,
+                    planner,
+                    trial,
+                    seed,
+                    result_path,
+                )
                 # Keep the rest of the long matrix runnable.
                 # 单配置失败仍记录并继续其余配置，避免长实验被中断。
                 row = _error_row(

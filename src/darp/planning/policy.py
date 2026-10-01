@@ -157,7 +157,7 @@ def extract_conditional_policy(
     leaf_histories: set[ObservationHistory] = set()
     selected_edges: dict[str, set[str]] = {}
     utility_terms: list[float] = []
-    constraint_terms: list[float] = []
+    risk_terms: list[float] = []
 
     for variable_id in sorted(selected):
         item = tree.variable_items.get(variable_id)
@@ -194,7 +194,7 @@ def extract_conditional_policy(
 
         metrics = expansion.metrics
         utility_terms.append(float(metrics.utility))
-        constraint_terms.append(float(metrics.chance_risk))
+        risk_terms.append(float(metrics.chance_risk))
 
         for branch_index, branch in enumerate(expansion.observation_frontiers):
             if not branch.should_expand:
@@ -244,23 +244,23 @@ def extract_conditional_policy(
     achieved_utility = sum(utility_terms) if duration_complete else None
     if achieved_utility is not None and not isfinite(achieved_utility):
         raise ValueError("Selected policy utility must be finite.")
-    active_constraint = tree.initial_chance_risk + sum(constraint_terms)
+    policy_risk = tree.initial_risk + sum(risk_terms)
 
-    if not isfinite(active_constraint) or active_constraint < 0.0:
+    if not isfinite(policy_risk) or policy_risk < 0.0:
         raise ValueError(
             f"Constraint coefficient sum must be finite and non-negative: "
-            f"{active_constraint!r}"
+            f"{policy_risk!r}"
         )
-    active_constraint_value = active_constraint if duration_complete else None
-    budget = tree.constraint_budget
+    active_constraint_value = policy_risk if duration_complete else None
+    risk_budget = tree.risk_budget
     feasible = (
         None
         if not duration_complete
-        else budget is None
-        or active_constraint <= budget
+        else risk_budget is None
+        or policy_risk <= risk_budget
         # Match Gurobi's default absolute row-feasibility tolerance.
         # / 与 Gurobi 默认的线性约束绝对可行性容差保持一致。
-        or isclose(active_constraint, budget, rel_tol=0.0, abs_tol=1e-6)
+        or isclose(policy_risk, risk_budget, rel_tol=0.0, abs_tol=1e-6)
     )
     if () not in actions_by_history:
         raise ValueError("Selected ILP incumbent has no root policy rule.")

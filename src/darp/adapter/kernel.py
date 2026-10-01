@@ -49,8 +49,8 @@ class KernelError(ValueError):
 
 
 @dataclass(frozen=True)
-class ConstraintMassOutcome:
-    """One observation branch of an unnormalized constraint flow. / 未归一化约束概率流中的一个观测分支。"""
+class MassOutcome:
+    """One observation branch of ordinary or safe mass. / 普通或安全概率质量的一个观测分支。"""
 
     observation: ObservationKey
     label: str
@@ -58,11 +58,11 @@ class ConstraintMassOutcome:
 
 
 @dataclass(frozen=True)
-class ConstraintMassExpansion:
-    """Sparse float mass propagation for one constraint action. / 单个动作的稀疏浮点概率质量传播结果。"""
+class MassExpansion:
+    """Sparse mass propagation for one action. / 单个动作的稀疏概率质量传播结果。"""
 
     coefficient: float
-    observations: tuple[ConstraintMassOutcome, ...]
+    observations: tuple[MassOutcome, ...]
 
 
 @dataclass(frozen=True)
@@ -232,7 +232,7 @@ class RDDLKernel:
         self._state_index.register(state_key)
         return {state_key: 1.0}
 
-    def initial_constraint_mass(
+    def initial_ordinary_mass(
         self,
         belief: Mapping[StateKey, float],
     ) -> Mapping[StateKey, float]:
@@ -247,7 +247,7 @@ class RDDLKernel:
         belief: Mapping[StateKey, float],
     ) -> Mapping[StateKey, float]:
         """Return unnormalized root mass that has survived initial failure. / 返回排除初始失败状态后的未归一化根概率质量。"""
-        ordinary = self.initial_constraint_mass(belief)
+        ordinary = self.initial_ordinary_mass(belief)
         safe: dict[StateKey, float] = {}
         for state, probability in ordinary.items():
             surviving = probability * (1.0 - self.state_failure(state))
@@ -256,11 +256,11 @@ class RDDLKernel:
         return safe
 
     @staticmethod
-    def constraint_mass_belief(
+    def normalize_mass(
         mass: Mapping[StateKey, float],
     ) -> Mapping[StateKey, float]:
-        """Normalize an unnormalized mass into a conditional belief. / 将未归一化概率质量转换为条件信念。"""
-        return _mass_belief(mass)
+        """Normalize mass into a conditional belief, allowing empty safe flow. / 将概率质量归一化为条件信念，允许安全概率流为空。"""
+        return _normalize_distribution(mass)
 
     def initial_belief_from_model(self) -> Mapping[StateKey, float]:
         """Return the declared deterministic RDDL initial belief.
@@ -341,24 +341,24 @@ class RDDLKernel:
         self,
         state_mass: Mapping[StateKey, float],
         action: Mapping[str, Any],
-    ) -> ConstraintMassExpansion:
+    ) -> MassExpansion:
         """Propagate ordinary history mass through sparse transition rows. / 用稀疏转移行传播普通历史概率质量，不剔除失败轨迹。"""
         action_id = self._action_id(action)
         post_action_mass = self._transition_mass(state_mass, action_id, action)
-        return ConstraintMassExpansion(
+        return MassExpansion(
             coefficient=0.0,
-            observations=self._constraint_mass_observations(post_action_mass, action),
+            observations=self._mass_observations(post_action_mass, action),
         )
 
-    def expand_safe_constraint_mass(
+    def expand_safe_mass(
         self,
         safe_mass: Mapping[StateKey, float],
         action: Mapping[str, Any],
-    ) -> ConstraintMassExpansion:
+    ) -> MassExpansion:
         """Propagate Lemma 3.3 unnormalized safe-prefix mass. / 传播引理 3.3 中此前未失败的历史概率质量，不归一化。"""
         action_id = self._action_id(action)
         post_action_mass: dict[StateKey, float] = {}
-        for _, target, transition_mass in self._transition_branches(
+        for target, transition_mass in self._transition_branches(
             safe_mass, action_id, action
         ):
             # Boolean risk removes failed trajectories from the safe flow.
@@ -367,12 +367,12 @@ class RDDLKernel:
                 continue
             if transition_mass > 0:
                 post_action_mass[target] = post_action_mass.get(target, 0.0) + transition_mass
-        return ConstraintMassExpansion(
-            coefficient=self.safe_constraint_coefficient_for_mass(safe_mass, action),
-            observations=self._constraint_mass_observations(post_action_mass, action),
+        return MassExpansion(
+            coefficient=self.first_failure_coefficient(safe_mass, action),
+            observations=self._mass_observations(post_action_mass, action),
         )
 
-    def safe_constraint_coefficient_for_mass(
+    def first_failure_coefficient(
         self,
         safe_mass: Mapping[StateKey, float],
         action: Mapping[str, Any],
@@ -408,7 +408,7 @@ class RDDLKernel:
     ) -> Mapping[StateKey, float]:
         """Apply cached transition rows to sparse state mass. / 对稀疏状态概率质量应用缓存的转移行。"""
         result: dict[StateKey, float] = {}
-        for _, target, transition_mass in self._transition_branches(
+        for target, transition_mass in self._transition_branches(
             state_mass, action_id, action
         ):
             result[target] = result.get(target, 0.0) + transition_mass
@@ -419,7 +419,7 @@ class RDDLKernel:
         state_mass: Mapping[StateKey, float],
         action_id: int,
         action: Mapping[str, Any],
-    ) -> Iterable[tuple[StateKey, StateKey, float]]:
+    ) -> Iterable[tuple[StateKey, float]]:
         """Yield positive transition mass while reusing cached rows. / 复用缓存转移行并产生正概率质量的转移分支。"""
         for source, source_mass in state_mass.items():
             if source_mass <= 0.0:
@@ -437,18 +437,18 @@ class RDDLKernel:
             ):
                 if probability <= 0:
                     continue
-                target = self._state_index.key(int(target_id))
-                yield source, target, source_mass * probability
+                target = self._state_index.key(target_id)
+                yield target, source_mass * probability
 
-    def _constraint_mass_observations(
+    def _mass_observations(
         self,
         post_action_mass: Mapping[StateKey, float],
         action: Mapping[str, Any],
-    ) -> tuple[ConstraintMassOutcome, ...]:
+    ) -> tuple[MassOutcome, ...]:
         """Split unnormalized state mass by cached observation rows. / 用缓存观测行拆分未归一化状态概率质量。"""
         if not self.observation_names:
             return tuple(
-                ConstraintMassOutcome(
+                MassOutcome(
                     observation=(("__state__", state),),
                     label=self.state_label(state),
                     state_mass={state: mass},
@@ -466,7 +466,7 @@ class RDDLKernel:
                 bucket = buckets.setdefault(observation, {})
                 bucket[state] = bucket.get(state, 0.0) + mass * probability
         return tuple(
-            ConstraintMassOutcome(
+            MassOutcome(
                 observation=observation,
                 label=_observation_label(observation),
                 state_mass=state_weights,
@@ -520,7 +520,7 @@ class RDDLKernel:
         risk = _probability(
             sum(
                 probability
-                * self.state_failure(self._state_index.key(int(target_id)))
+                * self.state_failure(self._state_index.key(target_id))
                 for target_id, probability in zip(
                     row.next_state_ids,
                     row.probabilities,
@@ -539,7 +539,7 @@ class RDDLKernel:
         source_id = self._state_index.register(self.state_key(state))
         row = self._transition_row(source_id, self._action_id(action), action)
         return {
-            self._state_index.key(int(next_id)): probability
+            self._state_index.key(next_id): probability
             for next_id, probability in zip(row.next_state_ids, row.probabilities)
             if probability > 0
         }
@@ -570,16 +570,10 @@ class RDDLKernel:
                 )
                 updated: dict[StateKey, float] = {}
                 for partial_key, partial_prob in context_partials.items():
-                    partial_state = dict(partial_key)
                     for value, value_prob in value_weights.items():
-                        next_partial = tuple(
-                            sorted(
-                                {
-                                    **partial_state,
-                                    state_name: _plain_value(value),
-                                }.items()
-                            )
-                        )
+                        # State names are sorted, so appending preserves canonical keys.
+                        # / 状态名已排序，直接追加即可保持规范键顺序。
+                        next_partial = partial_key + ((state_name, _plain_value(value)),)
                         updated[next_partial] = (
                             updated.get(next_partial, 0.0)
                             + partial_prob * value_prob
@@ -657,10 +651,10 @@ class RDDLKernel:
                     transition_probability
                     * self.observation_probability(
                         observation,
-                        self._state_index.key(int(target_id)),
+                        self._state_index.key(target_id),
                         action,
                     )
-                    * next_message.get(self._state_index.key(int(target_id)), 0.0)
+                    * next_message.get(self._state_index.key(target_id), 0.0)
                 )
                 for target_id, transition_probability in zip(
                     row.next_state_ids,
@@ -691,7 +685,7 @@ class RDDLKernel:
                 row.next_state_ids,
                 row.probabilities,
             ):
-                target = self._state_index.key(int(target_id))
+                target = self._state_index.key(target_id)
                 if self._terminations_cache and self._state_is_terminal(target):
                     continue
                 joint = (
@@ -707,7 +701,7 @@ class RDDLKernel:
                     continue
                 result[state] = result.get(state, 0.0) + joint
                 utility += joint * self._transition_reward_for_ids(
-                    state_id, action_id, int(target_id), action
+                    state_id, action_id, target_id, action
                 )
         return result, utility
 
@@ -842,7 +836,7 @@ class RDDLKernel:
         reward = sum(
             probability
             * self._transition_reward_for_ids(
-                state_id, action_id, int(target_id), action
+                state_id, action_id, target_id, action
             )
             for target_id, probability in zip(row.next_state_ids, row.probabilities)
         )
@@ -916,7 +910,9 @@ class RDDLKernel:
                 partial_obs = dict(partial_key)
                 value_dist = self.expression_distribution(_cpf_expression(expr), {**context, **partial_obs})
                 for value, value_prob in _normalize_distribution(value_dist).items():
-                    next_partial = tuple(sorted({**partial_obs, obs_name: _plain_value(value)}.items()))
+                    # Observation names are sorted; keep prior observations in the CPF context.
+                    # / 观测名已排序；此前观测仍保留在 CPF 求值上下文中。
+                    next_partial = partial_key + ((obs_name, _plain_value(value)),)
                     updated[next_partial] = (
                         updated.get(next_partial, 0.0)
                         + partial_prob * value_prob
@@ -1057,13 +1053,6 @@ def _normalized_mass(
     if not normalized:
         raise KernelError("Constraint mass requires positive probability mass.")
     return normalized
-
-
-def _mass_belief(
-    mass: Mapping[StateKey, float],
-) -> dict[StateKey, float]:
-    """Normalize an unnormalized state mass, allowing an empty safe flow. / 归一化状态质量，允许安全概率流为空。"""
-    return _normalize_distribution(mass)
 
 
 def _non_negative(value: float) -> float:

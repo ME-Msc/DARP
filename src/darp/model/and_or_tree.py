@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
+
+# Histories receive POMDP observations or fully observed MDP states.
+# 历史接收 POMDP 观测，或完全可观测的 MDP 状态。
+ObservationMode = Literal["pomdp-observation", "mdp-state"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,19 +62,12 @@ class ActionChoice:
 
 
 @dataclass(frozen=True, slots=True)
-class ObservationScope:
-    """Identify whether histories observe POMDP outputs or MDP states. / 指明历史记录的是 POMDP 观测还是 MDP 状态。"""
-
-    mode: str
-
-
-@dataclass(frozen=True, slots=True)
 class ANDORSearchInterface:
     """Bundle grounded action and observation inputs for AND-OR search. / 打包 AND-OR 搜索所需的 action 与 observation 输入。"""
 
     root: ANDORNode
     actions: tuple[ActionChoice, ...]
-    observation_scope: ObservationScope
+    observation_mode: ObservationMode
     kernel: Any | None = None
     _nodes_by_id: dict[str, ANDORNode] = field(default_factory=dict, init=False, repr=False, compare=False)
 
@@ -83,14 +80,14 @@ class ANDORSearchInterface:
     def from_actions_and_observations(
         cls,
         actions: tuple[ActionChoice, ...],
-        observation_scope: ObservationScope,
+        observation_mode: ObservationMode,
         kernel: Any | None = None,
     ) -> ANDORSearchInterface:
-        """Create a root interface from action choices and observation scope. / 从 action choice 和 observation scope 创建根接口。"""
+        """Create a root interface from action choices and observation mode. / 从动作选项和观测模式创建根接口。"""
         return cls(
             root=ANDORNode(node_id="root"),
             actions=actions,
-            observation_scope=observation_scope,
+            observation_mode=observation_mode,
             kernel=kernel,
         )
 
@@ -113,16 +110,16 @@ class ANDORSearchInterface:
         labels = tuple(available(belief))
         if any(not isinstance(label, str) for label in labels):
             raise TypeError("available_action_labels() must return string labels")
-        if len(labels) != len(set(labels)):
+        selected = set(labels)
+        if len(labels) != len(selected):
             raise ValueError("available_action_labels() returned duplicate labels")
         known = {action.label for action in self.actions}
-        unknown = set(labels) - known
+        unknown = selected - known
         if unknown:
             raise ValueError(
                 "available_action_labels() returned unknown actions: "
                 + ", ".join(sorted(unknown))
             )
-        selected = set(labels)
         return tuple(action for action in self.actions if action.label in selected)
 
     def action_nodes(
@@ -144,11 +141,6 @@ class ANDORSearchInterface:
             )
             for action in self.action_choices(belief)
         )
-
-    def belief_is_terminal(self, belief: Mapping[Any, Any]) -> bool:
-        """Return an optional kernel-defined terminal-belief predicate. / 调用内核可选的终止信念判断。"""
-        predicate = getattr(self.kernel, "belief_is_terminal", None)
-        return bool(predicate(belief)) if callable(predicate) else False
 
     def observation_node(self, parent: ANDORNode, observation_label: str) -> ANDORNode:
         """Return an OR child for one observation outcome. / 为一个 observation outcome 返回 OR 子节点。"""

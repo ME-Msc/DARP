@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from darp.model.and_or_tree import ActionChoice, ANDORSearchInterface, ObservationScope
+from darp.model.and_or_tree import ActionChoice, ANDORSearchInterface, ObservationMode
 
 if TYPE_CHECKING:
     from pyRDDLGym.core.compiler.model import RDDLGroundedModel
@@ -36,12 +36,12 @@ class GroundedRDDLView:
         """Return grounded observation fluent names. / 返回 grounded observation fluent 名称。"""
         return _sorted_keys(getattr(self.grounded_model, "observ_fluents", None))
 
-    def observation_scope(self) -> ObservationScope:
-        """Return observation scope for AND-OR histories. / 返回 AND-OR history 使用的 observation scope。"""
+    def observation_mode(self) -> ObservationMode:
+        """Return the observation mode for AND-OR histories. / 返回 AND-OR 历史使用的观测模式。"""
         observations = self.observation_fluents()
         if observations:
-            return ObservationScope(mode="pomdp-observation")
-        return ObservationScope(mode="mdp-state")
+            return "pomdp-observation"
+        return "mdp-state"
 
     def action_choices(self, runtime: Any) -> tuple[ActionChoice, ...]:
         """Return concrete action choices for the current search interface. / 返回当前搜索接口的具体 action choice。"""
@@ -57,7 +57,7 @@ class GroundedRDDLView:
 
         return ANDORSearchInterface.from_actions_and_observations(
             actions=self.action_choices(runtime),
-            observation_scope=self.observation_scope(),
+            observation_mode=self.observation_mode(),
             kernel=RDDLKernel.from_grounded_model(self.grounded_model),
         )
 

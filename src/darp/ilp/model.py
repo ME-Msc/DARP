@@ -58,15 +58,6 @@ class ILPModelSpec:
         """Return variable ids in declaration order. / 按声明顺序返回变量 id。"""
         return tuple(variable.var_id for variable in self.variables)
 
-    def validate(self) -> None:
-        """Validate that objective and constraints reference known variables. / 验证目标和约束只引用已知变量。"""
-        known = set(self.variable_ids())
-        unknown = set(self.objective) - known
-        for constraint in self.constraints:
-            unknown.update(set(constraint.coefficients) - known)
-        if unknown:
-            raise ValueError(f"ILP model references unknown variables: {', '.join(sorted(unknown))}")
-
 
 @dataclass(frozen=True)
 class ILPSolveResult:
