@@ -39,11 +39,20 @@ Table 2 的场景和 adapter 固定为 `ME-Msc/Constrained-POMDP@d84d099493b973a
 | Table 1 节点数 | Full-ILP `n` 为 `tree_nodes`；`Act.n` 和 HILP `Exp.n` 为各自 `ilp_variables`；`Exp.% = 100 × Exp.n / Act.n` |
 | Table 2 `n` | DARP 为 `expanded_nodes + frontier_nodes` action histories；RAO* 为 belief hypergraph nodes |
 | `iterations` | HILP 为 p-ILP solves，Full-ILP 为 1，RAO* 为 expansions；仅表示各实现的搜索规模 |
+| `rank_alpha / rank_lambda` | HILP 风险评分权重／保留比例（0<λ≤1）；先保护高分 F，再自底向上删未保护 E 子树；默认 1/1，Full-ILP 不筛选；RAO* 不适用 |
+| `ilp_variables / full_partial_ilp_variables` | 最后一次实际提交的变量数／完整当前 p-ILP 变量数；不是全 horizon 已枚举树 |
+| `rank_filter_ms / rank_fallbacks` | 搜索期间累计筛选耗时／受限不可行后恢复完整 p-ILP 的次数；Full-ILP 为 0，RAO* 不适用，留空 |
 | `policy_execution_time_s` | `rollout_time_s / episodes`，每条 episode 的环境 reset、策略查询、`env.step` 与统计墙钟开销，不含规划时间 |
 
 正式 completion-time 实验不设 timeout；调试 Table 2 时，同一个 `--timeout` 传给两端。DARP 使用 `MIPGap=1e-6`、Gurobi 默认 `1e-6` 线性约束可行性容差及默认线程数。`complete` 表示求解器报告搜索完成，不表示 zero-gap、有理数复核或实验脚本独立证明可行性。
 
+启用 Rank-based 后，两套实验仍要求 DARP 策略完整可执行且风险可行，但允许 `decision.complete=False` 并原样记录，不能把受限最优解当作全局最优解。策略 JSON 的 `decision.policy.complete` 对应 Python 的 `duration_complete`，与 CSV 及外层 `decision.complete` 的全局搜索认证分别记录。`time_s` 包括筛选与受限 Gurobi 模型重建；Table 2 另列实际／完整当前 ILP 变量数，原有 `n` 仍统计完整搜索历史。当前 Rank 实验固定 `alpha=1`，比较 `lambda=0.3,0.5,0.7,0.9`；不能只凭变量下降或单次计时声称优化成功。
+
 每个 DARP trial 保存完整 `DARPResult` JSON，重新载入策略后，在相同 RDDL 的 pyRDDLGym 环境执行，默认 1000 条 episode。`risk_rate` 是至少失败一次的 episode 比例，风险后继续执行策略；有限采样略超预算不等于模型约束被违反。风险和 duration 统计读取真实状态，策略仍只收到 observation。
+
+Rank 专项实验位于 `experiments/RankedDarp-vs-HILP-vs-RAOstar-grid`。矩阵为 5×5/100×100、h=3/4/5/6、Δ=0.1/0.2/0.3、λ=0.3/0.5/0.7/0.9、α=1；每方法每配置 3 次。默认包含原 HILP、E+F 剪枝及 F-only 消融，共 648 次搜索；`--no-ablation` 可省略 F-only。F-only 仅禁用 E 子树筛选，仍做必要的不可行预筛选。当前 HILP 与 E+F 为已完成首批数据，F-only 后续串行补跑，metadata 保留两批设置；不同日期的计时不冒充同批统计。仅 trial 1 保存并回放 1000 条轨迹，其余 trial 专注计时。原始数据为 `pruning-comparison-raw.csv`，策略位于 `results/pruning-comparison-raw/`；结果为 `output/letax/pruning-comparison.tex` 及 PDF，按网格和剪枝方式分页。旧版 `subtree-raw` 已清理；原 `retention-raw` 更名时保留数值并修正策略路径。RAO* 引用原 Table 2，标注历史参考。扩大 h 只修改 horizon，不更改环境、风险或 heuristic。
+
+专项 LaTeX 表报告中位时间、Obj./n/Iter.、最大成本相对增量、累计 E/F 提交比例、筛选耗时和回退。成本增量为 `100 × (C_pruned - C_HILP) / |C_HILP|`，对各配置的中位成本计算后取最大值。下划线表示时间更低，粗体表示目标值发生变化，均不代表显著性。CSV 另保留模型风险及建模/optimize 分解。所有失败保留，只有同配置、同 trial 集合均成功时计算加速比。预算为同一 120 秒搜索软时限（可配置）；超时记录不能冒充完成时间。更大 h 的扩展实验单独汇总，不掩盖原 24 配置。
 
 `physical_duration_mean` 是真实轨迹累计动作时长的均值：F/E 使用配置的确定性时长，S 使用独立随机数流采样 Normal；它与 E/S 规划停止量及执行墙钟时间含义不同。策略按叶节点或环境终止条件停止。BaseAgent 的 `statistics["mean"]` 等回报字段是原始 RDDL discounted reward，不应用 Manhattan terminal replacement，不能与规划 objective 混用。RAO* 只报告搜索指标，没有 DARP executor rollout，两端不比较执行墙钟时间。
 
@@ -54,3 +63,5 @@ Table 2 的场景和 adapter 固定为 `ME-Msc/Constrained-POMDP@d84d099493b973a
 Runner 默认 25 个规划 trial，当前两张结果表使用每配置 1 个 trial；单次时间是一次观测，不是论文的 25 次均值，不能据此断言稳定速度优势。每策略 1000 条 episode 是执行采样次数，不是独立规划次数。多 trial 时，Table 1 对成功记录求均值并报告失败数；Table 2 要求完整配对 trial。
 
 `--resume` 仅用于继续同一代码版本、RDDL、配置、seed、trial 和 episode 设置的中断实验。CSV schema、episode 数和策略文件检查不能替代源码或 RDDL 哈希校验；旧版输出不可混入当前运行。Table 1 已记录的失败 trial 也会被跳过，续跑不会自动重试。策略 JSON 不绑定模型路径或哈希，执行方需保留匹配的 RDDL。
+
+两 runner 均接受 `--rank-alpha` 与 `--rank-lambda`，默认输出为非默认参数增加独立文件名；显式 `--output` 时由调用者负责隔离文件。续跑校验两参数，旧 CSV schema 不直接追加。`tools/run_repro.sh` 对应环境变量为 `RANK_ALPHA`、`RANK_LAMBDA`，非默认配置使用独立 CSV 与 LaTeX 结果文件。

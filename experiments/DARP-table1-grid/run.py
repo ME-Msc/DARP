@@ -21,6 +21,7 @@ from typing import Any
 from darp.adapter.loader import load_rddl
 from darp.executor import PolicyExecutor
 from darp.planning.heuristic import HeuristicInput, UtilityHeuristic
+from darp.planning.rank import validate_rank
 from darp.solve import DARPResult, solve_rddl
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,10 @@ FIELDS = (
     "planner",
     "trial",
     "seed",
+    "rank_alpha",
+    "rank_lambda",
     "status",
+    "complete",
     "objective",
     "time_s",
     "risk",
@@ -51,6 +55,9 @@ FIELDS = (
     "frontier_nodes",
     "tree_nodes",
     "ilp_variables",
+    "full_partial_ilp_variables",
+    "rank_filter_ms",
+    "rank_fallbacks",
     "ilp_constraints",
     "iterations",
     "evaluation_episodes",
@@ -100,6 +107,8 @@ def _read_rows(
     path: Path,
     episodes: int,
     base_seed: int | None = None,
+    rank_alpha: float = 1.0,
+    rank_lambda: float = 1.0,
 ) -> list[dict[str, str]]:
     if not path.exists():
         return []
@@ -109,8 +118,18 @@ def _read_rows(
             raise ValueError(f"Unexpected CSV schema in {path}")
         rows = list(reader)
     for row in rows:
+        expected_rank = (
+            (rank_alpha, rank_lambda) if row["planner"] == "hilp" else (1.0, 1.0)
+        )
+        if (float(row["rank_alpha"]), float(row["rank_lambda"])) != expected_rank:
+            raise ValueError("Resume CSV uses different Rank-based parameters.")
         if base_seed is not None and int(row["seed"]) != base_seed + int(row["trial"]) - 1:
             raise ValueError("Resume CSV uses a different trial seed.")
+        if row["status"] == "ok" and (
+            row["complete"].lower() not in ("true", "false")
+            or (expected_rank[1] == 1.0 and row["complete"].lower() != "true")
+        ):
+            raise ValueError("Resume CSV has an invalid search completeness flag.")
         if not row["evaluation_episodes"] or int(row["evaluation_episodes"]) != episodes:
             raise ValueError("Resume CSV uses a different evaluation episode count.")
         if row["status"] == "ok" and (
@@ -132,6 +151,8 @@ def _run_trial(
     episodes: int,
     timeout_s: float | None,
     result_path: Path,
+    rank_alpha: float = 1.0,
+    rank_lambda: float = 1.0,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "planner": planner,
@@ -142,6 +163,8 @@ def _run_trial(
     kwargs.update(heuristic=MANHATTAN, terminal_heuristic=True)
     if planner == "full-ilp":
         kwargs["full_ilp_max_tree_nodes"] = 800_000
+    else:
+        kwargs.update(rank_alpha=rank_alpha, rank_lambda=rank_lambda)
 
     # Duration is part of the RDDL instance/domain extension, so there is no
     # duration sidecar argument here.
@@ -158,7 +181,7 @@ def _run_trial(
         if (
             not policy.duration_complete
             or policy.feasible is not True
-            or not decision.complete
+            or ((planner == "full-ilp" or rank_lambda == 1.0) and not decision.complete)
         ):
             raise RuntimeError(
                 "DARP did not return a complete feasible policy: "
@@ -183,7 +206,10 @@ def _run_trial(
             "planner": planner,
             "trial": trial,
             "seed": seed,
+            "rank_alpha": rank_alpha if planner == "hilp" else 1.0,
+            "rank_lambda": rank_lambda if planner == "hilp" else 1.0,
             "status": "ok",
+            "complete": decision.complete,
             "objective": objective,
             "time_s": result.elapsed_s,
             "risk": risk,
@@ -192,6 +218,11 @@ def _run_trial(
             "frontier_nodes": timing.get("frontier_nodes", ""),
             "tree_nodes": timing.get("tree_nodes", ""),
             "ilp_variables": timing.get("ilp_variables", ""),
+            "full_partial_ilp_variables": timing.get(
+                "full_partial_ilp_variables", timing.get("ilp_variables", "")
+            ),
+            "rank_filter_ms": timing.get("rank_filter_ms", 0.0),
+            "rank_fallbacks": timing.get("rank_fallbacks", 0.0),
             "ilp_constraints": timing.get("ilp_constraints", ""),
             "iterations": timing.get("partial_ilp_solves", 1),
             "evaluation_episodes": episodes,
@@ -267,6 +298,12 @@ def _format(value: float | None, digits: int = 2) -> str:
 
 
 def _write_markdown(rows: list[dict[str, str]], output: Path) -> None:
+    rank_configs = {
+        (float(row["rank_alpha"]), float(row["rank_lambda"]))
+        for row in rows if row["planner"] == "hilp"
+    }
+    if len(rank_configs) > 1:
+        raise ValueError("Summary requires a single HILP Rank-based configuration")
     grouped: dict[tuple[int, float, str, str], list[dict[str, str]]] = {}
     for row in rows:
         key = (
@@ -293,10 +330,12 @@ def _write_markdown(rows: list[dict[str, str]], output: Path) -> None:
         "# DARP Table 1 grid experiment",
         "",
         "Values are means over successful trials; `Exp.% = HILP Exp.n / Full-ILP Act.n`.",
+        "HILP `Exp.n` counts variables in the last submitted ILP; with Rank-based it differs from the total histories retained in the current partial tree. The raw CSV records both sizes and total filtering time.",
         f"Successful trials per configuration: {', '.join(map(str, successful_counts))}. Single-trial values are individual runs, not 25-trial means.",
         "E/S use source-or-intended mud contact; S uses `Normal(mean, variance=0.1)` and `varsigma=0.3`.",
         "The paper does not publish its E/S artifact, so these are auditable DARP results rather than copied reference output.",
         "`—` means that the configuration has not produced a successful row in the raw CSV.",
+        f"HILP Rank-based configuration (alpha, lambda): {sorted(rank_configs)}. Full-ILP is always unfiltered. Restricted HILP results are not claimed to be globally optimal; `complete` reports the global search certificate separately from an executable feasible policy.",
         "",
         "| " + " | ".join(header) + " |",
         "| " + " | ".join(["---:"] * len(header)) + " |",
@@ -346,8 +385,8 @@ def _write_markdown(rows: list[dict[str, str]], output: Path) -> None:
             "",
             "Every policy is saved, reloaded and executed. Rows are individual trials; risk is the fraction of episodes that enter a risky state at least once. Physical duration and execution wall-clock time are reported separately.",
             "",
-            "| Case / trial | Planner | Episodes | Risk frequency | Mean physical duration | s/episode |",
-            "|:--|:--|--:|--:|--:|--:|",
+            "| Case / trial | Planner | complete | Episodes | Risk frequency | Mean physical duration | s/episode |",
+            "|:--|:--|:--:|--:|--:|--:|--:|",
         ]
     )
     for row in sorted(rows, key=_key):
@@ -355,7 +394,7 @@ def _write_markdown(rows: list[dict[str, str]], output: Path) -> None:
             continue
         lines.append(
             f"| {row['model']} h={row['horizon']} Δ={row['delta']} / {row['trial']} | "
-            f"{row['planner']} | {row['evaluation_episodes']} | "
+            f"{row['planner']} | {row['complete']} | {row['evaluation_episodes']} | "
             f"{float(row['risk_rate']):.4f} | "
             f"{float(row['physical_duration_mean']):.3f} | "
             f"{float(row['policy_execution_time_s']):.6f} |"
@@ -376,6 +415,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--trials", type=int, default=25)
     parser.add_argument("--episodes", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=2023)
+    parser.add_argument("--rank-alpha", type=float, default=1.0,
+                        help="nonnegative HILP ranking risk weight")
+    parser.add_argument("--rank-lambda", type=float, default=1.0,
+                        help="HILP E/F candidate retention fraction in (0, 1]; full-ILP unchanged")
     parser.add_argument("--timeout", type=float, default=None)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--summary", type=Path)
@@ -390,6 +433,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = _parser().parse_args()
+    validate_rank(args.rank_alpha, args.rank_lambda)
     if args.trials <= 0:
         raise SystemExit("--trials must be positive")
     if args.episodes <= 0:
@@ -405,12 +449,19 @@ def main() -> int:
     output = args.output
     if args.smoke and output == DEFAULT_OUTPUT:
         output = DEFAULT_OUTPUT.with_name("smoke-raw.csv")
+    if args.output == DEFAULT_OUTPUT and (args.rank_alpha, args.rank_lambda) != (1.0, 1.0):
+        output = output.with_name(
+            f"{output.stem}-rank-a{args.rank_alpha}-l{args.rank_lambda}.csv"
+        )
     summary = args.summary or output.with_suffix(".md")
     if summary.resolve() == output.resolve():
         raise SystemExit("--summary and --output must be different files")
 
     rows = (
-        _read_rows(output, args.episodes, args.seed)
+        _read_rows(
+            output, args.episodes, base_seed=args.seed,
+            rank_alpha=args.rank_alpha, rank_lambda=args.rank_lambda,
+        )
         if args.resume else []
     )
     completed = {_key(row) for row in rows}
@@ -444,6 +495,8 @@ def main() -> int:
                     args.episodes,
                     args.timeout,
                     result_path,
+                    args.rank_alpha,
+                    args.rank_lambda,
                 )
                 row["result_file"] = result_path.relative_to(output.parent).as_posix()
             except Exception as error:
@@ -465,6 +518,8 @@ def main() -> int:
                 )
                 failures += 1
             row["evaluation_episodes"] = args.episodes
+            row["rank_alpha"] = args.rank_alpha if planner == "hilp" else 1.0
+            row["rank_lambda"] = args.rank_lambda if planner == "hilp" else 1.0
             writer.writerow(row)
             stream.flush()
             rows.append({field: str(row[field]) for field in FIELDS})

@@ -1,0 +1,125 @@
+{
+  "algorithm": "bottom-up-retention-v2",
+  "python": "3.12.3",
+  "platform": "Linux-6.8.0-124-generic-x86_64-with-glibc2.39",
+  "gurobi": [
+    13,
+    0,
+    2
+  ],
+  "pyRDDLGym": "2.7",
+  "MIPGap": 1e-06,
+  "FeasibilityTol": 1e-06,
+  "threads": "Gurobi default",
+  "arguments": {
+    "sizes": [
+      5,
+      100
+    ],
+    "horizons": [
+      3,
+      4,
+      5,
+      6
+    ],
+    "deltas": [
+      0.1,
+      0.2,
+      0.3
+    ],
+    "alpha": 1.0,
+    "lambdas": [
+      0.3,
+      0.5,
+      0.7,
+      0.9
+    ],
+    "trials": 3,
+    "seed": 2023,
+    "timeout": 120.0,
+    "episodes": 1000,
+    "ablation": true,
+    "output": "/home/shaocong/Desktop/DARP/experiments/RankedDarp-vs-HILP-vs-RAOstar-grid/output/pruning-comparison-raw.csv",
+    "summary": "/home/shaocong/Desktop/DARP/experiments/RankedDarp-vs-HILP-vs-RAOstar-grid/output/letax/pruning-comparison.tex",
+    "baseline": "/home/shaocong/Desktop/DARP/experiments/DARP-vs-RAOstar-grid/output/table2-raw.csv",
+    "resume": true,
+    "summary_only": false
+  },
+  "batches": [
+    {
+      "arguments": {
+        "sizes": [
+          5,
+          100
+        ],
+        "horizons": [
+          3,
+          4,
+          5,
+          6
+        ],
+        "deltas": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "alpha": 1.0,
+        "lambdas": [
+          0.3,
+          0.5,
+          0.7,
+          0.9
+        ],
+        "trials": 3,
+        "seed": 2023,
+        "timeout": 120.0,
+        "episodes": 1000,
+        "ablation": false,
+        "output": "/home/shaocong/Desktop/DARP/experiments/RankedDarp-vs-HILP-vs-RAOstar-grid/output/retention-raw.csv",
+        "summary": "/home/shaocong/Desktop/DARP/experiments/RankedDarp-vs-HILP-vs-RAOstar-grid/output/table2-retention.md",
+        "baseline": "/home/shaocong/Desktop/DARP/experiments/DARP-vs-RAOstar-grid/output/table2-raw.csv",
+        "resume": false,
+        "summary_only": false
+      },
+      "existing_rows": 0
+    },
+    {
+      "started_at_utc": "2026-10-08T10:43:36.441790+00:00",
+      "arguments": {
+        "sizes": [
+          5,
+          100
+        ],
+        "horizons": [
+          3,
+          4,
+          5,
+          6
+        ],
+        "deltas": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "alpha": 1.0,
+        "lambdas": [
+          0.3,
+          0.5,
+          0.7,
+          0.9
+        ],
+        "trials": 3,
+        "seed": 2023,
+        "timeout": 120.0,
+        "episodes": 1000,
+        "ablation": true,
+        "output": "/home/shaocong/Desktop/DARP/experiments/RankedDarp-vs-HILP-vs-RAOstar-grid/output/pruning-comparison-raw.csv",
+        "summary": "/home/shaocong/Desktop/DARP/experiments/RankedDarp-vs-HILP-vs-RAOstar-grid/output/letax/pruning-comparison.tex",
+        "baseline": "/home/shaocong/Desktop/DARP/experiments/DARP-vs-RAOstar-grid/output/table2-raw.csv",
+        "resume": true,
+        "summary_only": false
+      },
+      "existing_rows": 360
+    }
+  ]
+}

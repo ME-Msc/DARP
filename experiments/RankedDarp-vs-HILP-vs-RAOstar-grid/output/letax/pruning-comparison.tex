@@ -1,0 +1,184 @@
+\documentclass[10pt]{article}
+\usepackage[a4paper,landscape,margin=12mm]{geometry}
+\usepackage{booktabs,multirow,graphicx,amsmath}
+\pagestyle{plain}\begin{document}
+\begin{center}\Large $ 5\times5$ grid: HILP versus prun-HILP (E+F)\end{center}
+\noindent $\alpha=1$; $\lambda$ is the retained fraction. Fixed duration $=1$; Manhattan heuristic. 3 search trials per complete configuration; median wall time includes filtering, model construction and optimization.\par
+\noindent \underline{Underlined time}: lower than the recorded HILP baseline. \textbf{Bold Obj.}: differs from HILP; lower cost is better. RAO* uses historical measurements and a different native objective boundary.\par
+\begin{table}[ht]\centering
+\caption{Simulation results with heuristics: prun-HILP (E+F).}
+\scriptsize\setlength{\tabcolsep}{3pt}
+\resizebox{\textwidth}{!}{\begin{tabular}{ccrrrrrrrrrrrrrrrrrrrrrrrr}
+\toprule
+\multirow{2}{*}{$h$} & \multirow{2}{*}{$\Delta$} & \multicolumn{4}{c}{HILP} & \multicolumn{4}{c}{RAO* (historical)} & \multicolumn{4}{c}{prun-HILP (E+F) ($\lambda=0.3$)} & \multicolumn{4}{c}{prun-HILP (E+F) ($\lambda=0.5$)} & \multicolumn{4}{c}{prun-HILP (E+F) ($\lambda=0.7$)} & \multicolumn{4}{c}{prun-HILP (E+F) ($\lambda=0.9$)} \\
+ & & Obj. & Time (s) & $n$ & Iter. & Obj. & Time (s) & $n$ & Iter. & Obj. & Time (s) & $n$ & Iter. & Obj. & Time (s) & $n$ & Iter. & Obj. & Time (s) & $n$ & Iter. & Obj. & Time (s) & $n$ & Iter. \\
+\cmidrule(lr){3-6}
+\cmidrule(lr){7-10}
+\cmidrule(lr){11-14}
+\cmidrule(lr){15-18}
+\cmidrule(lr){19-22}
+\cmidrule(lr){23-26}
+\multirow{3}{*}{3} & 0.1 & 8.9323 & 0.049 & 268 & 12 & 9.7497 & 0.080 & 337 & 40 & \textbf{9.8556} & \underline{0.022} & 52 & 4 & \textbf{9.7377} & \underline{0.031} & 64 & 6 & \textbf{9.0052} & 0.051 & 196 & 10 & \textbf{9.0000} & 0.064 & 268 & 12 \\
+ & 0.2 & 8.1556 & 0.040 & 160 & 9 & 8.2410 & 0.028 & 142 & 13 & \textbf{9.8556} & \underline{0.021} & 52 & 4 & \textbf{9.9050} & \underline{0.029} & 64 & 6 & \textbf{9.6735} & 0.043 & 88 & 9 & 8.1556 & 0.050 & 160 & 9 \\
+ & 0.3 & 8.1556 & 0.041 & 172 & 9 & 8.2410 & 0.028 & 175 & 15 & \textbf{9.8556} & \underline{0.021} & 52 & 4 & \textbf{9.8556} & \underline{0.021} & 52 & 4 & \textbf{9.6787} & \underline{0.030} & 76 & 6 & 8.1556 & 0.048 & 172 & 9 \\
+\midrule
+\multirow{3}{*}{4} & 0.1 & 9.6798 & 0.194 & 1084 & 22 & 10.7752 & 0.530 & 1309 & 135 & \textbf{10.7910} & \underline{0.039} & 160 & 5 & \textbf{10.6811} & \underline{0.063} & 196 & 8 & \textbf{9.9591} & 0.216 & 844 & 20 & \textbf{9.8562} & 0.354 & 1180 & 25 \\
+ & 0.2 & 8.2410 & 0.111 & 592 & 13 & 8.3305 & 0.193 & 550 & 48 & \textbf{10.7910} & \underline{0.042} & 160 & 5 & \textbf{10.8400} & \underline{0.062} & 196 & 8 & \textbf{10.5874} & \underline{0.100} & 328 & 10 & \textbf{8.7916} & 0.148 & 568 & 13 \\
+ & 0.3 & 8.2410 & 0.150 & 892 & 20 & 8.3305 & 0.209 & 712 & 60 & \textbf{10.7910} & \underline{0.038} & 160 & 5 & \textbf{10.7862} & \underline{0.059} & 208 & 8 & \textbf{10.7117} & \underline{0.090} & 328 & 10 & 8.2410 & 0.278 & 868 & 21 \\
+\midrule
+\multirow{3}{*}{5} & 0.1 & 10.3580 & 1.823 & 4504 & 45 & 11.1940 & 3.276 & 5170 & 470 & \textbf{11.7295} & \underline{0.130} & 556 & 9 & \textbf{11.6254} & \underline{0.184} & 724 & 11 & \textbf{11.1642} & \underline{0.622} & 2236 & 25 & \textbf{10.4272} & \underline{0.713} & 2524 & 26 \\
+ & 0.2 & 8.3305 & 0.499 & 3004 & 26 & 8.5173 & 1.998 & 3073 & 259 & \textbf{11.7295} & \underline{0.139} & 556 & 9 & \textbf{11.7777} & \underline{0.188} & 724 & 12 & \textbf{11.4595} & \underline{0.380} & 1384 & 17 & \textbf{9.3362} & 1.208 & 3508 & 32 \\
+ & 0.3 & 8.3305 & 0.633 & 3880 & 29 & 8.5173 & 2.701 & 4228 & 353 & \textbf{11.7295} & \underline{0.160} & 556 & 9 & \textbf{11.7285} & \underline{0.203} & 772 & 12 & \textbf{11.6102} & \underline{0.328} & 1168 & 15 & \textbf{8.7677} & 0.947 & 2860 & 25 \\
+\midrule
+\multirow{3}{*}{6} & 0.1 & 10.8564 & 7.654 & 13048 & 63 & 11.6643 & 33.628 & 25393 & 2196 & \textbf{12.6733} & \underline{0.416} & 1864 & 15 & \textbf{12.5734} & \underline{0.760} & 2548 & 18 & \textbf{12.6557} & \underline{2.448} & 7732 & 33 & \textbf{11.1629} & \underline{5.888} & 10624 & 46 \\
+ & 0.2 & 8.5173 & 5.109 & 17608 & 49 & 9.4548 & 54.247 & 48844 & 4100 & \textbf{12.6733} & \underline{0.419} & 1864 & 15 & \textbf{12.7170} & \underline{0.728} & 2512 & 18 & \textbf{12.3763} & \underline{1.660} & 5044 & 25 & \textbf{9.4554} & 7.083 & 15088 & 48 \\
+ & 0.3 & 8.5173 & 9.442 & 31048 & 76 & 9.4548 & 58.761 & 50839 & 4256 & \textbf{12.6733} & \underline{0.426} & 1864 & 15 & \textbf{12.6614} & \underline{0.653} & 2560 & 17 & \textbf{12.4962} & \underline{1.644} & 5152 & 24 & \textbf{8.9082} & \underline{6.293} & 13528 & 47 \\
+\bottomrule\end{tabular}}\end{table}
+\noindent\small DARP $n=|E\cup F|$ counts generated action histories; RAO* $n$ counts belief graph nodes. Iter. counts p-ILP calls for DARP and expansions for RAO*. An executable pruned policy does not certify global optimality; failed groups are --.\par
+\medskip\noindent\textbf{Pruning diagnostics.}\par
+\begin{center}\small\begin{tabular}{crrrrrrr}\toprule
+$\lambda$ & Success/runs & Speedup & Max. cost increase (\%) & E sent (\%) & F sent (\%) & Filter (s) & Fallbacks \\ \midrule
+0.3 & 36/36 & \underline{3.97$\times$} & +48.80 & 99.4 & 32.5 & 0.007 & 0 \\
+0.5 & 36/36 & \underline{2.86$\times$} & +49.31 & 94.9 & 51.9 & 0.012 & 0 \\
+0.7 & 36/36 & \underline{1.51$\times$} & +46.72 & 83.9 & 72.7 & 0.041 & 0 \\
+0.9 & 36/36 & 0.75$\times$ & +12.07 & 93.3 & 91.2 & 0.088 & 0 \\
+\bottomrule\end{tabular}\end{center}
+\noindent\small Cost increase is $100(C_{\rm pruned}-C_{\rm HILP})/|C_{\rm HILP}|$; the diagnostic column reports the largest configuration-level increase, using median costs. Speedup is the median configuration-level time ratio. E/F sent ratios include fallback submissions.\par
+\noindent\small F-only skips E-subtree pruning; necessary dead-end, prefix-risk and unreachable-history filtering still applies. Submitted coefficients and global risk constraints are preserved.\par
+\noindent\small HILP and E+F reuse the completed initial batch; F-only was added in a supplementary serial batch. Underlining shows observed differences, not statistical significance. MIPGap $=10^{-6}$; search limit $=120$ s. Replay (1000 episodes for trial 1) is outside search timing.\par
+\clearpage
+\begin{center}\Large $ 5\times5$ grid: HILP versus prun-HILP (F-only)\end{center}
+\noindent $\alpha=1$; $\lambda$ is the retained fraction. Fixed duration $=1$; Manhattan heuristic. 3 search trials per complete configuration; median wall time includes filtering, model construction and optimization.\par
+\noindent \underline{Underlined time}: lower than the recorded HILP baseline. \textbf{Bold Obj.}: differs from HILP; lower cost is better. RAO* uses historical measurements and a different native objective boundary.\par
+\begin{table}[ht]\centering
+\caption{Simulation results with heuristics: prun-HILP (F-only).}
+\scriptsize\setlength{\tabcolsep}{3pt}
+\resizebox{\textwidth}{!}{\begin{tabular}{ccrrrrrrrrrrrrrrrrrrrrrrrr}
+\toprule
+\multirow{2}{*}{$h$} & \multirow{2}{*}{$\Delta$} & \multicolumn{4}{c}{HILP} & \multicolumn{4}{c}{RAO* (historical)} & \multicolumn{4}{c}{prun-HILP (F-only) ($\lambda=0.3$)} & \multicolumn{4}{c}{prun-HILP (F-only) ($\lambda=0.5$)} & \multicolumn{4}{c}{prun-HILP (F-only) ($\lambda=0.7$)} & \multicolumn{4}{c}{prun-HILP (F-only) ($\lambda=0.9$)} \\
+ & & Obj. & Time (s) & $n$ & Iter. & Obj. & Time (s) & $n$ & Iter. & Obj. & Time (s) & $n$ & Iter. & Obj. & Time (s) & $n$ & Iter. & Obj. & Time (s) & $n$ & Iter. & Obj. & Time (s) & $n$ & Iter. \\
+\cmidrule(lr){3-6}
+\cmidrule(lr){7-10}
+\cmidrule(lr){11-14}
+\cmidrule(lr){15-18}
+\cmidrule(lr){19-22}
+\cmidrule(lr){23-26}
+\multirow{3}{*}{3} & 0.1 & 8.9323 & 0.049 & 268 & 12 & 9.7497 & 0.080 & 337 & 40 & \textbf{9.8556} & \underline{0.022} & 52 & 4 & \textbf{9.7377} & \underline{0.030} & 64 & 5 & 8.9323 & \underline{0.049} & 196 & 10 & 8.9323 & 0.059 & 268 & 12 \\
+ & 0.2 & 8.1556 & 0.040 & 160 & 9 & 8.2410 & 0.028 & 142 & 13 & \textbf{9.8556} & \underline{0.021} & 52 & 4 & \textbf{9.9050} & \underline{0.027} & 64 & 5 & \textbf{9.6735} & \underline{0.032} & 88 & 7 & 8.1556 & 0.047 & 160 & 9 \\
+ & 0.3 & 8.1556 & 0.041 & 172 & 9 & 8.2410 & 0.028 & 175 & 15 & \textbf{9.8556} & \underline{0.022} & 52 & 4 & \textbf{9.8556} & \underline{0.022} & 52 & 4 & \textbf{9.6787} & \underline{0.029} & 76 & 6 & 8.1556 & 0.048 & 172 & 9 \\
+\midrule
+\multirow{3}{*}{4} & 0.1 & 9.6798 & 0.194 & 1084 & 22 & 10.7752 & 0.530 & 1309 & 135 & \textbf{10.7910} & \underline{0.038} & 160 & 5 & \textbf{10.6811} & \underline{0.064} & 196 & 8 & \textbf{9.7775} & \underline{0.126} & 472 & 14 & 9.6798 & 0.307 & 1084 & 22 \\
+ & 0.2 & 8.2410 & 0.111 & 592 & 13 & 8.3305 & 0.193 & 550 & 48 & \textbf{10.7910} & \underline{0.037} & 160 & 5 & \textbf{10.8400} & \underline{0.062} & 196 & 8 & \textbf{10.5874} & \underline{0.090} & 328 & 10 & \textbf{8.7916} & 0.147 & 568 & 13 \\
+ & 0.3 & 8.2410 & 0.150 & 892 & 20 & 8.3305 & 0.209 & 712 & 60 & \textbf{10.7910} & \underline{0.038} & 160 & 5 & \textbf{10.7862} & \underline{0.059} & 208 & 8 & \textbf{10.7117} & \underline{0.098} & 328 & 10 & 8.2410 & 0.235 & 868 & 20 \\
+\midrule
+\multirow{3}{*}{5} & 0.1 & 10.3580 & 1.823 & 4504 & 45 & 11.1940 & 3.276 & 5170 & 470 & \textbf{11.7295} & \underline{0.138} & 556 & 9 & \textbf{11.6254} & \underline{0.177} & 724 & 11 & \textbf{10.6402} & \underline{0.492} & 1492 & 23 & \textbf{10.4252} & \underline{0.834} & 2692 & 28 \\
+ & 0.2 & 8.3305 & 0.499 & 3004 & 26 & 8.5173 & 1.998 & 3073 & 259 & \textbf{11.7295} & \underline{0.171} & 556 & 9 & \textbf{11.7777} & \underline{0.215} & 724 & 12 & \textbf{11.4735} & \underline{0.328} & 1132 & 13 & \textbf{9.3362} & 0.772 & 2824 & 24 \\
+ & 0.3 & 8.3305 & 0.633 & 3880 & 29 & 8.5173 & 2.701 & 4228 & 353 & \textbf{11.7295} & \underline{0.137} & 556 & 9 & \textbf{11.7285} & \underline{0.192} & 772 & 12 & \textbf{11.6416} & \underline{0.307} & 1156 & 14 & \textbf{8.7677} & 0.841 & 2860 & 25 \\
+\midrule
+\multirow{3}{*}{6} & 0.1 & 10.8564 & 7.654 & 13048 & 63 & 11.6643 & 33.628 & 25393 & 2196 & \textbf{12.6733} & \underline{0.453} & 1864 & 15 & \textbf{12.5757} & \underline{0.576} & 2416 & 15 & \textbf{11.6273} & \underline{2.243} & 5284 & 33 & \textbf{11.1126} & \underline{4.697} & 9124 & 43 \\
+ & 0.2 & 8.5173 & 5.109 & 17608 & 49 & 9.4548 & 54.247 & 48844 & 4100 & \textbf{12.6733} & \underline{0.461} & 1864 & 15 & \textbf{12.7193} & \underline{0.604} & 2380 & 16 & \textbf{12.4123} & \underline{1.423} & 4876 & 23 & \textbf{9.8348} & \underline{5.087} & 12712 & 40 \\
+ & 0.3 & 8.5173 & 9.442 & 31048 & 76 & 9.4548 & 58.761 & 50839 & 4256 & \textbf{12.6733} & \underline{0.397} & 1864 & 15 & \textbf{12.6688} & \underline{0.604} & 2476 & 15 & \textbf{12.5767} & \underline{1.173} & 4348 & 21 & \textbf{9.2977} & \underline{6.251} & 13408 & 48 \\
+\bottomrule\end{tabular}}\end{table}
+\noindent\small DARP $n=|E\cup F|$ counts generated action histories; RAO* $n$ counts belief graph nodes. Iter. counts p-ILP calls for DARP and expansions for RAO*. An executable pruned policy does not certify global optimality; failed groups are --.\par
+\medskip\noindent\textbf{Pruning diagnostics.}\par
+\begin{center}\small\begin{tabular}{crrrrrrr}\toprule
+$\lambda$ & Success/runs & Speedup & Max. cost increase (\%) & E sent (\%) & F sent (\%) & Filter (s) & Fallbacks \\ \midrule
+0.3 & 36/36 & \underline{4.29$\times$} & +48.80 & 100.0 & 32.4 & 0.005 & 0 \\
+0.5 & 36/36 & \underline{2.79$\times$} & +49.33 & 100.0 & 52.0 & 0.010 & 0 \\
+0.7 & 36/36 & \underline{1.54$\times$} & +47.66 & 100.0 & 73.3 & 0.021 & 0 \\
+0.9 & 36/36 & 0.84$\times$ & +15.47 & 100.0 & 91.6 & 0.071 & 0 \\
+\bottomrule\end{tabular}\end{center}
+\noindent\small Cost increase is $100(C_{\rm pruned}-C_{\rm HILP})/|C_{\rm HILP}|$; the diagnostic column reports the largest configuration-level increase, using median costs. Speedup is the median configuration-level time ratio. E/F sent ratios include fallback submissions.\par
+\noindent\small F-only skips E-subtree pruning; necessary dead-end, prefix-risk and unreachable-history filtering still applies. Submitted coefficients and global risk constraints are preserved.\par
+\noindent\small HILP and E+F reuse the completed initial batch; F-only was added in a supplementary serial batch. Underlining shows observed differences, not statistical significance. MIPGap $=10^{-6}$; search limit $=120$ s. Replay (1000 episodes for trial 1) is outside search timing.\par
+\clearpage
+\begin{center}\Large $ 100\times100$ grid: HILP versus prun-HILP (E+F)\end{center}
+\noindent $\alpha=1$; $\lambda$ is the retained fraction. Fixed duration $=1$; Manhattan heuristic. 3 search trials per complete configuration; median wall time includes filtering, model construction and optimization.\par
+\noindent \underline{Underlined time}: lower than the recorded HILP baseline. \textbf{Bold Obj.}: differs from HILP; lower cost is better. RAO* uses historical measurements and a different native objective boundary.\par
+\begin{table}[ht]\centering
+\caption{Simulation results with heuristics: prun-HILP (E+F).}
+\scriptsize\setlength{\tabcolsep}{3pt}
+\resizebox{\textwidth}{!}{\begin{tabular}{ccrrrrrrrrrrrrrrrrrrrrrrrr}
+\toprule
+\multirow{2}{*}{$h$} & \multirow{2}{*}{$\Delta$} & \multicolumn{4}{c}{HILP} & \multicolumn{4}{c}{RAO* (historical)} & \multicolumn{4}{c}{prun-HILP (E+F) ($\lambda=0.3$)} & \multicolumn{4}{c}{prun-HILP (E+F) ($\lambda=0.5$)} & \multicolumn{4}{c}{prun-HILP (E+F) ($\lambda=0.7$)} & \multicolumn{4}{c}{prun-HILP (E+F) ($\lambda=0.9$)} \\
+ & & Obj. & Time (s) & $n$ & Iter. & Obj. & Time (s) & $n$ & Iter. & Obj. & Time (s) & $n$ & Iter. & Obj. & Time (s) & $n$ & Iter. & Obj. & Time (s) & $n$ & Iter. & Obj. & Time (s) & $n$ & Iter. \\
+\cmidrule(lr){3-6}
+\cmidrule(lr){7-10}
+\cmidrule(lr){11-14}
+\cmidrule(lr){15-18}
+\cmidrule(lr){19-22}
+\cmidrule(lr){23-26}
+\multirow{3}{*}{3} & 0.1 & 198.9323 & 0.047 & 268 & 12 & 199.7497 & 0.082 & 337 & 40 & \textbf{199.8556} & \underline{0.022} & 52 & 4 & \textbf{199.7377} & \underline{0.030} & 64 & 6 & \textbf{199.0052} & 0.052 & 196 & 10 & \textbf{199.0000} & 0.064 & 268 & 12 \\
+ & 0.2 & 198.1556 & 0.044 & 160 & 9 & 198.2410 & 0.029 & 142 & 13 & \textbf{199.8556} & \underline{0.023} & 52 & 4 & \textbf{199.9050} & \underline{0.037} & 64 & 6 & \textbf{199.6735} & \underline{0.043} & 88 & 8 & 198.1556 & 0.052 & 160 & 9 \\
+ & 0.3 & 198.1556 & 0.042 & 172 & 9 & 198.2410 & 0.031 & 175 & 15 & \textbf{199.8556} & \underline{0.022} & 52 & 4 & \textbf{199.8556} & \underline{0.022} & 52 & 4 & \textbf{199.6787} & \underline{0.031} & 76 & 6 & 198.1556 & 0.051 & 172 & 9 \\
+\midrule
+\multirow{3}{*}{4} & 0.1 & 199.6798 & 0.226 & 1084 & 22 & 200.7752 & 0.512 & 1309 & 135 & \textbf{200.7910} & \underline{0.039} & 160 & 5 & \textbf{200.6811} & \underline{0.066} & 196 & 8 & \textbf{199.9591} & \underline{0.225} & 844 & 20 & \textbf{199.8512} & 0.371 & 1168 & 24 \\
+ & 0.2 & 198.2410 & 0.115 & 592 & 13 & 198.3305 & 0.203 & 550 & 48 & \textbf{200.7910} & \underline{0.039} & 160 & 5 & \textbf{200.8400} & \underline{0.065} & 196 & 8 & \textbf{200.5871} & \underline{0.088} & 304 & 9 & \textbf{198.7916} & 0.140 & 544 & 13 \\
+ & 0.3 & 198.2410 & 0.154 & 892 & 20 & 198.3305 & 0.216 & 712 & 60 & \textbf{200.7910} & \underline{0.038} & 160 & 5 & \textbf{200.7862} & \underline{0.060} & 208 & 8 & \textbf{200.7117} & \underline{0.097} & 328 & 10 & \textbf{198.7916} & 0.216 & 844 & 18 \\
+\midrule
+\multirow{3}{*}{5} & 0.1 & 200.3580 & 1.729 & 4504 & 45 & 201.1839 & 3.168 & 4978 & 455 & \textbf{201.7295} & \underline{0.126} & 544 & 9 & \textbf{201.6254} & \underline{0.185} & 712 & 11 & \textbf{201.1744} & \underline{0.570} & 2056 & 25 & \textbf{200.4259} & \underline{0.707} & 2512 & 26 \\
+ & 0.2 & 198.3305 & 0.506 & 2980 & 26 & 198.4236 & 1.441 & 2104 & 178 & \textbf{201.7295} & \underline{0.119} & 544 & 9 & \textbf{201.7777} & \underline{0.179} & 724 & 12 & \textbf{201.4727} & \underline{0.415} & 1348 & 19 & \textbf{199.7273} & 1.588 & 3940 & 37 \\
+ & 0.3 & 198.3305 & 0.577 & 3880 & 29 & 198.4236 & 1.745 & 2704 & 226 & \textbf{201.7295} & \underline{0.119} & 544 & 9 & \textbf{201.7285} & \underline{0.176} & 772 & 12 & \textbf{201.6054} & \underline{0.328} & 1228 & 16 & \textbf{199.6580} & 1.890 & 4732 & 41 \\
+\midrule
+\multirow{3}{*}{6} & 0.1 & 200.8523 & 5.018 & 12172 & 54 & 201.6259 & 22.403 & 15550 & 1334 & \textbf{202.6732} & \underline{0.364} & 1732 & 12 & \textbf{202.5734} & \underline{0.651} & 2488 & 16 & \textbf{202.5570} & \underline{2.365} & 7144 & 34 & \textbf{201.1683} & 12.270 & 12208 & 75 \\
+ & 0.2 & 198.4236 & 2.841 & 13864 & 39 & 199.3486 & 36.773 & 28735 & 2419 & \textbf{202.6732} & \underline{0.363} & 1732 & 12 & \textbf{202.7176} & \underline{0.666} & 2464 & 17 & \textbf{202.3829} & \underline{1.647} & 4708 & 25 & \textbf{199.9435} & 4.474 & 12016 & 41 \\
+ & 0.3 & 198.4236 & 3.748 & 17260 & 53 & 198.8046 & 12.678 & 7477 & 638 & \textbf{202.6732} & \underline{0.357} & 1732 & 12 & \textbf{202.6686} & \underline{0.558} & 2536 & 14 & \textbf{202.4762} & \underline{1.794} & 4984 & 25 & \textbf{199.7558} & 5.993 & 12856 & 48 \\
+\bottomrule\end{tabular}}\end{table}
+\noindent\small DARP $n=|E\cup F|$ counts generated action histories; RAO* $n$ counts belief graph nodes. Iter. counts p-ILP calls for DARP and expansions for RAO*. An executable pruned policy does not certify global optimality; failed groups are --.\par
+\medskip\noindent\textbf{Pruning diagnostics.}\par
+\begin{center}\small\begin{tabular}{crrrrrrr}\toprule
+$\lambda$ & Success/runs & Speedup & Max. cost increase (\%) & E sent (\%) & F sent (\%) & Filter (s) & Fallbacks \\ \midrule
+0.3 & 36/36 & \underline{4.55$\times$} & +2.14 & 100.0 & 32.8 & 0.007 & 0 \\
+0.5 & 36/36 & \underline{3.05$\times$} & +2.16 & 97.1 & 51.9 & 0.012 & 0 \\
+0.7 & 36/36 & \underline{1.46$\times$} & +2.04 & 84.0 & 72.7 & 0.050 & 0 \\
+0.9 & 36/36 & 0.67$\times$ & +0.77 & 91.3 & 91.2 & 0.097 & 0 \\
+\bottomrule\end{tabular}\end{center}
+\noindent\small Cost increase is $100(C_{\rm pruned}-C_{\rm HILP})/|C_{\rm HILP}|$; the diagnostic column reports the largest configuration-level increase, using median costs. Speedup is the median configuration-level time ratio. E/F sent ratios include fallback submissions.\par
+\noindent\small F-only skips E-subtree pruning; necessary dead-end, prefix-risk and unreachable-history filtering still applies. Submitted coefficients and global risk constraints are preserved.\par
+\noindent\small HILP and E+F reuse the completed initial batch; F-only was added in a supplementary serial batch. Underlining shows observed differences, not statistical significance. MIPGap $=10^{-6}$; search limit $=120$ s. Replay (1000 episodes for trial 1) is outside search timing.\par
+\clearpage
+\begin{center}\Large $ 100\times100$ grid: HILP versus prun-HILP (F-only)\end{center}
+\noindent $\alpha=1$; $\lambda$ is the retained fraction. Fixed duration $=1$; Manhattan heuristic. 3 search trials per complete configuration; median wall time includes filtering, model construction and optimization.\par
+\noindent \underline{Underlined time}: lower than the recorded HILP baseline. \textbf{Bold Obj.}: differs from HILP; lower cost is better. RAO* uses historical measurements and a different native objective boundary.\par
+\begin{table}[ht]\centering
+\caption{Simulation results with heuristics: prun-HILP (F-only).}
+\scriptsize\setlength{\tabcolsep}{3pt}
+\resizebox{\textwidth}{!}{\begin{tabular}{ccrrrrrrrrrrrrrrrrrrrrrrrr}
+\toprule
+\multirow{2}{*}{$h$} & \multirow{2}{*}{$\Delta$} & \multicolumn{4}{c}{HILP} & \multicolumn{4}{c}{RAO* (historical)} & \multicolumn{4}{c}{prun-HILP (F-only) ($\lambda=0.3$)} & \multicolumn{4}{c}{prun-HILP (F-only) ($\lambda=0.5$)} & \multicolumn{4}{c}{prun-HILP (F-only) ($\lambda=0.7$)} & \multicolumn{4}{c}{prun-HILP (F-only) ($\lambda=0.9$)} \\
+ & & Obj. & Time (s) & $n$ & Iter. & Obj. & Time (s) & $n$ & Iter. & Obj. & Time (s) & $n$ & Iter. & Obj. & Time (s) & $n$ & Iter. & Obj. & Time (s) & $n$ & Iter. & Obj. & Time (s) & $n$ & Iter. \\
+\cmidrule(lr){3-6}
+\cmidrule(lr){7-10}
+\cmidrule(lr){11-14}
+\cmidrule(lr){15-18}
+\cmidrule(lr){19-22}
+\cmidrule(lr){23-26}
+\multirow{3}{*}{3} & 0.1 & 198.9323 & 0.047 & 268 & 12 & 199.7497 & 0.082 & 337 & 40 & \textbf{199.8556} & \underline{0.022} & 52 & 4 & \textbf{199.7377} & \underline{0.029} & 64 & 5 & 198.9323 & 0.053 & 196 & 10 & 198.9323 & 0.063 & 268 & 12 \\
+ & 0.2 & 198.1556 & 0.044 & 160 & 9 & 198.2410 & 0.029 & 142 & 13 & \textbf{199.8556} & \underline{0.021} & 52 & 4 & \textbf{199.9050} & \underline{0.027} & 64 & 5 & \textbf{199.6735} & \underline{0.033} & 88 & 7 & 198.1556 & 0.047 & 160 & 9 \\
+ & 0.3 & 198.1556 & 0.042 & 172 & 9 & 198.2410 & 0.031 & 175 & 15 & \textbf{199.8556} & \underline{0.022} & 52 & 4 & \textbf{199.8556} & \underline{0.022} & 52 & 4 & \textbf{199.6787} & \underline{0.031} & 76 & 6 & 198.1556 & 0.052 & 172 & 9 \\
+\midrule
+\multirow{3}{*}{4} & 0.1 & 199.6798 & 0.226 & 1084 & 22 & 200.7752 & 0.512 & 1309 & 135 & \textbf{200.7910} & \underline{0.042} & 160 & 5 & \textbf{200.6811} & \underline{0.076} & 196 & 8 & \textbf{199.7775} & \underline{0.165} & 472 & 14 & 199.6798 & 0.335 & 1084 & 22 \\
+ & 0.2 & 198.2410 & 0.115 & 592 & 13 & 198.3305 & 0.203 & 550 & 48 & \textbf{200.7910} & \underline{0.040} & 160 & 5 & \textbf{200.8400} & \underline{0.066} & 196 & 8 & \textbf{200.5871} & \underline{0.090} & 304 & 9 & \textbf{198.7916} & 0.141 & 544 & 13 \\
+ & 0.3 & 198.2410 & 0.154 & 892 & 20 & 198.3305 & 0.216 & 712 & 60 & \textbf{200.7910} & \underline{0.041} & 160 & 5 & \textbf{200.7862} & \underline{0.063} & 208 & 8 & \textbf{200.7117} & \underline{0.094} & 328 & 10 & \textbf{198.7916} & 0.228 & 844 & 17 \\
+\midrule
+\multirow{3}{*}{5} & 0.1 & 200.3580 & 1.729 & 4504 & 45 & 201.1839 & 3.168 & 4978 & 455 & \textbf{201.7295} & \underline{0.127} & 544 & 9 & \textbf{201.6254} & \underline{0.181} & 712 & 11 & \textbf{200.6833} & \underline{0.490} & 1624 & 22 & \textbf{200.4252} & \underline{0.949} & 2692 & 28 \\
+ & 0.2 & 198.3305 & 0.506 & 2980 & 26 & 198.4236 & 1.441 & 2104 & 178 & \textbf{201.7295} & \underline{0.122} & 544 & 9 & \textbf{201.7777} & \underline{0.185} & 724 & 12 & \textbf{201.4886} & \underline{0.418} & 1312 & 20 & \textbf{199.6468} & 0.681 & 2752 & 23 \\
+ & 0.3 & 198.3305 & 0.577 & 3880 & 29 & 198.4236 & 1.745 & 2704 & 226 & \textbf{201.7295} & \underline{0.122} & 544 & 9 & \textbf{201.7285} & \underline{0.188} & 772 & 12 & \textbf{201.6505} & \underline{0.349} & 1204 & 16 & \textbf{199.6593} & 1.266 & 3580 & 32 \\
+\midrule
+\multirow{3}{*}{6} & 0.1 & 200.8523 & 5.018 & 12172 & 54 & 201.6259 & 22.403 & 15550 & 1334 & \textbf{202.6732} & \underline{0.389} & 1732 & 12 & \textbf{202.5756} & \underline{0.664} & 2404 & 15 & \textbf{201.6617} & \underline{1.756} & 5056 & 29 & \textbf{201.1355} & 9.213 & 9784 & 59 \\
+ & 0.2 & 198.4236 & 2.841 & 13864 & 39 & 199.3486 & 36.773 & 28735 & 2419 & \textbf{202.6732} & \underline{0.408} & 1732 & 12 & \textbf{202.7198} & \underline{0.657} & 2356 & 16 & \textbf{202.4242} & \underline{1.428} & 4540 & 24 & \textbf{200.3049} & 4.431 & 10108 & 44 \\
+ & 0.3 & 198.4236 & 3.748 & 17260 & 53 & 198.8046 & 12.678 & 7477 & 638 & \textbf{202.6732} & \underline{0.337} & 1732 & 12 & \textbf{202.6699} & \underline{0.534} & 2488 & 14 & \textbf{202.5751} & \underline{1.235} & 4240 & 21 & \textbf{200.2691} & 6.045 & 12364 & 50 \\
+\bottomrule\end{tabular}}\end{table}
+\noindent\small DARP $n=|E\cup F|$ counts generated action histories; RAO* $n$ counts belief graph nodes. Iter. counts p-ILP calls for DARP and expansions for RAO*. An executable pruned policy does not certify global optimality; failed groups are --.\par
+\medskip\noindent\textbf{Pruning diagnostics.}\par
+\begin{center}\small\begin{tabular}{crrrrrrr}\toprule
+$\lambda$ & Success/runs & Speedup & Max. cost increase (\%) & E sent (\%) & F sent (\%) & Filter (s) & Fallbacks \\ \midrule
+0.3 & 36/36 & \underline{4.43$\times$} & +2.14 & 100.0 & 32.8 & 0.006 & 0 \\
+0.5 & 36/36 & \underline{2.85$\times$} & +2.17 & 100.0 & 52.0 & 0.010 & 0 \\
+0.7 & 36/36 & \underline{1.50$\times$} & +2.09 & 100.0 & 73.0 & 0.041 & 0 \\
+0.9 & 36/36 & 0.71$\times$ & +0.95 & 100.0 & 91.4 & 0.059 & 0 \\
+\bottomrule\end{tabular}\end{center}
+\noindent\small Cost increase is $100(C_{\rm pruned}-C_{\rm HILP})/|C_{\rm HILP}|$; the diagnostic column reports the largest configuration-level increase, using median costs. Speedup is the median configuration-level time ratio. E/F sent ratios include fallback submissions.\par
+\noindent\small F-only skips E-subtree pruning; necessary dead-end, prefix-risk and unreachable-history filtering still applies. Submitted coefficients and global risk constraints are preserved.\par
+\noindent\small HILP and E+F reuse the completed initial batch; F-only was added in a supplementary serial batch. Underlining shows observed differences, not statistical significance. MIPGap $=10^{-6}$; search limit $=120$ s. Replay (1000 episodes for trial 1) is outside search timing.\par
+\end{document}

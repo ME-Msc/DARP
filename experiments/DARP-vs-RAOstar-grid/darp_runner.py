@@ -32,8 +32,14 @@ def run_darp(
     delta: float,
     seed: int,
     timeout_s: float | None,
+    rank_alpha: float = 1.0,
+    rank_lambda: float = 1.0,
 ) -> DARPResult:
-    """Run one complete DARP-HILP search. 返回完整且风险可行的可执行策略。"""
+    """Return an executable feasible policy. 返回可执行且风险可行的策略。
+
+    A Rank-based policy need not certify global optimality (decision.complete).
+    Rank-based 策略不一定具有全局最优性证书（decision.complete）。
+    """
     result = solve_rddl(
         DOMAIN,
         instance,
@@ -43,12 +49,14 @@ def run_darp(
         heuristic=MANHATTAN,
         terminal_heuristic=True,
         timeout_s=timeout_s,
+        rank_alpha=rank_alpha,
+        rank_lambda=rank_lambda,
     )
     decision = result.decision
     if (
         not decision.policy.duration_complete
         or decision.policy.feasible is not True
-        or not decision.complete
+        or (rank_lambda == 1.0 and not decision.complete)
     ):
         raise RuntimeError(
             "DARP-HILP did not return a complete feasible policy: "

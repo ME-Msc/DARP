@@ -29,6 +29,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="hilp",
     )
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--rank-alpha", type=float, default=1.0,
+        help="nonnegative risk weight in the Rank score",
+    )
+    parser.add_argument(
+        "--rank-lambda", type=float, default=1.0,
+        help="E/F candidate retention fraction in (0, 1]; 1 disables restriction",
+    )
     parser.add_argument("--expansion-rounds", type=int)
     parser.add_argument(
         "--frontier-width",
@@ -74,6 +82,8 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         expansion_rounds=args.expansion_rounds,
         frontier_width=args.frontier_width,
+        rank_alpha=args.rank_alpha,
+        rank_lambda=args.rank_lambda,
         heuristic=heuristic,
         terminal_heuristic=args.terminal_heuristic,
         timeout_s=args.timeout,
@@ -83,6 +93,8 @@ def main(argv: list[str] | None = None) -> int:
     payload = {
         "planner": args.planner,
         "seed": args.seed,
+        "rank_alpha": args.rank_alpha,
+        "rank_lambda": args.rank_lambda,
         "heuristic": heuristic.name if heuristic is not None else None,
         **result.to_dict(),
     }
