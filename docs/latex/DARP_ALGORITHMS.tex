@@ -1,0 +1,395 @@
+% !TeX program = lualatex
+% 编译：latexmk -lualatex DARP_ALGORITHMS.tex
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=21mm,headheight=15pt,headsep=8mm,footskip=11mm]{geometry}
+\usepackage{fontspec}
+\usepackage[english]{babel}
+\babelprovide[import,onchar=ids fonts]{chinese}
+\babelfont{rm}{Latin Modern Roman}
+\babelfont{sf}{Latin Modern Sans}
+\babelfont[chinese]{rm}{Noto Serif CJK SC}
+\babelfont[chinese]{sf}{Noto Sans CJK SC}
+\usepackage{amsmath,amssymb,booktabs,tabularx,enumitem,xcolor,fancyhdr}
+\usepackage[colorlinks=true,linkcolor=blue!45!black]{hyperref}
+\definecolor{navy}{HTML}{17365D}
+\definecolor{muted}{HTML}{586575}
+\pagestyle{fancy}\fancyhf{}
+\fancyhead[L]{\small\sffamily\color{navy}HILP / Pruning}
+\fancyhead[R]{\small\sffamily 论文符号与算法逻辑}
+\fancyfoot[R]{\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+\setlength{\parindent}{0pt}\setlength{\parskip}{4pt}
+\setlength{\abovedisplayskip}{6pt}\setlength{\belowdisplayskip}{6pt}
+\newcommand{\kw}[1]{\textbf{#1}}
+\newcommand{\fn}[1]{\text{\normalfont\sffamily #1}}
+\newcommand{\Obs}{\mathcal O}
+\newcommand{\Ex}{\mathcal E}
+\newcommand{\Fr}{\mathcal F}
+\newcommand{\New}{\mathcal N}
+\newcommand{\smoothed}[1]{\overset{\approx}{b}\vphantom{b}^{#1}}
+\newcommand{\sect}[2]{\section*{\color{navy}#1\quad #2}}
+\newcounter{algorithm}
+\newlist{steps}{enumerate}{1}
+\setlist[steps]{label=\color{muted}\scriptsize\arabic*,leftmargin=2em,labelsep=0.65em,itemsep=2pt,parsep=0pt,topsep=5pt}
+\newenvironment{algorithmblock}[1]{%
+ \par\medskip\noindent\begin{minipage}{\linewidth}\small
+ \refstepcounter{algorithm}\hrule height 0.6pt\vspace{4pt}
+ {\sffamily\bfseries\color{navy}Algorithm \thealgorithm\quad #1}\par
+ \vspace{2pt}\hrule height 0.3pt\vspace{3pt}
+}{\vspace{3pt}\hrule height 0.6pt\end{minipage}\par\medskip}
+% 续行与所属代码块对齐；每层缩进为 1.6 em。
+\newlength{\blockindent}\setlength{\blockindent}{1.6em}
+\newcommand{\State}[2][0]{\item\hspace*{#1\blockindent}%
+ \parbox[t]{\dimexpr\linewidth-#1\blockindent\relax}{\raggedright#2\strut}}
+\newenvironment{symbols}{\par\small\tabularx{\linewidth}{@{}l>{\raggedright\arraybackslash}X@{}}\toprule 符号 & 含义\\\midrule}{\bottomrule\endtabularx\normalsize\par}
+\newenvironment{englishsymbols}{\par\small\tabularx{\linewidth}{@{}l>{\raggedright\arraybackslash}X@{}}\toprule Symbol & Meaning\\\midrule}{\bottomrule\endtabularx\normalsize\par}
+\begin{document}
+
+{\LARGE\sffamily\bfseries\color{navy}HILP 与候选筛选}
+\sect{1}{问题定义与论文符号}
+{\small 依据 Khonji \& Khalifa（AAAI 2023）的定义、引理 3.3 与算法 1--3，整理 CC-POMDP 版本的核心逻辑；算法编号沿用原文，按正文数学定义统一初始化与停止条件，省略代码实现细节。}
+\begin{gather*}
+ M=\langle S,A,\Obs,T,O,U,b_0,h\rangle,\qquad
+ M''=M\parallel\langle\mathcal R,\Delta\rangle,\\
+ \max_\pi\ \mathbb E\!\left[\sum_{q\in\widetilde\Obs^\pi:\tau(q)>\varsigma}U(S_q,\pi(q))\,\middle|\,\pi\right],
+ \qquad er(0\mid\pi)\le\Delta.
+\end{gather*}
+\begin{symbols}
+ $S,A,\Obs$ & 状态、动作、观测的有限集合。\\
+ $T(s,a,s'),O(o,s',a)$ & 状态转移概率、到达 $s'$ 后产生观测 $o$ 的概率。\\
+ $U(s,a),b_0,h$ & 单步期望效用、初始信念、规划时域（不是动作步数）。\\
+ $\mathcal R,\Delta$ & 危险状态集合、执行过程中至少一次进入危险状态的概率上限。\\
+ $\pi,\widetilde\Obs^\pi,er(0\mid\pi)$ & 确定性条件策略、其观测历史树、从初始状态起的执行风险（包含初态）。\\
+ $q,0,qa,qo$ & 动作--观测历史、空历史、追加动作、追加观测；$q\le q'$ 表示 $q$ 是 $q'$ 的前缀，含自身。\\
+ $\widetilde A,\widetilde\Obs$ & 以动作、观测结尾的历史集合；空历史 $0\in\widetilde\Obs$。\\
+ $a_q^i,o_q^i,|q|$ & 历史中的第 $i$ 个动作、观测及历史步数。\\
+ $D(s,a),\tau(q),\varsigma$ & 动作持续时间、继续执行的判定值、停止阈值；$\tau(q)>\varsigma$ 时继续，否则停止。\\
+ $r(b),R$ & $r(b)=\sum_{s\in\mathcal R}b(s)$；ILP 剩余风险预算 $R=\Delta-r(b_0)$，不同于集合 $\mathcal R$。\\
+ $u_q,r_q,x_q$ & 动作历史的概率加权效用、首次失败概率贡献、二元选择变量；$x_q=1$ 表示策略选择该动作历史。\\
+ $\Ex$ & 已展开的动作历史节点集合，后续分支已进入搜索范围，使用精确系数 $u_q,r_q$。\\
+ $\Fr$ & 已生成、尚未继续向下搜索的候选动作历史节点集合；即 frontier，不是按效用筛出的集合。\\
+ $\New$ & 待生成下一层候选动作的观测历史集合；初始为 $\{0\}$。\\
+ $h_q^u,h_q^r$ & 前沿后续效用的可采纳上界、风险的可采纳下界，均按到达该历史的概率加权。\\
+ $\mathbf x$ & ILP 的二元解，表示一棵条件策略树，不是一条动作序列。\\
+\end{symbols}
+
+\textbf{当前部分树对应的 p-ILP（全文记为 $P$）：}
+\begin{align*}
+ \max_{x_q\in\{0,1\}}\quad
+ &\sum_{q\in\Ex}u_qx_q+\sum_{q\in\Fr}h_q^ux_q,\\
+ \text{约束：}\quad
+ &\sum_{a\in A}x_a=1,\\
+ &\sum_{a\in A}x_{qoa}=x_q
+   \quad(q\in\Ex,\ o\text{ 可达且 }\tau(qo)>\varsigma),\\
+ &\sum_{q\in\Ex}r_qx_q+\sum_{q\in\Fr}h_q^rx_q\le R.
+\end{align*}
+{\small $\Fr=\varnothing$ 时得到完整树的 ILP。选中父动作后，每个可达且需继续的观测分支都必须选择一个后继动作；停止叶仍计入最后一步奖励和风险。}
+
+\newpage
+\sect{2}{Expand：更新信念、效用、风险与持续时间}
+{\small Expand 回答“执行这个动作后会发生什么”，不负责挑选最优动作。根信念为 $b_0$，空历史的发生概率为 $1$；效用与持续时间用普通信念，风险只累计首次进入危险状态的概率。}
+\setcounter{algorithm}{1}
+\begin{algorithmblock}{\fn{Expand}$(qa)$: CC-POMDP}
+ \textbf{Input:} History $q$, action $a$, current beliefs, model $M''$, and duration $D$.\par
+ \textbf{Output:} Utility $u_{qa}$, risk $r_{qa}$, and reachable observation histories $qao$ with updated beliefs and $\tau(qao)$.
+ \begin{steps}
+  \State{Predict the possible next states after action $a$ using $T$}
+  \State{Compute $u_{qa}$: expected one-step utility, weighted by the probability of reaching $q$}
+  \State{Compute $r_{qa}$: probability of staying safe through $q$ and first entering $\mathcal R$ after $a$}
+  \State{\kw{for each} reachable observation $o$ \kw{do}}
+  \State[1]{Create observation history $qao$}
+  \State[1]{Update its ordinary and safe-prefix beliefs and history probabilities using $O$}
+  \State[1]{Compute $\tau(qao)$ from the chosen duration model}
+  \State[1]{Mark $qao$ as continuing if $\tau(qao)>\varsigma$; otherwise mark it as stopped}
+  \State{\kw{end for}}
+  \State{\kw{return} $u_{qa},r_{qa}$ and the observation results}
+ \end{steps}
+\end{algorithmblock}
+{\small 零安全概率不删除普通观测分支，只令相应风险贡献为零；无需对零概率信念归一化。停止分支仍计入本次动作的奖励与风险，但不再生成后继动作。}
+
+\textbf{持续时间判定（从 Expand 中独立列出）：}
+\begin{symbols}
+ $\smoothed{i-1}_q(s),s^{i-1}$ & 给定完整历史 $q$，第 $i$ 个动作开始前状态为 $s$ 的平滑后验，以及该时刻的随机状态；平滑使用普通信念及后续观测。\\
+ $\mu_{s,a},\sigma_{s,a}^2$ & $D(s,a)$ 的均值与方差；S 模式假设独立高斯噪声。\\
+\end{symbols}
+\[
+ \mu_q=\sum_{i=1}^{|q|}\sum_s\smoothed{i-1}_q(s)\mu_{s,a_q^i},\qquad
+ \sigma_q^2=\sum_{i=1}^{|q|}\sum_s[\smoothed{i-1}_q(s)]^2\sigma_{s,a_q^i}^2.
+\]
+\begin{symbols}
+ Fixed & $D(s,a)=c_a$：$\tau(q)=h-\sum_{i=1}^{|q|}c_{a_q^i}$，$\varsigma=0$。\\
+ Expected (E) & $\tau(q)=h-\mu_q$，$\varsigma=0$。\\
+ Stochastic (S) & $\displaystyle\tau(q)=\frac12\left[1+\operatorname{erf}\!\left(\frac{h-\mu_q}{\sqrt{2}\sigma_q}\right)\right]$；$\sigma_q=0$ 时按 $\mu_q<h$ 取 $1$，否则取 $0$。\\
+ 状态依赖确定性时长 & 若使用分位数准则，则 $\tau(q)=\Pr(\sum_iD(s^{i-1},a_q^i)<h\mid q)$，通过状态与累计时长的增广分布计算，而非仅取均值。\\
+\end{symbols}
+
+\newpage
+\sect{3}{Preprocess 与 HILP：完整展开和选择性展开}
+\setcounter{algorithm}{0}
+\begin{algorithmblock}{\fn{Preprocess}$(M'',D,\varsigma)$}
+ \textbf{Input:} Durative CC-POMDP and stopping threshold.\par
+ \textbf{Output:} Full-tree coefficients $(u_q,r_q)$, budget $R$, and duration function $\tau$.
+ \begin{steps}
+  \State{Initialize the root from $b_0$; $R\gets\Delta-r(b_0)$; $\New\gets\{0\}$; $\Ex\gets\varnothing$}
+  \State{\kw{while} $\New\ne\varnothing$ \kw{do}}
+  \State[1]{Take one pending observation history $q$ out of $\New$}
+  \State[1]{\kw{for each} $a\in A$ \kw{do}}
+  \State[2]{Call \fn{Expand}$(qa)$; store its results and add $qa$ to $\Ex$}
+  \State[2]{Add every continuing observation history $qao$ to $\New$}
+  \State[1]{\kw{end for}}
+  \State{\kw{end while}}
+  \State{\kw{return} $(u_q,r_q)_{q\in\Ex},R,\tau$}
+ \end{steps}
+\end{algorithmblock}
+
+\setcounter{algorithm}{2}
+\begin{algorithmblock}{\fn{HILP}$(M'',D,\varsigma,\fn{Solver})$}
+ \textbf{Input:} Durative CC-POMDP, admissible heuristics $h^u,h^r$, and an ILP solver.\par
+ \textbf{Output:} A policy $\mathbf x$, or infeasibility.
+ \begin{steps}
+  \State{Initialize the root from $b_0$; $R\gets\Delta-r(b_0)$}
+  \State{$\Ex\gets\varnothing$; $\Fr\gets\varnothing$; $\New\gets\{0\}$}
+  \State{\kw{repeat}}
+  \State[1]{\kw{Generate frontier:} create $qa$ for every $q\in\New$ and $a\in A$}
+  \State[1]{Call \fn{Expand}$(qa)$ for each new candidate; store its results and add it to $\Fr$}
+  \State[1]{Assign bounds $h_{qa}^u,h_{qa}^r$; use exact $u_{qa},r_{qa}$ if all reachable observations stop}
+  \State[1]{$\New\gets\varnothing$}
+  \State[1]{\kw{Select a partial policy:} $\mathbf x\gets\fn{Solver}[\text{p-ILP}(\Ex,\Fr)]$}
+  \State[1]{\kw{if} p-ILP is infeasible \kw{then return} infeasibility}
+  \State[1]{\kw{Extend the selected frontier:}}
+  \State[1]{\kw{for each} $q\in\Fr$ with $x_q=1$ \kw{do}}
+  \State[2]{Move $q$ from $\Fr$ to $\Ex$; replace its bounds by exact $u_q,r_q$}
+  \State[2]{Add every reachable $qo$ with $\tau(qo)>\varsigma$ to $\New$}
+  \State[1]{\kw{end for}}
+  \State[1]{Keep all unselected action-history nodes in $\Fr$}
+  \State{\kw{until} $\New=\varnothing$}
+  \State{\kw{return} $\mathbf x$}
+ \end{steps}
+\end{algorithmblock}
+
+\begin{symbols}
+ Preprocess & 不看效用排名，展开所有需继续的历史；随后 Full-ILP 一次求解完整模型。\\
+ Expand 与 frontier & Expand 计算一步结果；候选动作历史节点进入 $\Fr$，被 ILP 选中后才继续生成后继节点。\\
+ 中间解 $\mathbf x$ & $x_q=1$ 决定下轮向哪里展开；处理全部被选中的前沿，不是只选效用最大的一个。\\
+ 停止与最优性 & 假设持续时间停止条件使搜索树有限。停止时 $\New=\varnothing$，不要求 $\Fr=\varnothing$；最优性依赖可采纳界及精确求解各 p-ILP。\\
+\end{symbols}
+
+\newpage
+\begingroup
+\setlength{\parskip}{2pt}
+\setlist[steps]{label=\color{muted}\scriptsize\arabic*,leftmargin=2em,labelsep=0.65em,itemsep=0pt,parsep=0pt,topsep=3pt}
+\sect{4}{前缀固定 / Prefix Fixing}
+\textbf{中文符号表}
+\begin{symbols}
+ $\Ex,\Fr$ & 当前树中已展开、前沿的动作历史节点集合；元素 $q\in\widetilde A$ 是以动作结尾的动作--观测历史。当前部分模型为 $\text{p-ILP}(\Ex,\Fr)$。\\
+ $\mathbf x^-,\mathbf x,\mathbf x^+$ & 上一轮、本轮、下一轮的 Gurobi 解；$\mathbf x^{(i)}$ 为第 $i$ 轮的解，含重建的固定变量。新节点在旧解中的分量记为 $0$；解不一定已是完整策略。\\
+ $\mathcal H,n$ & 保存最近 $n\ge2$ 轮 ILP 解向量的队列；满时 $\mathcal H=(\mathbf x^{(t-n+1)},\ldots,\mathbf x^{(t)})$。由外层 HILP 维护，初始为空，不足 $n$ 轮时保留已有结果，满后先进先出，相同结果不去重。\\
+ $C_1,C_0;\ C_1^+,C_0^+$ & 本轮及下一轮固定选择/排除的动作历史节点集合，初始为空；固定的是对应节点的 $x_q=1/0$，不是基本动作 $a$。\\
+ $q\le q'$ & $q$ 是动作历史 $q'$ 的前缀，包含 $q=q'$；用于排除整个分支。\\
+ $\bot$ & Gurobi 无可返回解时的返回值，不代表原问题无解；仍返回 $C_1^+,C_0^+$。有解时先取得自由变量，再补回固定分量。\\
+\end{symbols}
+
+\textbf{English symbol table}
+\begin{englishsymbols}
+ $\Ex,\Fr$ & Expanded and frontier sets of action-history nodes. Each $q\in\widetilde A$ is an action-observation history ending in an action. The current partial model is $\text{p-ILP}(\Ex,\Fr)$.\\
+ $\mathbf x^-,\mathbf x,\mathbf x^+$ & Previous, current, and next Gurobi solutions; $\mathbf x^{(i)}$ is the solution at iteration $i$, including reconstructed fixed variables. New nodes have zero entries in older solutions. A solution need not be a complete policy.\\
+ $\mathcal H,n$ & A queue of the last $n\ge2$ ILP solution vectors; when full, $\mathcal H=(\mathbf x^{(t-n+1)},\ldots,\mathbf x^{(t)})$. Maintained by outer HILP, initially empty; retain available entries until full, then evict the oldest. Keep duplicate results.\\
+ $C_1,C_0;\ C_1^+,C_0^+$ & Current and next sets of action-history nodes fixed as selected/excluded, initially empty. The fixings $x_q=1/0$ apply to individual history nodes, not primitive actions $a$.\\
+ $q\le q'$ & Action history $q$ is a prefix of $q'$, including equality; used to exclude a whole branch.\\
+ $\bot$ & Gurobi returns $\bot$ if no solution is available, not proof of original infeasibility; still return $C_1^+,C_0^+$. Otherwise, recover fixed entries after solving for free variables.\\
+\end{englishsymbols}
+
+\begingroup
+\setlength{\parskip}{0pt}
+\begin{algorithmblock}{\fn{PrefixFixing}: $t\to t+1$ \textnormal{(replaces line 11 of the original HILP algorithm)}}
+ \textbf{Input:} $(\Ex,\Fr,\mathcal H,n,C_1,C_0)$.\par
+ \textbf{Output:} $(\mathbf x^+,C_1^+,C_0^+)$.
+ \begin{steps}[topsep=0pt]
+  \State{$C_1^+\gets C_1$; $C_0^+\gets C_0$}
+  \State{\kw{if} $|\mathcal H|=n$ \kw{then}}
+  \State[1]{$C_1^+\gets\Ex\cup\Fr$}
+  \State[1]{\kw{for each} $\mathbf x^{(i)}\in\mathcal H$ \kw{do}}
+  \State[2]{$C_1^+\gets\{q\in C_1^+:x_q^{(i)}=1\}$}
+  \State[1]{\kw{end for}}
+  \State[1]{$C_1^+\gets C_1\cup C_1^+$}
+  \State{\kw{end if}}
+  \State{$C_0^+\gets C_0^+\cup\{qa':qa\in C_1^+,\ a'\in A\setminus\{a\}\}$}
+  \State{$C_0^+\gets\{q'\in\Ex\cup\Fr:\exists q\in C_0^+,\ q\le q'\}$}
+  \State{\kw{if} $C_1^+\cap C_0^+\ne\varnothing$ \kw{then return} $(\bot,C_1^+,C_0^+)$}
+  \State{$\mathbf x^+\gets\fn{Gurobi}\!\left(\left.\text{p-ILP}(\Ex,\Fr)\right|_{x_q=1\ (q\in C_1^+),\ x_q=0\ (q\in C_0^+)}\right)$}
+  \State{\kw{if} $\mathbf x^+=\bot$ \kw{then return} $(\bot,C_1^+,C_0^+)$}
+  \State{\kw{for each} $q\in C_1^+$ \kw{do}}
+  \State[1]{$x_q^+\gets1$}
+  \State{\kw{end for}}
+  \State{\kw{for each} $q\in C_0^+$ \kw{do}}
+  \State[1]{$x_q^+\gets0$}
+  \State{\kw{end for}}
+  \State{\kw{return} $(\mathbf x^+,C_1^+,C_0^+)$}
+ \end{steps}
+ {\footnotesize\color{muted}// Gurobi binaries after elimination: $|\Ex\cup\Fr|\longrightarrow|\Ex\cup\Fr|-|C_1^+\cup C_0^+|$; global optimality is not guaranteed.\par}
+\end{algorithmblock}
+\endgroup
+
+\newpage
+\sect{5}{心跳筛选 / Heartbeat}
+\textbf{中文符号表}
+\begin{symbols}
+ $\Ex,\Fr$ & 当前树中已展开、前沿的动作历史节点集合；元素 $q\in\widetilde A$ 是以动作结尾的动作--观测历史。当前部分模型为 $\text{p-ILP}(\Ex,\Fr)$。\\
+ $\mathbf x^-,\mathbf x,\mathbf x^+$ & 上一轮、本轮、下一轮的解；用 $\mathbf x$ 判断最近选中的动作历史节点。首次调用及新节点取 $x_q=0$，仅表示此前未选中。\\
+ $\boldsymbol\omega,\boldsymbol\omega^+$ & 本轮及下一轮按 $q$ 索引的心跳字典；外层 HILP 在首次调用前置 $\boldsymbol\omega\gets\varnothing$，后续传入上轮返回值，不再清空。$q\notin\operatorname{dom}\boldsymbol\omega$ 表示新节点。\\
+ $\omega_0,\lambda$ & 重置分数 $\omega_0\ge1$、衰减因子 $0<\lambda<1$；下一轮分数小于 $1$ 的未保护分支被排除。\\
+ $C_0,C_0^+$ & 本轮及下一轮累计排除的动作历史节点集合，初始为空；代入 $x_q=0\ (q\in C_0^+)$ 后消元，保留根约束及全部观测流约束。\\
+ $q\le q'$ & 前缀关系，含自身；未排除的新节点、本轮选中节点及其祖先不被剪除，但不强制其 $x_q=1$。\\
+ $\bot$ & Gurobi 无可返回解时返回 $\bot$；不证明原问题无解。\\
+\end{symbols}
+
+\textbf{English symbol table}
+\begin{englishsymbols}
+ $\Ex,\Fr$ & Expanded and frontier sets of action-history nodes. Each $q\in\widetilde A$ is an action-observation history ending in an action. The current partial model is $\text{p-ILP}(\Ex,\Fr)$.\\
+ $\mathbf x^-,\mathbf x,\mathbf x^+$ & Previous, current, and next solutions; $\mathbf x$ identifies selected action-history nodes. Initially, and for new nodes, $x_q=0$ only marks no previous selection.\\
+ $\boldsymbol\omega,\boldsymbol\omega^+$ & Current and next heartbeat maps indexed by $q$. Outer HILP initializes $\boldsymbol\omega\gets\varnothing$ before the first call, then passes the previous output without clearing it. Nodes outside $\operatorname{dom}\boldsymbol\omega$ are new.\\
+ $\omega_0,\lambda$ & Reset score $\omega_0\ge1$ and decay factor $0<\lambda<1$; exclude unprotected branches whose next score is below $1$.\\
+ $C_0,C_0^+$ & Current and next sets of excluded action-history nodes, initially empty. Eliminate $x_q=0\ (q\in C_0^+)$ while retaining root and all observation-flow constraints.\\
+ $q\le q'$ & Prefix relation, including equality. Protect unexcluded new/currently selected nodes and their ancestors from pruning, without fixing $x_q=1$.\\
+ $\bot$ & Gurobi returns $\bot$ if no solution is available; this does not prove original infeasibility.\\
+\end{englishsymbols}
+
+\begingroup
+\setlength{\parskip}{0pt}
+\begin{algorithmblock}{\fn{Heartbeat}: $t\to t+1$ \textnormal{(replaces line 11 of the original HILP algorithm)}}
+ \textbf{Input:} $(\Ex,\Fr,\mathbf x,\boldsymbol\omega,C_0,\omega_0,\lambda)$.\par
+ \textbf{Output:} $(\mathbf x^+,\boldsymbol\omega^+,C_0^+)$.
+ \begin{steps}[topsep=0pt]
+  \State{$C_0^+\gets\{q'\in\Ex\cup\Fr:\exists q\in C_0,\ q\le q'\}$; $\boldsymbol\omega^+\gets\boldsymbol\omega$}
+  \State{\kw{for each} $q\in\Ex\cup\Fr$ \kw{do}}
+  \State[1]{\kw{if} $q\notin\operatorname{dom}\boldsymbol\omega$ \kw{then} $\omega_q^+\gets\omega_0$}
+  \State[1]{\kw{if} $q\notin C_0^+\ \land\ (q\notin\operatorname{dom}\boldsymbol\omega\ \lor\ x_q=1)$ \kw{then} $\omega_q^+\gets\omega_0$}
+  \State[1]{\kw{else} $\omega_q^+\gets\lambda\omega_q^+$}
+  \State[1]{\kw{end if}}
+  \State{\kw{end for}}
+  \State{$\begin{aligned}[t]
+   C_0^+\gets C_0^+\cup\bigl\{q\in\Ex\cup\Fr:\;&\omega_q^+<1,\\
+   &\nexists q'\in(\Ex\cup\Fr)\setminus C_0^+:\\
+   &q\le q'\ \land\ (q'\notin\operatorname{dom}\boldsymbol\omega\ \lor\ x_{q'}=1)\bigr\}
+  \end{aligned}$}
+  \State{$C_0^+\gets\{q'\in\Ex\cup\Fr:\exists q\in C_0^+,\ q\le q'\}$}
+  \State{$\mathbf x^+\gets\fn{Gurobi}\!\left(\left.\text{p-ILP}(\Ex,\Fr)\right|_{x_q=0\ (q\in C_0^+)}\right)$}
+  \State{\kw{if} $\mathbf x^+=\bot$ \kw{then return} $(\bot,\boldsymbol\omega^+,C_0^+)$}
+  \State{\kw{for each} $q\in C_0^+$ \kw{do}}
+  \State[1]{$x_q^+\gets0$}
+  \State{\kw{end for}}
+  \State{\kw{return} $(\mathbf x^+,\boldsymbol\omega^+,C_0^+)$}
+ \end{steps}
+ {\footnotesize\color{muted}// Gurobi binaries after eliminating $C_0^+$: $|\Ex\cup\Fr|\longrightarrow|\Ex\cup\Fr|-|C_0^+|$; global optimality is not guaranteed.\par}
+\end{algorithmblock}
+\endgroup
+\endgroup
+\newpage
+\sect{6}{Rank-based：自底向上的子树筛选（保留比例）}
+\begingroup
+\setlength{\parskip}{3pt}
+{\small 先对全部 $\Fr$ 打分并保留前 $\lceil\lambda|\Fr|\rceil$ 个作为 $\Fr'$；再从 $(\Fr\setminus\Fr')$ 的父动作节点自底向上收集候选子树根 $\Ex_{\text{subtree-root}}$。若集合中所有候选子树未保护的 E 数量之和仍不足剩余删除目标 $\lceil\lambda|\Ex|\rceil$ 对应的缺口，则不评分、不试删，直接把 $\Ex_{\text{subtree-root}}$ 上移到它们的父节点继续。一旦容量达标，才按子树 $\fn{Score}$ 从低到高删除可删部分；删除时只移除未被保护、且删除后同一观测组仍有备选的完整动作侧枝，\textbf{始终保留包含 $\Fr'$ 的那条路径}。若删完本层仍未达标，则继续上移一层。与当前 Python 实现一致；比例是软目标，不保证最优性。}
+
+\textbf{中文符号与操作定义（算法 6）}
+\renewenvironment{symbols}{\par\small\tabularx{\linewidth}{@{}p{0.30\linewidth}>{\raggedright\arraybackslash}X@{}}\toprule 符号或操作 & 含义\\\midrule}{\bottomrule\endtabularx\normalsize\par}
+\renewenvironment{englishsymbols}{\par\footnotesize\tabularx{\linewidth}{@{}p{0.30\linewidth}>{\raggedright\arraybackslash}X@{}}\toprule Symbol or operation & Definition\\\midrule}{\bottomrule\endtabularx\normalsize\par}
+\begin{symbols}
+ $\Ex,\Fr;\ \Ex',\Fr'$ & 输入的已展开、未展开动作历史集合；输出的保留子集。中间的 $\Fr'$ 是初选高分集合，返回前更新为实际保留的全部 F。\\
+ $q,q',o;\ G,n$ & 动作历史、后继动作历史、观测；任意动作历史子集 $G\subseteq\Ex\cup\Fr$、非负整数 $n$。\\
+ $u_q,r_q;\ h_q^u,h_q^r$ & 输入的 E 精确系数、F 启发式系数，已包含历史到达概率权重。\\
+ $\alpha,\lambda,R$ & 输入参数：风险评分权重 $\alpha\ge0$、保留比例 $0<\lambda\le1$、剩余风险预算 $R=\Delta-r(b_0)$。\\
+ $\mathbf x^-,\fn{DeadEnds}$ & 输入的上一轮 ILP 二元解、已知无合法后续策略的动作历史集合；首次调用或未出现的变量取 $x_q^-=0$。\\
+ $\fn{kept},\fn{protected}$ & 当前保留的动作历史集合；禁止删除的历史集合，包括初选 F、仍可用的上一轮选择及其全部祖先。\\
+ $\Ex_{\text{subtree-root}},\fn{parents}$ & 候选子树根集合；该集合的父动作历史中仍在 $\Ex'$ 的部分，供下一轮上移。\\
+ $\fn{subtreeSize}(q)$ & q 子树中仍保留、未保护的 E 数量；包括已完成的 E 叶节点，不包含 F。\\
+ $\fn{target},\fn{capacity},\fn{cut}$ & 本轮剩余 E 删除目标；候选子树并集中未保护 E 的数量（可删量上界）；一次实际删除的动作历史集合。\\
+ $\cap,\cup,\setminus,\varnothing$;\newline $|G|,\lceil\cdot\rceil$ & 交集、并集、差集、空集；集合大小、向上取整。例如 $\Fr\cap\fn{kept}$ 是当前仍保留的 F，不是乘法。\\
+ $\fn{Parents}(G)$,\newline $\fn{Ancestors}(G)$ & G 的最近父动作历史集合（跳过观测历史）；G 的全部严格祖先动作历史集合。根动作没有父动作；空集合返回空集合。\\
+ $\fn{Subtree}(q)$ & 输入树中以 q 为根的所有后代动作历史，包含 q 自身。\\
+ $\fn{Observations}(q)$,\newline $\fn{Actions}(qo)$ & q 后可达且需继续执行的观测；观测历史 qo 后的备选动作历史集合，即一个 OR 动作组。根动作组为 $\fn{Actions}(0)$。\\
+ $\fn{Usable}(G,R)$ & 返回 G 中仍可达、局部可用的历史：排除 DeadEnds 和前缀风险系数之和超过 $R+10^{-6}$ 的节点；自底向上排除任一必要观测组没有可用动作的节点，再自顶向下排除其后代。前缀风险使用 E 的 $r_q$ 与 F 的 $h_q^r$，包含自身；不证明全局可行性。\\
+ $\fn{Top}(G,n)$,\newline $\fn{Sort}(G,\fn{Score}\uparrow)$ & 按 Score 降序取至多 n 个历史，返回集合；按 Score 升序返回 G 的有序列表（$\uparrow$ 表示升序）。同分使用输入树的固定动作遍历顺序。\\
+ $\fn{OuterRoots}(G)$ & 返回 $\{q\in G:\fn{Ancestors}(\{q\})\cap G=\varnothing\}$，删除嵌套候选根，使候选子树互不重叠。\\
+ $\fn{Removable}(q,\fn{kept},\fn{protected},n)$ & 返回可删侧枝并集：只检查含未保护 E 的存活子树，按固定动作顺序自顶向下遍历。仅当节点未保护且同一 OR 组还有其他存活动作时整棵删枝，否则检查其孩子。每次试删更新局部视图；删去的 E 数量达到 n 即停止（整棵删枝可超额）。不删 protected；无可删 E 或 q 已删除时返回空集。\\
+ $\fn{TrimFrontier}(\fn{kept},\fn{protected})$ & 返回更新后的 kept：逐个存活 OR 组删除未保护 F；若该组全部是未保护 F，则留下最高分的一个。同分按固定动作顺序。\\
+\end{symbols}
+
+\newpage
+\textbf{English symbols and operation definitions (Algorithm 6)}
+\begin{englishsymbols}
+ $\Ex,\Fr;\ \Ex',\Fr'$ & Input expanded/frontier action histories; retained output subsets. Intermediate F' is the initial high-score selection; final F' contains all retained frontier histories.\\
+ $q,q',o;\ G,n$ & An action history, a successor action history, an observation; any history subset $G\subseteq\Ex\cup\Fr$ and a nonnegative integer n.\\
+ $u_q,r_q;\ h_q^u,h_q^r$ & Input exact E coefficients and heuristic F coefficients, already weighted by history probabilities.\\
+ $\alpha,\lambda,R$ & Input risk-score weight $\alpha\ge0$, retention fraction $0<\lambda\le1$, and residual risk budget $R=\Delta-r(b_0)$.\\
+ $\mathbf x^-,\fn{DeadEnds}$ & Input previous binary ILP solution and known histories with no legal continuation. Set $x_q^-=0$ on the first call or for an unseen variable.\\
+ $\fn{kept},\fn{protected}$ & Currently retained histories; histories forbidden to be deleted: initially selected F, usable previous choices, and all their ancestors.\\
+ $\Ex_{\text{subtree-root}},\fn{parents}$ & Candidate subtree roots; their parent action histories still in E', used in the next upward round.\\
+ $\fn{subtreeSize}(q)$ & Retained, unprotected E count in the subtree of q, including completed E leaves but excluding F.\\
+ $\fn{target},\fn{capacity},\fn{cut}$ & Remaining E deletion quota; unprotected E count in the union of candidate subtrees (an upper bound); histories actually removed in one cut.\\
+ $\cap,\cup,\setminus,\varnothing$;\newline $|G|,\lceil\cdot\rceil$ & Intersection, union, set difference, empty set; cardinality and ceiling. $\Fr\cap\fn{kept}$ means frontier histories still retained.\\
+ $\fn{Parents}(G)$,\newline $\fn{Ancestors}(G)$ & Nearest parent action histories (skip observation histories); all strict ancestor action histories of G. Root actions have no parent action; an empty input gives an empty set.\\
+ $\fn{Subtree}(q)$ & All descendant action histories in the input tree, including q.\\
+ $\fn{Observations}(q)$,\newline $\fn{Actions}(qo)$ & Reachable observations requiring continuation after q; alternative action histories after qo (one OR group). $\fn{Actions}(0)$ is the root action group.\\
+ $\fn{Usable}(G,R)$ & Return locally usable, reachable histories: exclude DeadEnds and histories whose prefix risk exceeds $R+10^{-6}$; bottom-up, exclude a history if any required observation group has no usable action; top-down, exclude its descendants. Prefix risk sums E's $r_q$ and F's $h_q^r$, including the current history. This is not a global feasibility certificate.\\
+ $\fn{Top}(G,n)$,\newline $\fn{Sort}(G,\fn{Score}\uparrow)$ & Return a set of up to n highest-score histories; return G as an ascending-score list. Resolve ties by the fixed input-tree action traversal order.\\
+ $\fn{OuterRoots}(G)$ & Return $\{q\in G:\fn{Ancestors}(\{q\})\cap G=\varnothing\}$, removing nested roots to obtain disjoint subtrees.\\
+ $\fn{Removable}(q,\fn{kept},\fn{protected},n)$ & Return deletable side branches. Inspect only surviving subtrees containing unprotected E, top-down in fixed action order. Delete a whole unprotected action subtree only if its OR group has another surviving action; otherwise inspect its children. Update the local view after each deletion; stop after deleting n E histories (a whole branch may overshoot). Never delete protected histories. Return empty if q is absent or no E can be deleted.\\
+ $\fn{TrimFrontier}(\fn{kept},\fn{protected})$ & Return updated kept after removing unprotected F in each surviving OR group; keep its highest-score F if all available actions are unprotected F. Use fixed action order for ties.\\
+\end{englishsymbols}
+
+\begin{equation}\label{eq:rank-score}
+ \fn{Score}(q)=
+ \begin{cases}
+ h_q^u-\alpha h_q^r,&q\in\Fr,\\[2pt]
+ u_q-\alpha r_q+\displaystyle\sum_{o\in\fn{Observations}(q)}
+ \max_{q'\in\fn{Actions}(qo)\cap\fn{kept}}\fn{Score}(q'),&q\in\Ex.
+ \end{cases}
+\end{equation}
+{\small Score is evaluated bottom-up on kept, children before parents. An empty observation sum is zero; Usable ensures every required maximum has at least one action. Candidate scores are computed once per scoring round, before that round's cuts. / Score 在 kept 上按孩子先于父亲的顺序计算；空和为零，Usable 保证每个必要观测的最大值集合非空。同一评分轮次先统一评分，再按该评分删枝。}
+
+\newpage
+\setlist[steps]{label=\color{muted}\scriptsize\arabic*,leftmargin=2em,labelsep=0.65em,itemsep=1pt,parsep=0pt,topsep=3pt}
+\begin{algorithmblock}{\fn{BottomUpRankPruning}$(\Ex,\Fr,\mathbf x^-;\alpha,\lambda,R)$}
+ \textbf{Input:} $\Ex,\Fr$, their coefficients and tree links (with fixed action order), $\fn{DeadEnds}$, previous solution $\mathbf x^-$, and parameters $\alpha,\lambda,R$.\par
+ \textbf{Output:} $\Ex'\subseteq\Ex,\ \Fr'\subseteq\Fr$.\par
+ \begin{steps}
+  \State{\kw{if} $\lambda=1$ \kw{then return} $(\Ex,\Fr)$}
+  \State{\kw{for each} $q\in\Fr$ \kw{do} $\fn{Score}(q)\gets h_q^u-\alpha h_q^r$}
+  \State{$\fn{kept}\gets\fn{Usable}(\Ex\cup\Fr,R)$;\quad $\Ex'\gets\Ex\cap\fn{kept}$}
+  \State{$\Fr'\gets\fn{Top}(\Fr\cap\fn{kept},\lceil\lambda|\Fr|\rceil)$}
+  \State{$\fn{protected}\gets\Fr'\cup\{q\in\fn{kept}:x_q^-=1\}$}
+  \State{$\fn{protected}\gets\fn{protected}\cup\fn{Ancestors}(\fn{protected})$}
+  \State{$\Ex_{\text{subtree-root}}\gets\fn{Parents}((\Fr\cap\fn{kept})\setminus\fn{protected})\cap\Ex'$}
+  \State{$\Ex_{\text{subtree-root}}\gets\Ex_{\text{subtree-root}}\cup\{q\in\Ex':\fn{Observations}(q)=\varnothing\}$}
+  \State{\kw{while} $|\Ex'|>\lceil\lambda|\Ex|\rceil$ and $\Ex_{\text{subtree-root}}\ne\varnothing$ \kw{do}}
+  \State[1]{$\Ex_{\text{subtree-root}}\gets\fn{OuterRoots}(\Ex_{\text{subtree-root}}\cap\fn{kept})$}
+  \State[1]{$\fn{target}\gets|\Ex'|-\lceil\lambda|\Ex|\rceil$}
+  \State[1]{\kw{for each} $q\in\Ex_{\text{subtree-root}}$ \kw{do}}
+  \State[2]{$\fn{subtreeSize}(q)\gets|(\fn{Subtree}(q)\cap\Ex')\setminus\fn{protected}|$}
+  \State[1]{\kw{end for}}
+  \State[1]{$\fn{capacity}\gets\displaystyle\sum_{q\in\Ex_{\text{subtree-root}}}\fn{subtreeSize}(q)$}
+  \State[1]{$\fn{parents}\gets\fn{Parents}(\Ex_{\text{subtree-root}})\cap\Ex'$}
+  \State[1]{\kw{if} $\fn{capacity}>0$ and $(\fn{capacity}\ge\fn{target}\ \text{or}\ \fn{parents}=\varnothing)$ \kw{then}}
+  \State[2]{Evaluate $\fn{Score}(q)$ for all $q\in\fn{kept}$ bottom-up using \eqref{eq:rank-score}}
+  \State[2]{\kw{for each} $q\in\fn{Sort}(\Ex_{\text{subtree-root}},\fn{Score}\uparrow)$ \kw{do}}
+  \State[3]{$\fn{cut}\gets\fn{Removable}(q,\fn{kept},\fn{protected},|\Ex'|-\lceil\lambda|\Ex|\rceil)$}
+  \State[3]{$\fn{kept}\gets\fn{kept}\setminus\fn{cut}$;\quad $\Ex'\gets\Ex\cap\fn{kept}$}
+  \State[3]{\kw{if} $|\Ex'|\le\lceil\lambda|\Ex|\rceil$ \kw{then break}}
+  \State[2]{\kw{end for}}
+  \State[1]{\kw{end if}}
+  \State[1]{$\Ex_{\text{subtree-root}}\gets\fn{parents}\cap\Ex'$}
+  \State{\kw{end while}}
+  \State{$\fn{kept}\gets\fn{TrimFrontier}(\fn{kept},\fn{protected})$}
+  \State{$(\Ex',\Fr')\gets(\Ex\cap\fn{kept},\Fr\cap\fn{kept})$}
+  \State{\kw{return} $(\Ex',\Fr')$}
+ \end{steps}
+ {\footnotesize\color{muted}// Removable returns empty for a removed root. Recompute each cut after earlier deletions.\par}
+ {\footnotesize\color{muted}// Count before scoring; capacity is only an upper bound because observation coverage may require keeping extra histories.\par}
+ {\footnotesize\color{muted}// Accumulate subtreeSize bottom-up; after deletion, update affected ancestors. Do not enumerate every subtree repeatedly.\par}
+ {\footnotesize\color{muted}// At the highest reachable layer, apply the remaining valid cuts even if the quota is unattainable.\par}
+ {\footnotesize\color{muted}// Submitted binaries: $|\Ex\cup\Fr|\longrightarrow|\Ex'\cup\Fr'|$; the ratio is soft and optimality is not guaranteed.\par}
+\end{algorithmblock}
+
+{\small 原树不修改；仅用 $\Ex',\Fr'$ 构建受限 ILP，未保留变量取零。Gurobi 求解与受限不可行时的回退仍在算法外。/ The input tree is unchanged; build the restricted ILP on E', F' with omitted variables fixed to zero. Solving and infeasibility fallback remain outside this procedure.}
+\endgroup
+\end{document}

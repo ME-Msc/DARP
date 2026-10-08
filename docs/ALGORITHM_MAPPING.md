@@ -189,6 +189,78 @@ $$
 
 保持 `hilp.py` 管理 E/F 与停止条件，`expand.py` 负责 belief/duration 的数值传播，`ilp_tree.py` 负责模型编码，`gurobi.py` 负责求解器生命周期。使用这些职责边界及符号注释对应原文，避免把所有工程变量强行改成单字母。
 
+<a id="rank-subtree"></a>
+
+### Rank：自底向上的受保护子树筛选
+
+这是近似扩展，不是无损剪枝。原 E/F、概率传播、duration 与风险语义不变；只缩小当轮提交给 Gurobi 的变量集合。省略变量相当于固定为 0，不能丢掉祖先或某个必要观测。
+
+| 符号/名称 | 含义 | 代码 |
+|:--|:--|:--|
+| E,F,q,x_q | 原 HILP 的已展开历史、frontier、动作历史、选择变量 | `partial_ilp`、`frontier_variable_ids` |
+| α | 非负风险评分权重；不改变原效用目标 | `rank_alpha` |
+| λ | 保留比例，0 < λ ≤ 1；1 绕过筛选 | `rank_lambda` |
+| E′,F′ | 当前提交的子集；不是下一轮完整搜索集合 | `kept` 与 E/F 的交集 |
+| protected | 高分 F、上一轮可用选择及其祖先 | `protected` |
+| subtreeSize(q) | 子树中尚存、未保护的 E 数量，包括已完成 E 叶节点 | `count[q]` |
+| candidates | 当前待处理子树根；不假定 F 等深 | `candidates` |
+| capacity | 去除嵌套根后的子树计数之和，是可删规模的上界 | `capacity` |
+
+#### 评分及执行
+
+`Score(q) = h_u(q) - α h_r(q)`（F）；`Score(q) = u(q) - α r(q) + sum_o max_{q′ in Actions(qo) ∩ kept} Score(q′)`（E）。
+
+系数已含历史概率，不再加权。只有继续观测参与求和；已完成 E 没有后续项。先检查死路、前缀风险和祖先可达性，得到 usable；前缀未超预算不代表全局风险可行，全局 risk row 始终保留。
+
+1. 对所有 F 评分，保护前 ceil(λ|F|) 个可用 F，以及上一轮可用选择与全部祖先。
+2. 一次逆拓扑遍历统计各子树未保护 E 数量。不在核心节点上加永久缓存。
+3. 候选根从未保护 F 的父动作节点开始；已完成 E 叶节点也加入，避免漏掉没有 F 后代的分支。
+4. 候选集合去除嵌套根，再计算容量。若容量小于剩余删除目标且还有父层，不评分、不试删，直接上移。
+5. 容量足够时，逆拓扑 DP 计算当前保留子树分数，按候选根分数升序处理。能删除整个未保护动作子树就删；遇到受保护根或同观测唯一动作则保留该根，继续检查内部侧枝。每次删枝更新组内动作数和祖先计数。
+6. 若 E 仍超过目标，继续上移；最高层尽力删除后退出。最后筛 F，但每个保留观测至少有一个动作可选。
+7. 真正从提交模型中省略变量及其系数，保留根和全局风险行，不重归一化。受限 ILP 不可行时，同一时限内回退完整当前 p-ILP。
+
+#### 伪代码
+
+```text
+Prune(E, F, previous, alpha, lambda):
+    if lambda == 1: return E, F
+    kept = Usable(E ∪ F)
+    protected = TopScore(F ∩ kept, ceil(lambda * |F|)) ∪ (previous ∩ kept)
+    protected |= Ancestors(protected)
+    CountUnprotectedE(kept, protected)
+    candidates = Parents((F ∩ kept) - protected) ∪ CompletedELeaves(kept)
+    while |E ∩ kept| > ceil(lambda * |E|) and candidates:
+        candidates = OuterRoots(candidates ∩ kept)
+        parents = Parents(candidates) ∩ kept
+        capacity = sum(subtreeSize(q) for q in candidates)
+        target = |E ∩ kept| - ceil(lambda * |E|)
+        if capacity > 0 and (capacity >= target or not parents):
+            ScoreCurrentSubtrees(kept)
+            for q in Sort(candidates, Score ascending):
+                RemoveUnprotectedSideBranches(q, kept, protected, target)
+                if |E ∩ kept| <= ceil(lambda * |E|): break
+        candidates = parents ∩ kept
+    TrimFrontier(kept, protected)
+    return E ∩ kept, F ∩ kept
+```
+
+入口为 `restrict_rank_candidates`，E 筛选为 `_prune_expanded`；`HILPPlanner._solve_partial_policy_ilp` 负责模型提交和回退。上一轮解仍作为 MIP start。保留上一轮选择并不保证展开后的新模型可行，因而回退仍有必要。纯 F 消融在实验脚本中仅跳过 `_prune_expanded`。
+
+#### 保证、代价和限制
+
+- 受限解补零后与原当前 p-ILP 的目标和风险约束一致；不改求解器、树展开或 belief 计算。但移除候选可能丢失更优策略，**不保证最优性**。
+- 保留比例是软目标：必要观测和祖先可能阻止达到目标；整棵侧枝删除也可能超过目标。不能声称恰好保留 λ。
+- 保护上一轮选择能保留同模型可行 incumbent；不能证明下一轮还能扩展，也不能恢复全局最优性。
+- 不等深候选用最外层根去重，避免双计数。不把 F 当作统一深度。零容量直接上移，最高层终止，不无限循环。
+- N 为历史数，L 为 ILP 非零项数，h 为动作树深度。建索引和初始计数为 O(L+N)，F 排序为 O(|F| log |F|)。每个评分轮次 O(N)，候选排序 O(C log C)；当前祖先查重单轮最多 O(Ch)，逐层上移最坏 O(Nh²+Nh log N+L)，辅助空间 O(N+L)。实际 h 很小时较便宜，但不能声称免费剪枝或严格线性。
+- 每个删除节点仅访问一次，祖先计数增量扣减；完整原树仍在内存。受限模型会重建，所有筛选、建模、optimize 均计入总时间。
+- E/F 提交比例按所有求解（包含回退）累计，分母是该方法自己的完整当前部分树。跨方法搜索轨迹不同，变量减少不一定带来时间优势。
+- `decision.complete` 只在原完整模型可认证时为真，受限策略即便完整可执行且风险可行，也不冒充全局最优。
+- 概率加权的 Score 可能偏向低概率分支，且不是损失上界。实验必须同时展示 cost 变化和耗时，不能仅突出加速。
+
+当前版本为 `bottom-up-retention-v2`（保留比例 λ）；旧的 `protected-subtree-v1`（λ 为分母且采用单层整棵筛选）结果与策略产物已删除，旧 CSV/JSON 不再保留，也不参与任何统计。见[专项实验](../experiments/RankedDarp-vs-HILP-vs-RAOstar-grid/README.md)。
+
 ## 7. 规划、执行与实验边界
 
 `executor.PolicyExecutor` 按观测执行已保存的 `ConditionalPolicy`，真实状态用于统计首次失败与动作物理时长。执行得到的原始 RDDL discounted reward、风险频率、物理时长和墙钟时间，与求解器 objective、平滑 belief 的 duration stopping 量分开记录；执行器不重复应用 terminal heuristic。

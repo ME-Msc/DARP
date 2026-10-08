@@ -20,6 +20,7 @@ from darp.planning.decision import ActionDecision
 from darp.planning.full_ilp import FullILPPlanner
 from darp.planning.heuristic import UtilityHeuristic
 from darp.planning.hilp import HILPPlanner
+from darp.planning.rank import validate_rank
 
 PlannerName = Literal["hilp", "full-ilp"]
 RootBeliefFactory = Callable[
@@ -90,6 +91,8 @@ def solve_rddl(
     risk_budget: float | None = None,
     expansion_rounds: int | None = None,
     frontier_width: int | None = None,
+    rank_alpha: float = 1.0,
+    rank_lambda: float = 1.0,
     heuristic: UtilityHeuristic | None = None,
     terminal_heuristic: bool = False,
     timeout_s: float | None = 60.0,
@@ -99,6 +102,9 @@ def solve_rddl(
     """Load one RDDL problem and search. 加载一个 RDDL 问题并执行一次搜索。"""
 
     _validate_options(planner, heuristic, terminal_heuristic, timeout_s)
+    validate_rank(rank_alpha, rank_lambda)
+    if planner == "full-ilp" and (rank_alpha != 1.0 or rank_lambda != 1.0):
+        raise ValueError("Rank candidate restriction is available only with HILP.")
     problem = load_rddl(domain, instance)
     runtime = PyRDDLGymRuntime(problem.env)
     runtime.reset(seed=seed)
@@ -130,6 +136,8 @@ def solve_rddl(
         else HILPPlanner(
             expansion_rounds=expansion_rounds,
             frontier_width=frontier_width,
+            rank_alpha=rank_alpha,
+            rank_lambda=rank_lambda,
             frontier_heuristic=heuristic,
             terminal_heuristic=terminal_heuristic,
             risk_budget=budget,

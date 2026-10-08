@@ -10,7 +10,14 @@ dist/
 .agents/
 .codex
 
-# Temporary experiment files.
-# 临时实验文件。
-*.tmp
-/experiments/*/output/regression-*/
+# Keep report sources and PDFs, not LaTeX build intermediates.
+# 保留报告源码及 PDF，不记录 LaTeX 编译中间文件。
+/docs/latex/*
+!/docs/latex/*.tex
+!/docs/latex/*.pdf
+
+# LaTeX experiment reports: retain sources/PDFs, ignore compiler caches.
+# 实验 LaTeX 报告：保留源码/PDF，忽略编译缓存。
+/experiments/*/output/letax/*
+!/experiments/*/output/letax/*.tex
+!/experiments/*/output/letax/*.pdf

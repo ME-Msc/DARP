@@ -13,6 +13,7 @@ from typing import Any
 
 from darp.adapter.loader import load_rddl
 from darp.executor import PolicyExecutor
+from darp.planning.rank import validate_rank
 from darp.solve import DARPResult
 
 from .darp_runner import (
@@ -44,10 +45,16 @@ FIELDS = (
     "algorithm",
     "trial",
     "seed",
+    "rank_alpha",
+    "rank_lambda",
     "objective",
     "risk",
     "time_s",
     "n",
+    "ilp_variables",
+    "full_partial_ilp_variables",
+    "rank_filter_ms",
+    "rank_fallbacks",
     "iterations",
     "complete",
     "evaluation_episodes",
@@ -98,6 +105,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--episodes", type=int, default=1000)
     parser.add_argument("--timeout", type=float, help="same search limit for both solvers")
     parser.add_argument("--seed", type=int, default=2023)
+    parser.add_argument("--rank-alpha", type=float, default=1.0,
+                        help="nonnegative HILP ranking risk weight")
+    parser.add_argument("--rank-lambda", type=float, default=1.0,
+                        help="HILP E/F candidate retention fraction in (0, 1]; 1 disables Rank")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--summary", type=Path)
     parser.add_argument("--resume", action="store_true")
@@ -107,8 +118,15 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     _validate_args(args)
+    if args.output == DEFAULT_OUTPUT and (args.rank_alpha, args.rank_lambda) != (1.0, 1.0):
+        args.output = DEFAULT_OUTPUT.with_name(
+            f"table2-rank-a{args.rank_alpha}-l{args.rank_lambda}-raw.csv"
+        )
     existing = (
-        _load_existing(args.output, args.seed, args.episodes)
+        _load_existing(
+            args.output, args.seed, args.episodes,
+            rank_alpha=args.rank_alpha, rank_lambda=args.rank_lambda,
+        )
         if args.resume else set()
     )
     cases = _build_cases(args)
@@ -137,6 +155,8 @@ def main(argv: list[str] | None = None) -> int:
                             delta=scenario.delta,
                             seed=seed,
                             timeout_s=args.timeout,
+                            rank_alpha=args.rank_alpha,
+                            rank_lambda=args.rank_lambda,
                         )
                         result_path = _result_path(args.output, scenario, trial)
                         result.save(result_path)
@@ -310,7 +330,13 @@ def _darp_metrics(
             + decision.timing["frontier_nodes"]
         ),
         "iterations": int(decision.timing["partial_ilp_solves"]),
+        "ilp_variables": int(decision.timing["ilp_variables"]),
+        "full_partial_ilp_variables": int(decision.timing["full_partial_ilp_variables"]),
+        "rank_filter_ms": decision.timing["rank_filter_ms"],
+        "rank_fallbacks": int(decision.timing["rank_fallbacks"]),
         "complete": decision.complete,
+        "rank_alpha": decision.timing["rank_alpha"],
+        "rank_lambda": decision.timing["rank_lambda"],
         "evaluation_episodes": int(statistics["episodes"]),
         "risk_rate": statistics["risk_rate"],
         "physical_duration_mean": statistics["physical_duration_mean"],
@@ -332,6 +358,8 @@ def _load_existing(
     path: Path,
     base_seed: int,
     episodes: int,
+    rank_alpha: float = 1.0,
+    rank_lambda: float = 1.0,
 ) -> set[tuple[int, int, float, int, str]]:
     if not path.is_file() or path.stat().st_size == 0:
         return set()
@@ -352,9 +380,13 @@ def _load_existing(
                 raise ValueError("Resume CSV uses a different RAOStar commit")
             if row["complete"].lower() not in ("true", "false"):
                 raise ValueError("Resume CSV has an invalid completeness flag")
-            if row["complete"].lower() != "true":
+            if row["algorithm"] == "RAO*" and row["complete"].lower() != "true":
                 raise ValueError("Resume CSV contains an incomplete search")
             if row["algorithm"] == "DARP-HILP":
+                if (float(row["rank_alpha"]), float(row["rank_lambda"])) != (rank_alpha, rank_lambda):
+                    raise ValueError("Resume CSV uses different Rank-based parameters")
+                if rank_lambda == 1.0 and row["complete"].lower() != "true":
+                    raise ValueError("Resume CSV contains an incomplete baseline search")
                 if not row["evaluation_episodes"] or int(row["evaluation_episodes"]) != episodes:
                     raise ValueError("Resume CSV uses a different evaluation episode count")
                 if not row["policy_execution_time_s"] or not row["result_file"]:
@@ -379,6 +411,7 @@ def _write_summary(
     expected_trials: int,
 ) -> None:
     groups: dict[Scenario, dict[str, list[dict[str, str]]]] = defaultdict(dict)
+    rank_configs: set[tuple[float, float]] = set()
     with csv_path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         if tuple(reader.fieldnames or ()) != FIELDS:
@@ -396,8 +429,13 @@ def _write_summary(
                 raise ValueError(f"Unexpected algorithm in {csv_path}: {algorithm}")
             if row["complete"].lower() not in ("true", "false"):
                 raise ValueError(f"Invalid completeness flag in {csv_path}: {key}")
-            if row["complete"].lower() != "true":
+            if algorithm == "RAO*" and row["complete"].lower() != "true":
                 raise ValueError(f"Incomplete result in {csv_path}: {key}")
+            if algorithm == "DARP-HILP":
+                alpha, divisor = float(row["rank_alpha"]), float(row["rank_lambda"])
+                rank_configs.add((alpha, divisor))
+                if divisor == 1.0 and row["complete"].lower() != "true":
+                    raise ValueError(f"Incomplete baseline in {csv_path}: {key}")
             if row["constrained_pomdp_commit"] != CONSTRAINED_POMDP_COMMIT:
                 raise ValueError("Summary CSV uses a different Constrained-POMDP commit")
             if row["raostar_commit"] != RAOSTAR_COMMIT:
@@ -407,6 +445,10 @@ def _write_summary(
             ):
                 raise ValueError(f"Missing DARP policy execution in {csv_path}: {key}")
             groups[scenario].setdefault(algorithm, []).append(row)
+
+    if len(rank_configs) != 1:
+        raise ValueError("Summary requires a single DARP Rank-based configuration")
+    alpha, divisor = next(iter(rank_configs))
 
     expected = set(expected_scenarios)
     if set(groups) != expected:
@@ -438,11 +480,13 @@ def _write_summary(
             f"Arithmetic means over {expected_trials} completed trials; time is planner wall-clock seconds."
         ),
         "Objective values are solver-native.",
+        f"DARP Rank-based: alpha={alpha:g}, lambda={divisor:g}; RAO* is unchanged. `complete` records the DARP global search certificate, not merely an executable policy. Restricted Rank-based results are not claimed to be globally optimal.",
+        "DARP `n` counts all current search histories, not the restricted model. `ILP vars (sent/full)` compares the last submitted model with the complete current p-ILP; it is not the full-horizon tree.",
         "",
         "| Problem | h | Δ | DARP-HILP Obj. | DARP-HILP Time (s) | "
-        "DARP-HILP n | DARP-HILP Iter. | RAO* Obj. | RAO* Time (s) | "
+        "DARP-HILP n | DARP ILP vars (sent/full) | DARP-HILP Iter. | DARP complete | RAO* Obj. | RAO* Time (s) | "
         "RAO* n | RAO* Iter. |",
-        "|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|",
+        "|:--|--:|--:|--:|--:|--:|:--:|--:|:--:|--:|--:|--:|--:|",
     ]
     for scenario in sorted(expected):
         rows_by_algorithm = groups[scenario]
@@ -452,7 +496,9 @@ def _write_summary(
             f"| {scenario.size}×{scenario.size} | {scenario.horizon} | "
             f"{scenario.delta:.1f} | {_mean(darp, 'objective'):.2f} | "
             f"{_mean(darp, 'time_s'):.2f} | {_mean(darp, 'n'):.0f} | "
+            f"{_mean(darp, 'ilp_variables'):.0f}/{_mean(darp, 'full_partial_ilp_variables'):.0f} | "
             f"{_mean(darp, 'iterations'):.0f} | "
+            f"{all(row['complete'].lower() == 'true' for row in darp)} | "
             f"{_mean(raostar, 'objective'):.2f} | "
             f"{_mean(raostar, 'time_s'):.2f} | {_mean(raostar, 'n'):.0f} | "
             f"{_mean(raostar, 'iterations'):.0f} |"
@@ -507,6 +553,7 @@ def _mean(rows: list[dict[str, str]], field: str) -> float:
 
 
 def _validate_args(args: argparse.Namespace) -> None:
+    validate_rank(args.rank_alpha, args.rank_lambda)
     if args.trials < 1:
         raise ValueError("--trials must be positive")
     if args.episodes < 1:

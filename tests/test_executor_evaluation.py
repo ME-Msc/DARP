@@ -246,10 +246,12 @@ class ExecutorEvaluationTests(unittest.TestCase):
                 PolicyExecutor(invalid)
 
     def test_saved_f_e_s_policies_execute(self):
+        # Reuse formal artifacts, not disposable smoke outputs.
+        # 复用正式实验策略，不依赖可清理的冒烟输出。
         for model in ("f", "e", "s"):
             with self.subTest(model=model):
                 result = DARPResult.load(
-                    TABLE1 / "output" / "results" / "smoke-raw"
+                    TABLE1 / "output" / "results" / "table1-raw"
                     / f"darp-{model}-h3-d0p1-full-ilp-trial01.json"
                 )
                 env = load_rddl(TABLE1 / "rddl" / "domain.rddl", TABLE1 / "rddl" / f"instance_{model}_h3.rddl").env

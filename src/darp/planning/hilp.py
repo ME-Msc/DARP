@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import isfinite
 from time import perf_counter
 
@@ -36,6 +36,7 @@ from darp.planning.ilp_tree import (
 )
 from darp.planning.policy import extract_conditional_policy
 from darp.planning.preprocess import FrontierItem, initialize_root_frontier
+from darp.planning.rank import restrict_rank_candidates, validate_rank
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,8 @@ class HILPPlanner:
     terminal_heuristic: bool = False
     risk_budget: float | None = None
     solver_time_limit_ms: float | None = 60_000.0
+    rank_alpha: float = 1.0
+    rank_lambda: float = 1.0
 
     def choose_action(
         self,
@@ -62,9 +65,9 @@ class HILPPlanner:
         *,
         root_belief: Mapping[StateKey, float] | None = None,
     ) -> ActionDecision:
-        """Choose one action while owning exactly one incremental ILP session.
+        """Choose one action using an incremental or candidate-restricted session.
 
-        / 选择一个根动作；整个 HILP 搜索只持有一个可增量更新的 ILP 会话。
+        / 原 HILP 复用增量模型；启用候选筛选时，在同一会话内重建缩减模型。
         """
         with GurobiILPSession() as ilp_session:
             return self._choose_action(
@@ -105,6 +108,7 @@ class HILPPlanner:
         if self.frontier_width is not None and self.frontier_width < 1:
             raise ValueError("frontier_width must be positive when provided.")
         validate_risk_budget(self.risk_budget)
+        validate_rank(self.rank_alpha, self.rank_lambda)
         if self.solver_time_limit_ms is not None and (
             not isfinite(float(self.solver_time_limit_ms))
             or float(self.solver_time_limit_ms) <= 0.0
@@ -150,6 +154,8 @@ class HILPPlanner:
             "gurobi_model_update_ms": 0.0,
             "gurobi_optimize_ms": 0.0,
             "partial_ilp_solves": 0.0,
+            "rank_filter_ms": 0.0,
+            "rank_fallbacks": 0.0,
         }
 
         # Algorithm 3: solve -> select x_q=1 in F -> Expand -> update E/F.
@@ -307,8 +313,10 @@ class HILPPlanner:
             or bool(self.frontier_heuristic and self.frontier_heuristic.upper_bound)
         )
         policy = extract_conditional_policy(partial_ilp, solution)
+        restricted = len(partial_ilp.spec.variables) < len(partial_ilp.variable_items)
         search_complete = (
             solution.status == "optimal"
+            and not restricted
             and not solver_limit_hit
             and refinement_exhausted
             and certifying_utility_bound
@@ -345,6 +353,18 @@ class HILPPlanner:
                 "gurobi_model_update_ms": timing_totals["gurobi_model_update_ms"],
                 "gurobi_optimize_ms": timing_totals["gurobi_optimize_ms"],
                 "partial_ilp_solves": timing_totals["partial_ilp_solves"],
+                "rank_alpha": self.rank_alpha,
+                "rank_lambda": self.rank_lambda,
+                "rank_filter_ms": timing_totals.get("rank_filter_ms", 0.0),
+                "rank_fallbacks": timing_totals.get("rank_fallbacks", 0.0),
+                "rank_restricted": float(restricted),
+                # Cumulative submitted/full sizes include every solve and fallback.
+                # 累计提交/完整规模包含所有中间求解与回退，比仅最终一轮更能解释耗时。
+                **{key: timing_totals.get(key, 0.0) for key in (
+                    "ilp_e_sent_total", "ilp_e_full_total",
+                    "ilp_f_sent_total", "ilp_f_full_total",
+                )},
+                "full_partial_ilp_variables": float(len(partial_ilp.variable_items)),
                 "ilp_variables": float(len(partial_ilp.spec.variables)),
                 "ilp_constraints": float(len(partial_ilp.spec.constraints)),
                 "expanded_nodes": float(solved_expanded_nodes),
@@ -414,23 +434,68 @@ class HILPPlanner:
             timing_totals["tree_ilp_build_ms"] = (
                 timing_totals.get("tree_ilp_build_ms", 0.0) + build_ms
             )
-        remaining_solver_ms = None
-        if solver_deadline is not None:
-            remaining_solver_ms = (solver_deadline - perf_counter()) * 1000.0
-            if remaining_solver_ms <= 0.0:
-                raise TimeoutError("HILP wall budget expired before the next Gurobi refinement.")
-        result = ilp_session.solve(
-            partial_ilp.spec,
-            delta=model_delta,
-            time_limit_ms=remaining_solver_ms,
-            warm_start=warm_start,
-        )
-        if timing_totals is not None:
-            timing_totals["partial_ilp_solves"] += 1.0
-            timing_totals["gurobi_solve_ms"] += float(result.runtime_ms)
-            timing_totals["gurobi_model_update_ms"] += ilp_session.last_model_update_ms
-            timing_totals["gurobi_optimize_ms"] += ilp_session.last_optimize_ms
-        return partial_ilp, result
+        solve_spec = partial_ilp.spec
+        if self.rank_lambda < 1.0:
+            filter_started_at = perf_counter()
+            solve_spec = restrict_rank_candidates(
+                solve_spec,
+                alpha=self.rank_alpha,
+                lambda_=self.rank_lambda,
+                frontier_variable_ids=set(partial_ilp.frontier_variable_ids),
+                warm_start=warm_start,
+            )
+            if timing_totals is not None:
+                timing_totals["rank_filter_ms"] += (perf_counter() - filter_started_at) * 1000.0
+
+        while True:
+            if self.rank_lambda < 1.0:
+                # Candidate sets can shrink or change; the append-only delta is
+                # valid only for the original full p-ILP. Keep that fast path.
+                # 候选集可能缩小或变化，不能应用原模型的追加差量；lambda=1 保留增量路径。
+                ilp_session.close()
+            remaining_solver_ms = None
+            if solver_deadline is not None:
+                remaining_solver_ms = (solver_deadline - perf_counter()) * 1000.0
+                if remaining_solver_ms <= 0.0:
+                    raise TimeoutError("HILP wall budget expired before the next Gurobi refinement.")
+            result = ilp_session.solve(
+                solve_spec,
+                delta=model_delta if self.rank_lambda == 1.0 else None,
+                time_limit_ms=remaining_solver_ms,
+                warm_start=warm_start,
+            )
+            if timing_totals is not None:
+                frontier_ids = (partial_ilp.frontier_variable_ids if solve_spec is partial_ilp.spec
+                                else set(partial_ilp.frontier_variable_ids))
+                # Full submissions need no variable scan. / 完整提交用集合大小，避免给原 HILP 增加扫描。
+                sent_f = (len(frontier_ids) if solve_spec is partial_ilp.spec else
+                          sum(variable.var_id in frontier_ids for variable in solve_spec.variables))
+                sizes = {
+                    "ilp_e_sent_total": len(solve_spec.variables) - sent_f,
+                    "ilp_e_full_total": len(partial_ilp.spec.variables) - len(frontier_ids),
+                    "ilp_f_sent_total": sent_f,
+                    "ilp_f_full_total": len(frontier_ids),
+                }
+                for key, count in sizes.items():
+                    timing_totals[key] = timing_totals.get(key, 0.0) + count
+                timing_totals["partial_ilp_solves"] += 1.0
+                timing_totals["gurobi_solve_ms"] += float(result.runtime_ms)
+                timing_totals["gurobi_model_update_ms"] += ilp_session.last_model_update_ms
+                timing_totals["gurobi_optimize_ms"] += ilp_session.last_optimize_ms
+            if (
+                len(solve_spec.variables) < len(partial_ilp.spec.variables)
+                and result.status in {"infeasible", "infeasible_or_unbounded"}
+            ):
+                # Restriction failure does not prove the current p-ILP infeasible.
+                # 筛选后的模型无解不等于原问题无解；在同一总时限内回退完整当前 p-ILP。
+                logger.warning("Restricted p-ILP is %s; retrying the full current p-ILP.", result.status)
+                solve_spec = partial_ilp.spec
+                if timing_totals is not None:
+                    timing_totals["rank_fallbacks"] += 1.0
+                continue
+            # Full history maps are still needed to reconstruct the policy.
+            # 只替换提交给求解器的模型，保留完整历史索引供策略重建使用。
+            return replace(partial_ilp, spec=solve_spec), result
 
     def _selected_frontier(
         self,

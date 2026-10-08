@@ -18,10 +18,18 @@ fi
 
 mkdir -p "${OUTPUT_DIR}"
 
+# Separate parameter sweeps from the published baseline artifacts.
+# 参数扫描使用独立文件名，避免覆盖已有基线结果。
+REPRO_STEM="table2"
+if [[ "${RANK_ALPHA:-1}" != "1" || "${RANK_LAMBDA:-1}" != "1" ]]; then
+  REPRO_STEM="table2-rank-a${RANK_ALPHA:-1}-l${RANK_LAMBDA:-1}"
+fi
 RUN_ARGS=(
   --trials "${TRIALS:-25}"
-  --output "${OUTPUT_DIR}/table2-raw.csv"
-  --summary "${OUTPUT_DIR}/table2.md"
+  --rank-alpha "${RANK_ALPHA:-1}"
+  --rank-lambda "${RANK_LAMBDA:-1}"
+  --output "${OUTPUT_DIR}/${REPRO_STEM}-raw.csv"
+  --summary "${OUTPUT_DIR}/${REPRO_STEM}.md"
 )
 
 if [[ "${RESUME:-0}" == "1" ]]; then

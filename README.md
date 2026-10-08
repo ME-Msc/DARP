@@ -36,6 +36,29 @@ result.save("result.json")
 
 默认 `timeout_s=60`，不是整个进程的硬超时，Full-ILP 预处理不计入求解时限。Full-ILP 默认最多预处理 100,000 个动作历史，超限会报错；返回结果后，用 `result.decision.complete` 判断搜索是否完成。断点调试使用 [launch.json](.vscode/launch.json)。
 
+### 可选按比例的效用–风险候选筛选（Rank-based prototype）
+
+`rank_alpha` 是风险评分权重，`rank_lambda` 是候选保留比例（0 < λ ≤ 1）。默认 `rank_alpha=1, rank_lambda=1`，保持原 HILP 的增量求解。启用后先保护高分 F 及其祖先，再自底向上删除未保护的 E 侧枝，最后筛选其余 F；策略可以完整可行，但不保证全局最优：
+
+```bash
+.venv/bin/python -m darp \
+  --domain experiments/DARP-vs-RAOstar-grid/rddl/domain.rddl \
+  --instance experiments/DARP-vs-RAOstar-grid/rddl/instance_5_h3.rddl \
+  --heuristic experiments.DARP-vs-RAOstar-grid.darp_runner:MANHATTAN \
+  --terminal-heuristic --rank-alpha 1 --rank-lambda 0.5 \
+  --output experiments/DARP-vs-RAOstar-grid/output/rank.json
+```
+
+```python
+result = solve_rddl("domain.rddl", "instance.rddl", rank_alpha=1.0, rank_lambda=0.5)
+print(result.decision.complete)  # Global certificate / 全局搜索认证
+print(result.decision.policy.duration_complete, result.decision.policy.feasible)
+```
+
+评分为 `utility - alpha × risk`；`alpha≥0` 只影响排序，不改变 ILP 的效用目标和风险预算。保护前 `ceil(|F| * lambda)` 个可用 F 和上一轮仍可用的选择；E 的目标是减少到约 `ceil(|E| * lambda)`，候选容量不足时向父层提升，保护路径内只能删除未保护侧枝。祖先连通与全部观测覆盖优先于比例，不保证严格缩小到 `lambda`。符号、伪代码、代价和限制见[算法方案](docs/ALGORITHM_MAPPING.md#rank-subtree)，同批对照和消融见[Rank 实验](experiments/RankedDarp-vs-HILP-vs-RAOstar-grid/README.md)。
+
+Rank-based 模式每轮重新构建真正缩小的 Gurobi 模型，完整 E/F 留在内存中；受限模型无解时恢复完整当前 p-ILP，仍受同一总时限限制。只求得受限最优解时 `decision.complete=False`，但 `decision.policy.complete`（JSON）或 `duration_complete`（Python）可为真并允许回放。不会自动执行最终完整模型的最优性验证，也不保证筛选与重建后一定更快。
+
 ## RDDL 扩展
 
 标准 RDDL 可以不写扩展字段。缺少 `duration` 时默认固定时长 1；缺少 `risk` 时默认没有危险状态，预算未提供时默认 0，等价于：
@@ -169,7 +192,7 @@ policy = ConditionalPolicy.from_dict(json.loads(text))
 | `root / nodes` | 根动作 ID、有限无环策略图的节点列表。 |
 | 节点 `id / stage / action_label / action` | ID、从 0 开始的深度、说明性标签、完整 grounded 动作字典。 |
 | 节点 `transitions` | `{"observation": {...}, "next": "node-id"}` 的列表；`next=null` 为叶节点。 |
-| `complete / feasible` | 均为 `true` 才能执行。 |
+| `complete / feasible` | 策略级字段，均为 `true` 才能执行；Python 中 `complete` 对应 `duration_complete`，不同于外层 `decision.complete` 的全局搜索认证。 |
 | `solver_status / achieved_utility / active_constraint_value` | 求解状态、规划效用、全策略风险。 |
 
 执行契约：执行 action → 精确匹配 observation/state 字典 → 转到 next。沿边 `stage` 增加 1，字典顺序无关，名称和值须匹配。JSON 不绑定 RDDL 路径或哈希，调用者负责提供匹配环境。
@@ -213,6 +236,31 @@ TRIALS=1 bash tools/run_repro.sh
 ```
 
 Table 1 的 E/S 仍与论文有数值差异；单次计时不是论文的 25 次统计。配置与比较边界见[实验协议](docs/EXPERIMENT_PROTOCOL.md)。
+
+### Rank-based 参数对照
+
+两个实验都支持 `--rank-alpha`、`--rank-lambda`；Table 1 的 Full-ILP、Table 2 的 RAO* 保持原算法。不同配置使用不同输出名，CSV 保存参数及全局搜索认证，`--resume` 拒绝混入其他参数或旧格式记录。
+
+```bash
+for fraction in 0.3 0.5 0.7 0.9; do
+    .venv/bin/python -m experiments.DARP-table1-grid.run \
+      --models F --horizons 3 --deltas 0.1 --planners hilp \
+      --trials 1 --episodes 100 --rank-alpha 1 --rank-lambda "$fraction"
+done
+```
+
+```bash
+RANK_ALPHA=1 RANK_LAMBDA=0.5 TRIALS=1 bash tools/run_repro.sh
+```
+
+`alpha` 控制风险在候选评分中的重要性；当前对比实验固定为 1。`lambda` 控制筛选强度，`lambda=1` 不筛选，值越小，E 和 F 的目标保留数量越少。
+
+同批对比原 HILP、只筛 F、筛选 E+F；RAO* 引用已有 Table 2 的历史结果：
+
+```bash
+.venv/bin/python -m experiments.RankedDarp-vs-HILP-vs-RAOstar-grid.run \
+  --trials 3 --lambdas 0.3 0.5 0.7 0.9 --timeout 120 --episodes 1000
+```
 
 ## 自定义 Heuristic
 
