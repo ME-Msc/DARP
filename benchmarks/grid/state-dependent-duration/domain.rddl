@@ -1,0 +1,216 @@
+// The stochastic movement outcome is sampled for the current action and is
+// shared by all next-state CPFs; it is not a persistent belief-state variable.
+// 当前动作只采样一次随机移动结果，所有下一状态 CPF 共享该结果；它不属于持久的信念状态变量。
+domain darp_vs_raostar_grid {
+    requirements = { partially-observed };
+
+    pvariables {
+        max_row             : { non-fluent, int,  default = 4 };
+        max_col             : { non-fluent, int,  default = 4 };
+        goal_row            : { non-fluent, int,  default = 0 };
+        goal_col            : { non-fluent, int,  default = 4 };
+        transition_accuracy : { non-fluent, real, default = 0.85 };
+        observation_accuracy: { non-fluent, real, default = 0.85 };
+        normal_duration       : { non-fluent, real, default = 1.0 };
+        muddy_duration        : { non-fluent, real, default = 1.0 };
+        duration_noise_variance: { non-fluent, real, default = 0.0 };
+
+        grid_row : { state-fluent, int, default = 0 };
+        grid_col : { state-fluent, int, default = 0 };
+        row_mod5 : { state-fluent, int, default = 0 };
+        col_mod5 : { state-fluent, int, default = 0 };
+
+        // Intended endpoint for the paper's "to or from mud" duration rule.
+        // 用预期终点判断论文中“移入或移出泥地”的时长规则。
+        intended_row_mod5 : { interm-fluent, int, level = 1 };
+        intended_col_mod5 : { interm-fluent, int, level = 1 };
+        mud_contact       : { interm-fluent, bool, level = 2 };
+
+        // Sampled once per action and shared by every next-state CPF:
+        // 0 = intended direction, 1/2 = the two perpendicular slips.
+        // 每个动作采样一次并供所有下一状态 CPF 共享：0 表示预期方向，1/2 表示两个垂直侧滑方向。
+        move_outcome : { interm-fluent, int, level = 3 };
+
+        // With max-nondef-actions=1, all false denotes Left.
+        // max-nondef-actions=1 时，所有动作变量均为 false 表示向左移动。
+        move_up    : { action-fluent, bool, default = false };
+        move_right : { action-fluent, bool, default = false };
+        move_down  : { action-fluent, bool, default = false };
+
+        // Noisy observation of the number of adjacent boundary walls.
+        // 带噪观测当前位置相邻边界墙的数量。
+        obs : { observ-fluent, int };
+    };
+
+    cpfs {
+        intended_row_mod5 =
+            if ((grid_row == goal_row) & (grid_col == goal_col)) then row_mod5
+            else if (move_up & (grid_row > 0)) then
+                if (row_mod5 == 0) then 4 else row_mod5 - 1
+            else if (move_down & (grid_row < max_row)) then
+                if (row_mod5 == 4) then 0 else row_mod5 + 1
+            else row_mod5;
+
+        intended_col_mod5 =
+            if ((grid_row == goal_row) & (grid_col == goal_col)) then col_mod5
+            else if (move_right & (grid_col < max_col)) then
+                if (col_mod5 == 4) then 0 else col_mod5 + 1
+            else if ((~move_up) & (~move_right) & (~move_down) & (grid_col > 0)) then
+                if (col_mod5 == 0) then 4 else col_mod5 - 1
+            else col_mod5;
+
+        mud_contact =
+            (((row_mod5 == 0) & (col_mod5 == 3)) |
+             ((row_mod5 == 1) & (col_mod5 == 1)) |
+             ((row_mod5 == 2) & (col_mod5 == 2)) |
+             ((row_mod5 == 3) & (col_mod5 == 4)) |
+             ((row_mod5 == 4) & (col_mod5 == 2))) |
+            (((intended_row_mod5 == 0) & (intended_col_mod5 == 3)) |
+             ((intended_row_mod5 == 1) & (intended_col_mod5 == 1)) |
+             ((intended_row_mod5 == 2) & (intended_col_mod5 == 2)) |
+             ((intended_row_mod5 == 3) & (intended_col_mod5 == 4)) |
+             ((intended_row_mod5 == 4) & (intended_col_mod5 == 2)));
+
+        move_outcome =
+            if ((grid_row == goal_row) & (grid_col == goal_col)) then 0
+            else if (Bernoulli(transition_accuracy)) then 0
+            else if (Bernoulli(0.5)) then 1
+            else 2;
+
+        // Rows increase downwards, as in Constrained-POMDP's GridInstance.
+        // 行号向下递增，与 Constrained-POMDP 的 GridInstance 保持一致。
+        grid_row' =
+            if ((grid_row == goal_row) & (grid_col == goal_col)) then grid_row
+            else if (move_up) then
+                if (move_outcome == 0) then
+                    if (grid_row == 0) then grid_row else grid_row - 1
+                else grid_row
+            else if (move_right) then
+                if (move_outcome == 1) then
+                    if (grid_row == max_row) then grid_row else grid_row + 1
+                else if (move_outcome == 2) then
+                    if (grid_row == 0) then grid_row else grid_row - 1
+                else grid_row
+            else if (move_down) then
+                if (move_outcome == 0) then
+                    if (grid_row == max_row) then grid_row else grid_row + 1
+                else grid_row
+            else
+                if (move_outcome == 1) then
+                    if (grid_row == max_row) then grid_row else grid_row + 1
+                else if (move_outcome == 2) then
+                    if (grid_row == 0) then grid_row else grid_row - 1
+                else grid_row;
+
+        grid_col' =
+            if ((grid_row == goal_row) & (grid_col == goal_col)) then grid_col
+            else if (move_up) then
+                if (move_outcome == 1) then
+                    if (grid_col == 0) then grid_col else grid_col - 1
+                else if (move_outcome == 2) then
+                    if (grid_col == max_col) then grid_col else grid_col + 1
+                else grid_col
+            else if (move_right) then
+                if (move_outcome == 0) then
+                    if (grid_col == max_col) then grid_col else grid_col + 1
+                else grid_col
+            else if (move_down) then
+                if (move_outcome == 1) then
+                    if (grid_col == 0) then grid_col else grid_col - 1
+                else if (move_outcome == 2) then
+                    if (grid_col == max_col) then grid_col else grid_col + 1
+                else grid_col
+            else
+                if (move_outcome == 0) then
+                    if (grid_col == 0) then grid_col else grid_col - 1
+                else grid_col;
+
+        row_mod5' =
+            if ((grid_row == goal_row) & (grid_col == goal_col)) then row_mod5
+            else if (move_up) then
+                if ((move_outcome == 0) & (grid_row > 0)) then
+                    if (row_mod5 == 0) then 4 else row_mod5 - 1
+                else row_mod5
+            else if (move_right) then
+                if ((move_outcome == 1) & (grid_row < max_row)) then
+                    if (row_mod5 == 4) then 0 else row_mod5 + 1
+                else if ((move_outcome == 2) & (grid_row > 0)) then
+                    if (row_mod5 == 0) then 4 else row_mod5 - 1
+                else row_mod5
+            else if (move_down) then
+                if ((move_outcome == 0) & (grid_row < max_row)) then
+                    if (row_mod5 == 4) then 0 else row_mod5 + 1
+                else row_mod5
+            else
+                if ((move_outcome == 1) & (grid_row < max_row)) then
+                    if (row_mod5 == 4) then 0 else row_mod5 + 1
+                else if ((move_outcome == 2) & (grid_row > 0)) then
+                    if (row_mod5 == 0) then 4 else row_mod5 - 1
+                else row_mod5;
+
+        col_mod5' =
+            if ((grid_row == goal_row) & (grid_col == goal_col)) then col_mod5
+            else if (move_up) then
+                if ((move_outcome == 1) & (grid_col > 0)) then
+                    if (col_mod5 == 0) then 4 else col_mod5 - 1
+                else if ((move_outcome == 2) & (grid_col < max_col)) then
+                    if (col_mod5 == 4) then 0 else col_mod5 + 1
+                else col_mod5
+            else if (move_right) then
+                if ((move_outcome == 0) & (grid_col < max_col)) then
+                    if (col_mod5 == 4) then 0 else col_mod5 + 1
+                else col_mod5
+            else if (move_down) then
+                if ((move_outcome == 1) & (grid_col > 0)) then
+                    if (col_mod5 == 0) then 4 else col_mod5 - 1
+                else if ((move_outcome == 2) & (grid_col < max_col)) then
+                    if (col_mod5 == 4) then 0 else col_mod5 + 1
+                else col_mod5
+            else
+                if ((move_outcome == 0) & (grid_col > 0)) then
+                    if (col_mod5 == 0) then 4 else col_mod5 - 1
+                else col_mod5;
+
+        obs =
+            if (((grid_row' == 0) | (grid_row' == max_row)) &
+                ((grid_col' == 0) | (grid_col' == max_col))) then
+                if (Bernoulli(observation_accuracy)) then 2
+                else if (Bernoulli(0.5)) then 1 else 0
+            else if ((grid_row' == 0) | (grid_row' == max_row) |
+                     (grid_col' == 0) | (grid_col' == max_col)) then
+                if (Bernoulli(observation_accuracy)) then 1
+                else if (Bernoulli(0.5)) then 2 else 0
+            else
+                if (Bernoulli(observation_accuracy)) then 0
+                else if (Bernoulli(0.5)) then 2 else 1;
+    };
+
+    reward = if ((grid_row == goal_row) & (grid_col == goal_col)) then 0 else -1;
+
+    risk =
+        ((row_mod5 == 0) & (col_mod5 == 0)) |
+        ((row_mod5 == 3) & (col_mod5 == 0)) |
+        ((row_mod5 == 3) & (col_mod5 == 1)) |
+        ((row_mod5 == 1) & (col_mod5 == 3)) |
+        ((row_mod5 == 1) & (col_mod5 == 4));
+
+    // D(s,a). F uses equal normal/muddy values, E changes muddy_duration,
+    // and S additionally supplies Gaussian variance in its instance.
+    // D(s,a)：F 的普通与泥地时长相同，E 调整泥地时长，S 还在实例中指定高斯方差。
+    duration =
+        if (normal_duration == muddy_duration) then
+            if (duration_noise_variance > 0.0)
+            then Normal(normal_duration, duration_noise_variance)
+            else normal_duration
+        else if (mud_contact)
+             then if (duration_noise_variance > 0.0)
+                  then Normal(muddy_duration, duration_noise_variance)
+                  else muddy_duration
+             else if (duration_noise_variance > 0.0)
+                  then Normal(normal_duration, duration_noise_variance)
+                  else normal_duration;
+
+    termination {
+        (grid_row == goal_row) & (grid_col == goal_col);
+    };
+}

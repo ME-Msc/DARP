@@ -1,0 +1,8 @@
+{
+  "scene": "grid",
+  "instances": ["benchmarks/grid/fixed-duration/*-d1-*.rddl"],
+  "algorithms": ["HILP", "RAOstar"],
+  "trials": 1,
+  "timeout": 120,
+  "episodes": 1000
+}

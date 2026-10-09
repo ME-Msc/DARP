@@ -1,0 +1,147 @@
+{
+  "schema": 1,
+  "scene": "grid",
+  "source": "experiments/DARP-table1-grid/output/table1-raw.csv",
+  "historical": true,
+  "migration": "Layout only; original numeric fields and policy bytes retained.",
+  "original_metadata": {},
+  "timing_scope": null,
+  "objective_convention": "negative expected utility; RAOstar uses its native objective",
+  "inputs": [
+    {
+      "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+      "instance": "benchmarks/grid/fixed-duration/grid-5x5-h3-d1-r1-b0.1.rddl",
+      "input_digest": "2dd4c818c32f51f28cb82c2c44ed9a65eb5ae10f13481483026f20a393ef47bd"
+    },
+    {
+      "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+      "instance": "benchmarks/grid/fixed-duration/grid-5x5-h3-d1-r1-b0.2.rddl",
+      "input_digest": "0c952fd7fb709ebd44038661f64d3016ca754a476eb7d971243a1a15a55c2b49"
+    },
+    {
+      "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+      "instance": "benchmarks/grid/fixed-duration/grid-5x5-h3-d1-r1-b0.3.rddl",
+      "input_digest": "22e089a008c49f646205b835e0f58d5518d958d6552b2cb62930b6c89c2c9c22"
+    },
+    {
+      "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+      "instance": "benchmarks/grid/fixed-duration/grid-5x5-h4-d1-r1-b0.1.rddl",
+      "input_digest": "1908d944b6414c2ca44181e62d668caeb6e065c3eb0a7215a35a13067ca0891d"
+    },
+    {
+      "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+      "instance": "benchmarks/grid/fixed-duration/grid-5x5-h4-d1-r1-b0.2.rddl",
+      "input_digest": "48d1800adc3241e68e2bd399602b82183aded8fdacd64f217363b84eb7d178d4"
+    },
+    {
+      "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+      "instance": "benchmarks/grid/fixed-duration/grid-5x5-h4-d1-r1-b0.3.rddl",
+      "input_digest": "ab6f51b97e4aebc3bc2f3935bce339d5433906f3a3580f79e8a7f1c385603898"
+    },
+    {
+      "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+      "instance": "benchmarks/grid/fixed-duration/grid-5x5-h5-d1-r1-b0.1.rddl",
+      "input_digest": "c2782ac2130146505c431b6d79606db6ec0d93d61eafd747313eeaa42908d059"
+    },
+    {
+      "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+      "instance": "benchmarks/grid/fixed-duration/grid-5x5-h5-d1-r1-b0.2.rddl",
+      "input_digest": "f3d6fa15df4240a746e6ac4eff341a7504eaa7cc09751818ef06e89040b79377"
+    },
+    {
+      "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+      "instance": "benchmarks/grid/fixed-duration/grid-5x5-h5-d1-r1-b0.3.rddl",
+      "input_digest": "87a1da684d35b9dd9860156eecec31919adf2d9eaed7d0d48966428aad4cd464"
+    },
+    {
+      "domain": "benchmarks/grid/expected-duration/domain.rddl",
+      "instance": "benchmarks/grid/expected-duration/grid-5x5-h3-d1-r1-b0.1.rddl",
+      "input_digest": "41bfec2c852241ef42a651663134c3fb2809df6167b523c7b1c4a908bb743578"
+    },
+    {
+      "domain": "benchmarks/grid/expected-duration/domain.rddl",
+      "instance": "benchmarks/grid/expected-duration/grid-5x5-h3-d1-r1-b0.2.rddl",
+      "input_digest": "63144c6e893cd37bb99e089cd334391a7adcf6cb03c37c44e1afe428c70f39e8"
+    },
+    {
+      "domain": "benchmarks/grid/expected-duration/domain.rddl",
+      "instance": "benchmarks/grid/expected-duration/grid-5x5-h3-d1-r1-b0.3.rddl",
+      "input_digest": "b34990db79c5bf54d51637fad2175d5894c1eaffbebcf1a3b3aa41ff5e114984"
+    },
+    {
+      "domain": "benchmarks/grid/expected-duration/domain.rddl",
+      "instance": "benchmarks/grid/expected-duration/grid-5x5-h4-d1-r1-b0.1.rddl",
+      "input_digest": "5280c8d87e5153a44bedfbfecc07a081f633ab5e670a968783f2ec36caa0666a"
+    },
+    {
+      "domain": "benchmarks/grid/expected-duration/domain.rddl",
+      "instance": "benchmarks/grid/expected-duration/grid-5x5-h4-d1-r1-b0.2.rddl",
+      "input_digest": "41fe917c5799a8e21b28a4f5571af35190dbcf3a946419276bb2acd37268bc81"
+    },
+    {
+      "domain": "benchmarks/grid/expected-duration/domain.rddl",
+      "instance": "benchmarks/grid/expected-duration/grid-5x5-h4-d1-r1-b0.3.rddl",
+      "input_digest": "2a8dddceee006535a868e30bdf8daa1225560d524feee48fbd14bc61c3af6ef0"
+    },
+    {
+      "domain": "benchmarks/grid/expected-duration/domain.rddl",
+      "instance": "benchmarks/grid/expected-duration/grid-5x5-h5-d1-r1-b0.1.rddl",
+      "input_digest": "2428a07acc48b66128d4ddd04ab04e98bed13cf07ac1592d5f77faaa505e92c9"
+    },
+    {
+      "domain": "benchmarks/grid/expected-duration/domain.rddl",
+      "instance": "benchmarks/grid/expected-duration/grid-5x5-h5-d1-r1-b0.2.rddl",
+      "input_digest": "5ade6a166dca343e668234cea6f119d0df365dda134c32eb336514224d20f93f"
+    },
+    {
+      "domain": "benchmarks/grid/expected-duration/domain.rddl",
+      "instance": "benchmarks/grid/expected-duration/grid-5x5-h5-d1-r1-b0.3.rddl",
+      "input_digest": "cd490610000c706a0d942a1043a6fe2fde4d88c8964a5962e4af3df973a98491"
+    },
+    {
+      "domain": "benchmarks/grid/stochastic-duration/domain.rddl",
+      "instance": "benchmarks/grid/stochastic-duration/grid-5x5-h3-d1-r1-b0.1.rddl",
+      "input_digest": "3cb6ce47b01049755940efa1c53c6069f69e8b57e2df98c27e5a0d197723638c"
+    },
+    {
+      "domain": "benchmarks/grid/stochastic-duration/domain.rddl",
+      "instance": "benchmarks/grid/stochastic-duration/grid-5x5-h3-d1-r1-b0.2.rddl",
+      "input_digest": "b16b7fa0950976899cfc50640952ac91c94a08d5fbe0d946ca6963f53f3b603b"
+    },
+    {
+      "domain": "benchmarks/grid/stochastic-duration/domain.rddl",
+      "instance": "benchmarks/grid/stochastic-duration/grid-5x5-h3-d1-r1-b0.3.rddl",
+      "input_digest": "90661eba43f480ef0bde753c8be923910ca68a573df6a7c77b36cb0807a85bfe"
+    },
+    {
+      "domain": "benchmarks/grid/stochastic-duration/domain.rddl",
+      "instance": "benchmarks/grid/stochastic-duration/grid-5x5-h4-d1-r1-b0.1.rddl",
+      "input_digest": "2c73fde07fedf2e0596654a2f45c2d13687d36f1fa23dfad21bc20118f073254"
+    },
+    {
+      "domain": "benchmarks/grid/stochastic-duration/domain.rddl",
+      "instance": "benchmarks/grid/stochastic-duration/grid-5x5-h4-d1-r1-b0.2.rddl",
+      "input_digest": "55dd0b71808f3bf4e9f2a0082ea6b336343714c2a1b82f1a28d6e6078e7b06df"
+    },
+    {
+      "domain": "benchmarks/grid/stochastic-duration/domain.rddl",
+      "instance": "benchmarks/grid/stochastic-duration/grid-5x5-h4-d1-r1-b0.3.rddl",
+      "input_digest": "bb1e11a194e664268eae8eb99a9dd2a73ae6a691e14985db37a6f5fafbcd0296"
+    },
+    {
+      "domain": "benchmarks/grid/stochastic-duration/domain.rddl",
+      "instance": "benchmarks/grid/stochastic-duration/grid-5x5-h5-d1-r1-b0.1.rddl",
+      "input_digest": "4572efac8d445bd2bd6266b58bc6d634cfdc4444f7965c46b60af360f5cc953b"
+    },
+    {
+      "domain": "benchmarks/grid/stochastic-duration/domain.rddl",
+      "instance": "benchmarks/grid/stochastic-duration/grid-5x5-h5-d1-r1-b0.2.rddl",
+      "input_digest": "86519b3b3bbd5154265a62268f041f9775154818c7f5cb10892c2d397efa4ba0"
+    },
+    {
+      "domain": "benchmarks/grid/stochastic-duration/domain.rddl",
+      "instance": "benchmarks/grid/stochastic-duration/grid-5x5-h5-d1-r1-b0.3.rddl",
+      "input_digest": "c267cd8a5a2cd70363a004c17d3ebe91556e393597b6a422e7ad534a5fa53c8c"
+    }
+  ]
+}

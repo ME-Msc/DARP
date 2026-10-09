@@ -1,0 +1,13 @@
+{
+  "scene": "grid",
+  "instances": [
+    "benchmarks/grid/fixed-duration/grid-5x5-*-d1-*.rddl",
+    "benchmarks/grid/expected-duration/grid-5x5-*.rddl",
+    "benchmarks/grid/stochastic-duration/grid-5x5-*.rddl"
+  ],
+  "algorithms": ["HILP", "FullILP"],
+  "full_ilp_max_horizon": 5,
+  "trials": 1,
+  "timeout": 120,
+  "episodes": 1000
+}

@@ -1,0 +1,66 @@
+\documentclass[10pt]{article}
+\usepackage[a4paper,landscape,margin=14mm]{geometry}
+\usepackage{booktabs,array,amsmath}
+\begin{document}
+\section*{grid: table1}
+\noindent Median over recorded trials; cost is negative expected utility. Missing or unsuccessful results: --.\par
+\small\begin{tabular}{p{65mm}rrrrrrrrrr}
+\toprule
+Input & \multicolumn{5}{c}{HILP} & \multicolumn{5}{c}{FullILP} \\
+ & Cost & Risk & Time (s) & Vars & $\Delta$cost\% & Cost & Risk & Time (s) & Vars & $\Delta$cost\% \\
+\midrule
+expected-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h3-\allowbreak d1-\allowbreak r1-\allowbreak b0.1 & 8.9323 & 0.090 & 0.073 & 268 & 0.00 & 8.9323 & 0.090 & 0.418 & 628 & 0.00 \\
+expected-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h3-\allowbreak d1-\allowbreak r1-\allowbreak b0.2 & 8.1556 & 0.144 & 0.062 & 160 & 0.00 & 8.1556 & 0.144 & 0.418 & 628 & 0.00 \\
+expected-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h3-\allowbreak d1-\allowbreak r1-\allowbreak b0.3 & 8.1556 & 0.144 & 0.062 & 172 & 0.00 & 8.1556 & 0.144 & 0.415 & 628 & 0.00 \\
+expected-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h4-\allowbreak d1-\allowbreak r1-\allowbreak b0.1 & 9.6227 & 0.098 & 0.212 & 608 & 0.00 & 9.6227 & 0.098 & 6.882 & 7256 & 0.00 \\
+expected-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h4-\allowbreak d1-\allowbreak r1-\allowbreak b0.2 & 8.1586 & 0.150 & 0.145 & 348 & 0.00 & 8.1586 & 0.150 & 6.439 & 7256 & 0.00 \\
+expected-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h4-\allowbreak d1-\allowbreak r1-\allowbreak b0.3 & 8.1586 & 0.150 & 0.162 & 352 & 0.00 & 8.1586 & 0.150 & 6.605 & 7256 & 0.00 \\
+expected-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h5-\allowbreak d1-\allowbreak r1-\allowbreak b0.1 & 10.3094 & 0.100 & 1.417 & 3012 & 0.00 & 10.3094 & 0.100 & 110.080 & 82148 & 0.00 \\
+expected-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h5-\allowbreak d1-\allowbreak r1-\allowbreak b0.2 & 8.2410 & 0.155 & 0.223 & 628 & 0.00 & 8.2410 & 0.155 & 111.457 & 82148 & 0.00 \\
+expected-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h5-\allowbreak d1-\allowbreak r1-\allowbreak b0.3 & 8.2410 & 0.155 & 0.294 & 928 & 0.00 & 8.2410 & 0.155 & 110.521 & 82148 & 0.00 \\
+expected-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h6-\allowbreak d1-\allowbreak r1-\allowbreak b0.1 & 10.7048 & 0.100 & 4.097 & 6172 & 0.00 & -- & -- & -- & -- & -- \\
+expected-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h6-\allowbreak d1-\allowbreak r1-\allowbreak b0.2 & 8.2648 & 0.159 & 0.724 & 2196 & 0.00 & -- & -- & -- & -- & -- \\
+expected-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h6-\allowbreak d1-\allowbreak r1-\allowbreak b0.3 & 8.2648 & 0.159 & 0.854 & 2496 & 0.00 & -- & -- & -- & -- & -- \\
+fixed-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h3-\allowbreak d1-\allowbreak r1-\allowbreak b0.1 & 8.9323 & 0.090 & 0.064 & 268 & 0.00 & 8.9323 & 0.090 & 0.212 & 628 & 0.00 \\
+fixed-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h3-\allowbreak d1-\allowbreak r1-\allowbreak b0.2 & 8.1556 & 0.144 & 0.058 & 160 & 0.00 & 8.1556 & 0.144 & 0.182 & 628 & 0.00 \\
+fixed-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h3-\allowbreak d1-\allowbreak r1-\allowbreak b0.3 & 8.1556 & 0.144 & 0.047 & 172 & 0.00 & 8.1556 & 0.144 & 0.200 & 628 & 0.00 \\
+fixed-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h4-\allowbreak d1-\allowbreak r1-\allowbreak b0.1 & 9.6798 & 0.099 & 0.247 & 1084 & 0.00 & 9.6798 & 0.099 & 2.489 & 7540 & 0.00 \\
+fixed-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h4-\allowbreak d1-\allowbreak r1-\allowbreak b0.2 & 8.2410 & 0.155 & 0.133 & 592 & 0.00 & 8.2410 & 0.155 & 2.286 & 7540 & 0.00 \\
+fixed-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h4-\allowbreak d1-\allowbreak r1-\allowbreak b0.3 & 8.2410 & 0.155 & 0.211 & 892 & 0.00 & 8.2410 & 0.155 & 2.328 & 7540 & 0.00 \\
+fixed-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h5-\allowbreak d1-\allowbreak r1-\allowbreak b0.1 & 10.3580 & 0.094 & 2.544 & 4504 & 0.00 & 10.3580 & 0.094 & 33.159 & 90484 & 0.00 \\
+fixed-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h5-\allowbreak d1-\allowbreak r1-\allowbreak b0.2 & 8.3305 & 0.156 & 0.694 & 3004 & 0.00 & 8.3305 & 0.156 & 31.872 & 90484 & 0.00 \\
+fixed-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h5-\allowbreak d1-\allowbreak r1-\allowbreak b0.3 & 8.3305 & 0.156 & 0.867 & 3880 & 0.00 & 8.3305 & 0.156 & 31.620 & 90484 & 0.00 \\
+fixed-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h6-\allowbreak d1-\allowbreak r1-\allowbreak b0.1 & 10.8564 & 0.100 & 10.359 & 13048 & 0.00 & -- & -- & -- & -- & -- \\
+fixed-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h6-\allowbreak d1-\allowbreak r1-\allowbreak b0.2 & 8.5173 & 0.159 & 7.295 & 17608 & 0.00 & -- & -- & -- & -- & -- \\
+fixed-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h6-\allowbreak d1-\allowbreak r1-\allowbreak b0.3 & 8.5173 & 0.159 & 15.166 & 31048 & 0.00 & -- & -- & -- & -- & -- \\
+\bottomrule\end{tabular}\par
+\medskip\footnotesize
+Bold: cost differs from the unique HILP baseline. Underline: lower time with matching recorded settings and trial/seed pairs. $\Delta$cost = $100(C-C_{HILP})/|C_{HILP}|$; undefined for zero/missing/ambiguous baseline. Historical or mismatched timing is descriptive only; no speedup claim is implied.\par
+HILP: experiments/grid/runs/table1-HILP; 36 rows, 0 unsuccessful.\par
+FullILP: experiments/grid/runs/table1-FullILP; 27 rows, 0 unsuccessful.\par
+\clearpage
+\section*{grid: table1}
+\noindent Median over recorded trials; cost is negative expected utility. Missing or unsuccessful results: --.\par
+\small\begin{tabular}{p{65mm}rrrrrrrrrr}
+\toprule
+Input & \multicolumn{5}{c}{HILP} & \multicolumn{5}{c}{FullILP} \\
+ & Cost & Risk & Time (s) & Vars & $\Delta$cost\% & Cost & Risk & Time (s) & Vars & $\Delta$cost\% \\
+\midrule
+stochastic-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h3-\allowbreak d1-\allowbreak r1-\allowbreak b0.1 & 9.5892 & 0.098 & 0.136 & 404 & 0.00 & 9.5892 & 0.098 & 5.890 & 6408 & 0.00 \\
+stochastic-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h3-\allowbreak d1-\allowbreak r1-\allowbreak b0.2 & 8.1556 & 0.145 & 0.086 & 164 & 0.00 & 8.1556 & 0.145 & 5.934 & 6408 & 0.00 \\
+stochastic-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h3-\allowbreak d1-\allowbreak r1-\allowbreak b0.3 & 8.1556 & 0.145 & 0.107 & 176 & 0.00 & 8.1556 & 0.145 & 6.074 & 6408 & 0.00 \\
+stochastic-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h4-\allowbreak d1-\allowbreak r1-\allowbreak b0.1 & 10.2649 & 0.099 & 1.246 & 2340 & 0.00 & 10.2649 & 0.099 & 87.767 & 65552 & 0.00 \\
+stochastic-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h4-\allowbreak d1-\allowbreak r1-\allowbreak b0.2 & 8.1607 & 0.154 & 0.178 & 400 & 0.00 & 8.1607 & 0.154 & 89.060 & 65552 & 0.00 \\
+stochastic-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h4-\allowbreak d1-\allowbreak r1-\allowbreak b0.3 & 8.1607 & 0.154 & 0.159 & 412 & 0.00 & 8.1607 & 0.154 & 86.810 & 65552 & 0.00 \\
+stochastic-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h5-\allowbreak d1-\allowbreak r1-\allowbreak b0.1 & 10.6280 & 0.100 & 3.744 & 5612 & 0.00 & 10.6280 & 0.100 & 1264.198 & 661692 & 0.00 \\
+stochastic-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h5-\allowbreak d1-\allowbreak r1-\allowbreak b0.2 & 8.2411 & 0.156 & 0.350 & 732 & 0.00 & 8.2411 & 0.156 & 1230.987 & 661692 & 0.00 \\
+stochastic-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h5-\allowbreak d1-\allowbreak r1-\allowbreak b0.3 & 8.2411 & 0.156 & 0.379 & 1032 & 0.00 & 8.2411 & 0.156 & 1233.203 & 661692 & 0.00 \\
+stochastic-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h6-\allowbreak d1-\allowbreak r1-\allowbreak b0.1 & 10.9771 & 0.100 & 10.967 & 12828 & 0.00 & -- & -- & -- & -- & -- \\
+stochastic-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h6-\allowbreak d1-\allowbreak r1-\allowbreak b0.2 & 8.2797 & 0.164 & 0.853 & 2592 & 0.00 & -- & -- & -- & -- & -- \\
+stochastic-\allowbreak duration/\allowbreak grid-\allowbreak 5x5-\allowbreak h6-\allowbreak d1-\allowbreak r1-\allowbreak b0.3 & 8.2797 & 0.164 & 1.131 & 3444 & 0.00 & -- & -- & -- & -- & -- \\
+\bottomrule\end{tabular}\par
+\medskip\footnotesize
+Bold: cost differs from the unique HILP baseline. Underline: lower time with matching recorded settings and trial/seed pairs. $\Delta$cost = $100(C-C_{HILP})/|C_{HILP}|$; undefined for zero/missing/ambiguous baseline. Historical or mismatched timing is descriptive only; no speedup claim is implied.\par
+HILP: experiments/grid/runs/table1-HILP; 36 rows, 0 unsuccessful.\par
+FullILP: experiments/grid/runs/table1-FullILP; 27 rows, 0 unsuccessful.\par
+\end{document}

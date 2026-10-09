@@ -61,7 +61,7 @@ from darp.planning.preprocess import initialize_root_frontier, resolve_root_beli
 from darp.solve import DARPResult
 
 ROOT = Path(__file__).resolve().parents[1]
-TABLE1 = ROOT / "experiments" / "DARP-table1-grid"
+TABLE1 = ROOT / "experiments/grid/runs/table1-FullILP"
 
 
 def _policy(slow_actions: tuple[bool, ...]) -> ConditionalPolicy:
@@ -251,10 +251,12 @@ class ExecutorEvaluationTests(unittest.TestCase):
         for model in ("f", "e", "s"):
             with self.subTest(model=model):
                 result = DARPResult.load(
-                    TABLE1 / "output" / "results" / "table1-raw"
+                    TABLE1 / "policies"
                     / f"darp-{model}-h3-d0p1-full-ilp-trial01.json"
                 )
-                env = load_rddl(TABLE1 / "rddl" / "domain.rddl", TABLE1 / "rddl" / f"instance_{model}_h3.rddl").env
+                kind = {"f": "fixed-duration", "e": "expected-duration", "s": "stochastic-duration"}[model]
+                inputs = ROOT / "benchmarks/grid" / kind
+                env = load_rddl(inputs / "domain.rddl", inputs / "grid-5x5-h3-d1-r1-b0.1.rddl").env
                 try:
                     agent = PolicyExecutor(result.decision.policy)
                     statistics = agent.evaluate(
@@ -905,27 +907,24 @@ class ExperimentLoggingTests(unittest.TestCase):
     """
 
     def test_table1_trial_error_is_logged_and_the_matrix_continues(self):
-        experiment = import_module("experiments.DARP-table1-grid.run")
+        experiment = import_module("experiments.run")
         with TemporaryDirectory() as temporary:
-            output = Path(temporary) / "trials.csv"
-            args = experiment._parser().parse_args([
-                "--models", "F", "--horizons", "3", "--deltas", "0.1",
-                "--planners", "hilp", "--trials", "2", "--episodes", "1",
-                "--output", str(output),
-            ])
-            successful = dict.fromkeys(experiment.FIELDS, "")
-            successful.update(model="F", horizon=3, delta=.1, planner="hilp", trial=2, seed=2024, status="ok")
-            with patch.object(experiment, "_parser") as parser, patch.object(
-                experiment, "_run_trial", side_effect=[RuntimeError("trial failed"), successful],
-            ) as run_trial, patch.object(experiment, "_write_markdown"), patch("builtins.print"), self.assertLogs(
+            output = Path(temporary) / "experiments/grid/runs/trials/results.csv"
+            instance = ROOT / "benchmarks/grid/fixed-duration/grid-5x5-h3-d1-r1-b0.1.rddl"
+            successful = {"status": "ok", "time_s": 1.0}
+            with patch.object(experiment, "ROOT", Path(temporary)), patch.object(
+                experiment, "run_trial", side_effect=[RuntimeError("trial failed"), successful],
+            ) as run_trial, patch("builtins.print"), self.assertLogs(
                 experiment.__name__, level="ERROR",
             ) as logs:
-                parser.return_value.parse_args.return_value = args
-                self.assertEqual(experiment.main(), 1)
+                self.assertEqual(experiment.main([
+                    "--instances", str(instance), "--algorithms", "HILP", "--name", "trials",
+                    "--trials", "2", "--episodes", "0",
+                ]), 1)
             self.assertEqual(run_trial.call_count, 2)
             self.assertEqual(len(logs.records), 1)
             self.assertIsInstance(logs.records[0].exc_info[1], RuntimeError)
-            for context in ("model=F", "horizon=3", "delta=0.1", "planner=hilp", "trial=1", "seed=2023"):
+            for context in ("case=grid-5x5-h3-d1-r1-b0.1", "algorithm=HILP", "trial=1", "seed=2023"):
                 self.assertIn(context, logs.output[0])
             with output.open(newline="", encoding="utf-8") as stream:
                 reader = csv.DictReader(stream)
@@ -935,7 +934,7 @@ class ExperimentLoggingTests(unittest.TestCase):
             self.assertEqual(rows[0]["error"], "RuntimeError: trial failed")
 
     def test_raostar_cache_fallback_logs_and_verifies_destination(self):
-        runner = import_module("experiments.DARP-vs-RAOstar-grid.raostar_runner")
+        runner = import_module("experiments.grid.raostar")
         with TemporaryDirectory() as temporary:
             cache = Path(temporary)
             source = runner.RAOSTAR

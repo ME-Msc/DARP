@@ -259,7 +259,7 @@ Prune(E, F, previous, alpha, lambda):
 - `decision.complete` 只在原完整模型可认证时为真，受限策略即便完整可执行且风险可行，也不冒充全局最优。
 - 概率加权的 Score 可能偏向低概率分支，且不是损失上界。实验必须同时展示 cost 变化和耗时，不能仅突出加速。
 
-当前版本为 `bottom-up-retention-v2`（保留比例 λ）；旧的 `protected-subtree-v1`（λ 为分母且采用单层整棵筛选）结果与策略产物已删除，旧 CSV/JSON 不再保留，也不参与任何统计。见[专项实验](../experiments/RankedDarp-vs-HILP-vs-RAOstar-grid/README.md)。
+当前版本为 `bottom-up-retention-v2`（保留比例 λ）；旧的 `protected-subtree-v1`（λ 为分母且采用单层整棵筛选）结果与策略产物已删除，不参与统计。见[实验入口](../experiments/README.md)。
 
 ## 7. 规划、执行与实验边界
 

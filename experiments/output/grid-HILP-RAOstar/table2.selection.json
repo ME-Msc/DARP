@@ -1,0 +1,311 @@
+{
+  "scene": "grid",
+  "batches": {
+    "experiments/grid/runs/table2-HILP": {
+      "schema": 1,
+      "scene": "grid",
+      "source": "experiments/DARP-vs-RAOstar-grid/output/table2-raw.csv",
+      "historical": true,
+      "migration": "Layout only; original numeric fields and policy bytes retained.",
+      "original_metadata": {},
+      "timing_scope": null,
+      "objective_convention": "negative expected utility; RAOstar uses its native objective",
+      "inputs": [
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h3-d1-r1-b0.1.rddl",
+          "input_digest": "2dd4c818c32f51f28cb82c2c44ed9a65eb5ae10f13481483026f20a393ef47bd"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h3-d1-r1-b0.2.rddl",
+          "input_digest": "0c952fd7fb709ebd44038661f64d3016ca754a476eb7d971243a1a15a55c2b49"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h3-d1-r1-b0.3.rddl",
+          "input_digest": "22e089a008c49f646205b835e0f58d5518d958d6552b2cb62930b6c89c2c9c22"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h4-d1-r1-b0.1.rddl",
+          "input_digest": "1908d944b6414c2ca44181e62d668caeb6e065c3eb0a7215a35a13067ca0891d"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h4-d1-r1-b0.2.rddl",
+          "input_digest": "48d1800adc3241e68e2bd399602b82183aded8fdacd64f217363b84eb7d178d4"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h4-d1-r1-b0.3.rddl",
+          "input_digest": "ab6f51b97e4aebc3bc2f3935bce339d5433906f3a3580f79e8a7f1c385603898"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h5-d1-r1-b0.1.rddl",
+          "input_digest": "c2782ac2130146505c431b6d79606db6ec0d93d61eafd747313eeaa42908d059"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h5-d1-r1-b0.2.rddl",
+          "input_digest": "f3d6fa15df4240a746e6ac4eff341a7504eaa7cc09751818ef06e89040b79377"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h5-d1-r1-b0.3.rddl",
+          "input_digest": "87a1da684d35b9dd9860156eecec31919adf2d9eaed7d0d48966428aad4cd464"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h6-d1-r1-b0.1.rddl",
+          "input_digest": "959c4626f1c8703f136037c5a817d95e59bc4a493656f584d55dcaf308815f3a"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h6-d1-r1-b0.2.rddl",
+          "input_digest": "f435a050ed6c57225ff670ff2792667af22e08597cb613b317d984872c88ddcb"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h6-d1-r1-b0.3.rddl",
+          "input_digest": "db66b6a1fb137e99afaae553a2b707a4a34e4e9fead656cb8f29b02085bdea0d"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h3-d1-r1-b0.1.rddl",
+          "input_digest": "e7b5e078af983ad6f47d645291ad2e5c7cd7305be73b248d29073906c80157df"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h3-d1-r1-b0.2.rddl",
+          "input_digest": "8d19c9785f17d3478014f39bf5866c2cce0659476a9b8f4c05c10e65bf507861"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h3-d1-r1-b0.3.rddl",
+          "input_digest": "8d7ff3af4203e00b0d3ca0d34d16dcfd62f3fdea52057e1df95db68d3531deb7"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h4-d1-r1-b0.1.rddl",
+          "input_digest": "68837195a7e209a526f0309429f8f6fb6b7812825ed3cba775dcdaa08b3aa067"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h4-d1-r1-b0.2.rddl",
+          "input_digest": "a9784bbc6f85d2536d4912ddf3728addd97302a51e84e033320ec787d5b114b7"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h4-d1-r1-b0.3.rddl",
+          "input_digest": "b30c14420396edc8d81b69155512458a131dd8c4e5b0898038f77b8befd824c7"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h5-d1-r1-b0.1.rddl",
+          "input_digest": "d32cfe0f1c70979bdeda736bced0cc69d18fdf26a69cbe3f45355bd53da6643f"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h5-d1-r1-b0.2.rddl",
+          "input_digest": "596c7bb3edf18336bbddbc87f66807023abd0e8d3abb2f7784bcc0a7a6a0b704"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h5-d1-r1-b0.3.rddl",
+          "input_digest": "6b3e7e4e9d43cf7a1b4cb5b82583d805f7672195c74d6e67da3060e3eecd63ae"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h6-d1-r1-b0.1.rddl",
+          "input_digest": "9d14c8a6ddf8e7476e0a1499611216761964933508025083f4cbb88ea5cda8c8"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h6-d1-r1-b0.2.rddl",
+          "input_digest": "91918929407bfc0c723fc3b8d1296f8f3b96028f1826a3ee39b74e8fc3aa4c59"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h6-d1-r1-b0.3.rddl",
+          "input_digest": "d0277a055245d6e3a7ef521aa3210ea3825677b0e7e40ff42792b1c14dfc57d3"
+        }
+      ]
+    },
+    "experiments/grid/runs/table2-RAOstar": {
+      "schema": 1,
+      "scene": "grid",
+      "source": "experiments/DARP-vs-RAOstar-grid/output/table2-raw.csv",
+      "historical": true,
+      "migration": "Layout only; original numeric fields and policy bytes retained.",
+      "original_metadata": {},
+      "timing_scope": null,
+      "objective_convention": "negative expected utility; RAOstar uses its native objective",
+      "inputs": [
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h3-d1-r1-b0.1.rddl",
+          "input_digest": "2dd4c818c32f51f28cb82c2c44ed9a65eb5ae10f13481483026f20a393ef47bd"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h3-d1-r1-b0.2.rddl",
+          "input_digest": "0c952fd7fb709ebd44038661f64d3016ca754a476eb7d971243a1a15a55c2b49"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h3-d1-r1-b0.3.rddl",
+          "input_digest": "22e089a008c49f646205b835e0f58d5518d958d6552b2cb62930b6c89c2c9c22"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h4-d1-r1-b0.1.rddl",
+          "input_digest": "1908d944b6414c2ca44181e62d668caeb6e065c3eb0a7215a35a13067ca0891d"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h4-d1-r1-b0.2.rddl",
+          "input_digest": "48d1800adc3241e68e2bd399602b82183aded8fdacd64f217363b84eb7d178d4"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h4-d1-r1-b0.3.rddl",
+          "input_digest": "ab6f51b97e4aebc3bc2f3935bce339d5433906f3a3580f79e8a7f1c385603898"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h5-d1-r1-b0.1.rddl",
+          "input_digest": "c2782ac2130146505c431b6d79606db6ec0d93d61eafd747313eeaa42908d059"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h5-d1-r1-b0.2.rddl",
+          "input_digest": "f3d6fa15df4240a746e6ac4eff341a7504eaa7cc09751818ef06e89040b79377"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h5-d1-r1-b0.3.rddl",
+          "input_digest": "87a1da684d35b9dd9860156eecec31919adf2d9eaed7d0d48966428aad4cd464"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h6-d1-r1-b0.1.rddl",
+          "input_digest": "959c4626f1c8703f136037c5a817d95e59bc4a493656f584d55dcaf308815f3a"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h6-d1-r1-b0.2.rddl",
+          "input_digest": "f435a050ed6c57225ff670ff2792667af22e08597cb613b317d984872c88ddcb"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-5x5-h6-d1-r1-b0.3.rddl",
+          "input_digest": "db66b6a1fb137e99afaae553a2b707a4a34e4e9fead656cb8f29b02085bdea0d"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h3-d1-r1-b0.1.rddl",
+          "input_digest": "e7b5e078af983ad6f47d645291ad2e5c7cd7305be73b248d29073906c80157df"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h3-d1-r1-b0.2.rddl",
+          "input_digest": "8d19c9785f17d3478014f39bf5866c2cce0659476a9b8f4c05c10e65bf507861"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h3-d1-r1-b0.3.rddl",
+          "input_digest": "8d7ff3af4203e00b0d3ca0d34d16dcfd62f3fdea52057e1df95db68d3531deb7"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h4-d1-r1-b0.1.rddl",
+          "input_digest": "68837195a7e209a526f0309429f8f6fb6b7812825ed3cba775dcdaa08b3aa067"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h4-d1-r1-b0.2.rddl",
+          "input_digest": "a9784bbc6f85d2536d4912ddf3728addd97302a51e84e033320ec787d5b114b7"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h4-d1-r1-b0.3.rddl",
+          "input_digest": "b30c14420396edc8d81b69155512458a131dd8c4e5b0898038f77b8befd824c7"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h5-d1-r1-b0.1.rddl",
+          "input_digest": "d32cfe0f1c70979bdeda736bced0cc69d18fdf26a69cbe3f45355bd53da6643f"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h5-d1-r1-b0.2.rddl",
+          "input_digest": "596c7bb3edf18336bbddbc87f66807023abd0e8d3abb2f7784bcc0a7a6a0b704"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h5-d1-r1-b0.3.rddl",
+          "input_digest": "6b3e7e4e9d43cf7a1b4cb5b82583d805f7672195c74d6e67da3060e3eecd63ae"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h6-d1-r1-b0.1.rddl",
+          "input_digest": "9d14c8a6ddf8e7476e0a1499611216761964933508025083f4cbb88ea5cda8c8"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h6-d1-r1-b0.2.rddl",
+          "input_digest": "91918929407bfc0c723fc3b8d1296f8f3b96028f1826a3ee39b74e8fc3aa4c59"
+        },
+        {
+          "domain": "benchmarks/grid/fixed-duration/domain.rddl",
+          "instance": "benchmarks/grid/fixed-duration/grid-100x100-h6-d1-r1-b0.3.rddl",
+          "input_digest": "d0277a055245d6e3a7ef521aa3210ea3825677b0e7e40ff42792b1c14dfc57d3"
+        }
+      ]
+    }
+  },
+  "inputs": [
+    "e7b5e078af983ad6f47d645291ad2e5c7cd7305be73b248d29073906c80157df",
+    "8d19c9785f17d3478014f39bf5866c2cce0659476a9b8f4c05c10e65bf507861",
+    "8d7ff3af4203e00b0d3ca0d34d16dcfd62f3fdea52057e1df95db68d3531deb7",
+    "68837195a7e209a526f0309429f8f6fb6b7812825ed3cba775dcdaa08b3aa067",
+    "a9784bbc6f85d2536d4912ddf3728addd97302a51e84e033320ec787d5b114b7",
+    "b30c14420396edc8d81b69155512458a131dd8c4e5b0898038f77b8befd824c7",
+    "d32cfe0f1c70979bdeda736bced0cc69d18fdf26a69cbe3f45355bd53da6643f",
+    "596c7bb3edf18336bbddbc87f66807023abd0e8d3abb2f7784bcc0a7a6a0b704",
+    "6b3e7e4e9d43cf7a1b4cb5b82583d805f7672195c74d6e67da3060e3eecd63ae",
+    "9d14c8a6ddf8e7476e0a1499611216761964933508025083f4cbb88ea5cda8c8",
+    "91918929407bfc0c723fc3b8d1296f8f3b96028f1826a3ee39b74e8fc3aa4c59",
+    "d0277a055245d6e3a7ef521aa3210ea3825677b0e7e40ff42792b1c14dfc57d3",
+    "2dd4c818c32f51f28cb82c2c44ed9a65eb5ae10f13481483026f20a393ef47bd",
+    "0c952fd7fb709ebd44038661f64d3016ca754a476eb7d971243a1a15a55c2b49",
+    "22e089a008c49f646205b835e0f58d5518d958d6552b2cb62930b6c89c2c9c22",
+    "1908d944b6414c2ca44181e62d668caeb6e065c3eb0a7215a35a13067ca0891d",
+    "48d1800adc3241e68e2bd399602b82183aded8fdacd64f217363b84eb7d178d4",
+    "ab6f51b97e4aebc3bc2f3935bce339d5433906f3a3580f79e8a7f1c385603898",
+    "c2782ac2130146505c431b6d79606db6ec0d93d61eafd747313eeaa42908d059",
+    "f3d6fa15df4240a746e6ac4eff341a7504eaa7cc09751818ef06e89040b79377",
+    "87a1da684d35b9dd9860156eecec31919adf2d9eaed7d0d48966428aad4cd464",
+    "959c4626f1c8703f136037c5a817d95e59bc4a493656f584d55dcaf308815f3a",
+    "f435a050ed6c57225ff670ff2792667af22e08597cb613b317d984872c88ddcb",
+    "db66b6a1fb137e99afaae553a2b707a4a34e4e9fead656cb8f29b02085bdea0d"
+  ],
+  "variants": [
+    [
+      "HILP",
+      1.0,
+      1.0,
+      "experiments/grid/runs/table2-HILP"
+    ],
+    [
+      "RAOstar",
+      1.0,
+      1.0,
+      "experiments/grid/runs/table2-RAOstar"
+    ]
+  ],
+  "aggregation": "median",
+  "rows": 48
+}

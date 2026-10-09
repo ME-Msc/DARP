@@ -1,0 +1,11 @@
+{
+  "row_counts": {
+    "experiments/DARP-vs-RAOstar-grid/output/table2-raw.csv": 48,
+    "experiments/DARP-vs-RAOstar-grid/output/table2-legacy-raw.csv": 1200,
+    "experiments/DARP-table1-grid/output/table1-raw.csv": 63,
+    "experiments/DARP-table1-grid/output/table1-validation-legacy-raw.csv": 54,
+    "experiments/RankedDarp-vs-HILP-vs-RAOstar-grid/output/pruning-comparison-raw.csv": 648
+  },
+  "policies_moved": 303,
+  "unreferenced": []
+}

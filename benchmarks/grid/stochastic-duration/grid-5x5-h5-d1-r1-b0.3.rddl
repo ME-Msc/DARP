@@ -1,0 +1,30 @@
+non-fluents table1_grid_s_h5_nf {
+    domain = darp_vs_raostar_grid;
+    non-fluents {
+        max_row = 4;
+        max_col = 4;
+        goal_row = 0;
+        goal_col = 4;
+        transition_accuracy = 0.85;
+        observation_accuracy = 0.85;
+        normal_duration = 1.0;
+        muddy_duration = 2.0;
+        duration_noise_variance = 0.1;
+    };
+}
+
+instance table1_grid_s_h5 {
+    domain = darp_vs_raostar_grid;
+    non-fluents = table1_grid_s_h5_nf;
+    init-state {
+        grid_row = 4;
+        grid_col = 0;
+        row_mod5 = 4;
+        col_mod5 = 0;
+    };
+    max-nondef-actions = 1;
+    risk-budget = 0.3;
+    max-duration-shortfall-probability = 0.3;
+    horizon = 5;
+    discount = 1.0;
+}

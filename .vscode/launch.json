@@ -19,13 +19,13 @@
       },
       "args": [
         "--domain",
-        "${workspaceFolder}/experiments/DARP-vs-RAOstar-grid/rddl/domain.rddl",
+        "${workspaceFolder}/benchmarks/grid/fixed-duration/domain.rddl",
         "--instance",
-        "${workspaceFolder}/experiments/DARP-vs-RAOstar-grid/rddl/instance_5_h3.rddl",
+        "${workspaceFolder}/benchmarks/grid/fixed-duration/grid-5x5-h3-d1-r1-b0.1.rddl",
         "--planner",
         "hilp",
         "--heuristic",
-        "experiments.DARP-vs-RAOstar-grid.darp_runner:MANHATTAN",
+        "benchmarks.grid.heuristic:MANHATTAN",
         "--terminal-heuristic",
         "--rank-alpha",
         "1.0",
@@ -36,7 +36,7 @@
         "--timeout",
         "86400",
         "--output",
-        "${workspaceFolder}/experiments/DARP-vs-RAOstar-grid/output/darp-debug.json"
+        "${workspaceFolder}/experiments/grid/runs/debug/policies/darp-debug.json"
       ]
     }
   ]

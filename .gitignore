@@ -21,3 +21,13 @@ dist/
 /experiments/*/output/letax/*
 !/experiments/*/output/letax/*.tex
 !/experiments/*/output/letax/*.pdf
+
+# Comparison compiler caches and disposable validation runs.
+# 对比报告的编译缓存及可清理验证批次。
+/experiments/output/**/*.aux
+/experiments/output/**/*.log
+/experiments/output/**/*.out
+/experiments/output/**/*.fls
+/experiments/output/**/*.fdb_latexmk
+/experiments/*/runs/validation-*/
+/experiments/*/runs/debug/

@@ -4,7 +4,7 @@ DARP 是论文 *Heuristic Search in Dual Space for Constrained Fixed-Horizon POM
 
 - [算法映射](docs/ALGORITHM_MAPPING.md)：公式、符号、实现及支持范围。
 - [实验协议](docs/EXPERIMENT_PROTOCOL.md)：配置、计时口径和比较边界。
-- 结果：[Table 1](experiments/DARP-table1-grid/output/table1.md)、[Table 2](experiments/DARP-vs-RAOstar-grid/output/table2.md)。
+- 实验：[独立运行与结果复用](experiments/README.md)。
 
 ## 安装与求解
 
@@ -42,11 +42,11 @@ result.save("result.json")
 
 ```bash
 .venv/bin/python -m darp \
-  --domain experiments/DARP-vs-RAOstar-grid/rddl/domain.rddl \
-  --instance experiments/DARP-vs-RAOstar-grid/rddl/instance_5_h3.rddl \
-  --heuristic experiments.DARP-vs-RAOstar-grid.darp_runner:MANHATTAN \
+  --domain benchmarks/grid/fixed-duration/domain.rddl \
+  --instance benchmarks/grid/fixed-duration/grid-5x5-h3-d1-r1-b0.1.rddl \
+  --heuristic benchmarks.grid.heuristic:MANHATTAN \
   --terminal-heuristic --rank-alpha 1 --rank-lambda 0.5 \
-  --output experiments/DARP-vs-RAOstar-grid/output/rank.json
+  --output experiments/grid/runs/debug/policies/rank.json
 ```
 
 ```python
@@ -55,7 +55,7 @@ print(result.decision.complete)  # Global certificate / 全局搜索认证
 print(result.decision.policy.duration_complete, result.decision.policy.feasible)
 ```
 
-评分为 `utility - alpha × risk`；`alpha≥0` 只影响排序，不改变 ILP 的效用目标和风险预算。保护前 `ceil(|F| * lambda)` 个可用 F 和上一轮仍可用的选择；E 的目标是减少到约 `ceil(|E| * lambda)`，候选容量不足时向父层提升，保护路径内只能删除未保护侧枝。祖先连通与全部观测覆盖优先于比例，不保证严格缩小到 `lambda`。符号、伪代码、代价和限制见[算法方案](docs/ALGORITHM_MAPPING.md#rank-subtree)，同批对照和消融见[Rank 实验](experiments/RankedDarp-vs-HILP-vs-RAOstar-grid/README.md)。
+评分为 `utility - alpha × risk`；`alpha≥0` 只影响排序，不改变 ILP 的效用目标和风险预算。保护前 `ceil(|F| * lambda)` 个可用 F 和上一轮仍可用的选择；E 的目标是减少到约 `ceil(|E| * lambda)`，候选容量不足时向父层提升，保护路径内只能删除未保护侧枝。祖先连通与全部观测覆盖优先于比例，不保证严格缩小到 `lambda`。符号、伪代码、代价和限制见[算法方案](docs/ALGORITHM_MAPPING.md#rank-subtree)，同批对照和消融见[Rank 实验](experiments/README.md)。
 
 Rank-based 模式每轮重新构建真正缩小的 Gurobi 模型，完整 E/F 留在内存中；受限模型无解时恢复完整当前 p-ILP，仍受同一总时限限制。只求得受限最优解时 `decision.complete=False`，但 `decision.policy.complete`（JSON）或 `duration_complete`（Python）可为真并允许回放。不会自动执行最终完整模型的最优性验证，也不保证筛选与重建后一定更快。
 
@@ -199,68 +199,18 @@ policy = ConditionalPolicy.from_dict(json.loads(text))
 
 ## 实验
 
-每个实验使用独立的 `rddl/` 和 `output/`；CSV 是原始指标，Markdown 是汇总表，`results/` 是策略 JSON。下面每配置求解 1 次，每个 DARP 策略默认回放 1000 次。
-
-### Table 2：DARP vs RAO*
+输入在 `benchmarks/grid/`，原始批次在 `experiments/grid/runs/`，对比表在 `experiments/output/`。详见[实验入口](experiments/README.md)和[实验协议](docs/EXPERIMENT_PROTOCOL.md)。
 
 ```bash
-# 单配置；输出到 smoke.csv，避免覆盖正式结果
-.venv/bin/python -m experiments.DARP-vs-RAOstar-grid.run \
-  --instance experiments/DARP-vs-RAOstar-grid/rddl/instance_5_h3.rddl \
-  --trials 1 --output experiments/DARP-vs-RAOstar-grid/output/smoke.csv
-
-# 完整矩阵
-TRIALS=1 bash tools/run_repro.sh
-
-# 继续同版本、同配置的中断实验
-TRIALS=1 RESUME=1 bash tools/run_repro.sh
+python experiments/run.py --name smoke \
+  --instances benchmarks/grid/fixed-duration/grid-5x5-h3-d1-r1-b0.1.rddl \
+  --algorithms HILP pruningF pruningEF --alpha 1 --lambdas 0.5
+python experiments/run.py --config experiments/grid/configs/table1.json --name table1-new
+python experiments/run.py --config experiments/grid/configs/table2.json --name table2-new
+python experiments/compare.py
 ```
 
-首次运行自动下载固定 baseline 到 `.cache/baselines/`。离线运行使用固定 commit、clean worktree 的本地仓库：
-
-```bash
-CONSTRAINED_POMDP_REPO=/path/to/Constrained-POMDP \
-RAOSTAR_CHECKOUT=/path/to/RAOStar \
-TRIALS=1 bash tools/run_repro.sh
-```
-
-### Table 1：F/E/S duration
-
-```bash
-# 冒烟检查
-.venv/bin/python -m experiments.DARP-table1-grid.run --smoke
-
-# 完整矩阵
-.venv/bin/python -m experiments.DARP-table1-grid.run --trials 1 \
-  --summary experiments/DARP-table1-grid/output/table1.md
-```
-
-Table 1 的 E/S 仍与论文有数值差异；单次计时不是论文的 25 次统计。配置与比较边界见[实验协议](docs/EXPERIMENT_PROTOCOL.md)。
-
-### Rank-based 参数对照
-
-两个实验都支持 `--rank-alpha`、`--rank-lambda`；Table 1 的 Full-ILP、Table 2 的 RAO* 保持原算法。不同配置使用不同输出名，CSV 保存参数及全局搜索认证，`--resume` 拒绝混入其他参数或旧格式记录。
-
-```bash
-for fraction in 0.3 0.5 0.7 0.9; do
-    .venv/bin/python -m experiments.DARP-table1-grid.run \
-      --models F --horizons 3 --deltas 0.1 --planners hilp \
-      --trials 1 --episodes 100 --rank-alpha 1 --rank-lambda "$fraction"
-done
-```
-
-```bash
-RANK_ALPHA=1 RANK_LAMBDA=0.5 TRIALS=1 bash tools/run_repro.sh
-```
-
-`alpha` 控制风险在候选评分中的重要性；当前对比实验固定为 1。`lambda` 控制筛选强度，`lambda=1` 不筛选，值越小，E 和 F 的目标保留数量越少。
-
-同批对比原 HILP、只筛 F、筛选 E+F；RAO* 引用已有 Table 2 的历史结果：
-
-```bash
-.venv/bin/python -m experiments.RankedDarp-vs-HILP-vs-RAOstar-grid.run \
-  --trials 3 --lambdas 0.3 0.5 0.7 0.9 --timeout 120 --episodes 1000
-```
+首次 RAO* 运行缓存固定版本源码，支持 `--constrained-repo`、`--raostar-repo` 指定本地 checkout。Table 1 E/S 与原论文仍有已记录差异；目录迁移保留原数值，不视为重新计时。
 
 ## 自定义 Heuristic
 
